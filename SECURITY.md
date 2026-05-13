@@ -5,7 +5,7 @@
 **请勿**通过公开 GitHub Issues 报告安全漏洞。
 
 请通过以下方式私下报告：
-- GitHub Security Advisory：https://github.com/<owner>/aiticket/security/advisories/new
+- GitHub Security Advisory：https://github.com/iuap/aiticket/security/advisories/new
 - 我们会在 72 小时内确认收到，并在 7 天内给出初步评估
 
 ## 支持版本

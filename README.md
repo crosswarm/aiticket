@@ -5,8 +5,8 @@
 **智能 Jira 工单分析 · 看板 · 周月报系统**
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
-[![CI](https://github.com/<owner>/aiticket/actions/workflows/ci.yml/badge.svg)](https://github.com/<owner>/aiticket/actions/workflows/ci.yml)
-[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://github.com/<owner>/aiticket/pkgs/container/aiticket)
+[![CI](https://github.com/iuap/aiticket/actions/workflows/ci.yml/badge.svg)](https://github.com/iuap/aiticket/actions/workflows/ci.yml)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://github.com/iuap/aiticket/pkgs/container/aiticket)
 
 </div>
 
@@ -26,7 +26,7 @@
 
 ```bash
 # 1. 克隆 & 配置
-git clone https://github.com/<owner>/aiticket.git && cd aiticket
+git clone https://github.com/iuap/aiticket.git && cd aiticket
 cp .env.example .env
 # 编辑 .env：填写 JIRA_BASE_URL 和至少一个 LLM API Key
 
@@ -101,13 +101,13 @@ cp samples/topic.example.md APP/backend/data/topic.md
 - [ ] 原生钉钉/企微机器人
 - [ ] REST API 鉴权增强（OAuth2）
 
-在 [GitHub Issues](https://github.com/<owner>/aiticket/issues) 追踪和投票功能需求。
+在 [GitHub Issues](https://github.com/iuap/aiticket/issues) 追踪和投票功能需求。
 
 ## 贡献
 
 欢迎 PR！请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-适合新手的任务标有 [`good first issue`](https://github.com/<owner>/aiticket/labels/good%20first%20issue)。
+适合新手的任务标有 [`good first issue`](https://github.com/iuap/aiticket/labels/good%20first%20issue)。
 
 ## 许可证
 
