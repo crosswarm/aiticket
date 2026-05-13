@@ -1,0 +1,15 @@
+{
+  "default": "my-server",
+  "profiles": {
+    "my-server": {
+      "api_base": "https://aiticket.yourteam.com",
+      "token": "sk-your-skill-token-here",
+      "default_project": "YOUR_PROJECT_KEY"
+    },
+    "staging": {
+      "api_base": "https://aiticket-staging.yourteam.com",
+      "token": "sk-staging-token-here",
+      "default_project": "TEST"
+    }
+  }
+}

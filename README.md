@@ -103,6 +103,18 @@ cp samples/topic.example.md APP/backend/data/topic.md
 
 在 [GitHub Issues](https://github.com/crosswarm/aiticket/issues) 追踪和投票功能需求。
 
+## 客户端 Skill（Claude Code 集成）
+
+部署完成后，团队工程师可以把 `client-skill/aiticket/` 安装到自己的 Claude Code，
+通过斜杠命令远程访问本实例：
+
+```bash
+cp -r client-skill/aiticket ~/.claude/skills/aiticket
+```
+
+安装后用 `/aiticket-login` 绑定服务器，即可使用 `/aiticket-search`、`/aiticket-reply`、`/aiticket-kb` 等命令。
+详见 [client-skill/aiticket/SKILL.md](client-skill/aiticket/SKILL.md)。
+
 ## 贡献
 
 欢迎 PR！请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
