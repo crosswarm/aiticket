@@ -114,8 +114,8 @@ def _cleanup_expired_cache(cache: Dict):
     for key in expired_keys:
         del cache[key]
 
-    # 限制缓存大小（最多保留100条）
-    if len(cache) > 100:
+    # 限制缓存大小（最多保留500条）
+    if len(cache) > 500:
         # 按时间戳排序，删除最旧的
         sorted_items = sorted(
             cache.items(),
@@ -123,4 +123,4 @@ def _cleanup_expired_cache(cache: Dict):
             reverse=True
         )
         cache.clear()
-        cache.update(dict(sorted_items[:100]))
+        cache.update(dict(sorted_items[:500]))

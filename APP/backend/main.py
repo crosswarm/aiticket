@@ -4107,6 +4107,7 @@ def generate_reply(request: GenerateReplyRequest, raw_request: Request, _quota=D
             _insuf_type = result.get("insufficient_type", "missing_fields")
             return {
                 "status": "gate_blocked",
+                "issue_key": request.issue_key,
                 "gate": "completeness",
                 "missing_fields": result.get("missing_fields", []),
                 "inquiry_draft": result.get("inquiry_draft", ""),
@@ -4124,6 +4125,7 @@ def generate_reply(request: GenerateReplyRequest, raw_request: Request, _quota=D
         if result.get("gate") == "classification":
             return {
                 "status": "gate_blocked",
+                "issue_key": request.issue_key,
                 "gate": "classification",
                 "transfer_to": result.get("transfer_to"),
                 "auto_moved": result.get("auto_moved", False),
@@ -4135,6 +4137,7 @@ def generate_reply(request: GenerateReplyRequest, raw_request: Request, _quota=D
         if result.get("error"):
             return {
                 "status": "warning",
+                "issue_key": request.issue_key,
                 "message": result["error"],
                 "reply_content": "",
                 "solution_content": "",
@@ -4142,6 +4145,7 @@ def generate_reply(request: GenerateReplyRequest, raw_request: Request, _quota=D
             }
         return {
             "status": "success",
+            "issue_key": request.issue_key,
             "reply_content": result["reply_content"],
             "solution_content": result.get("solution_content", ""),
             "ai_analysis": result["ai_analysis"],
@@ -4356,6 +4360,24 @@ def get_gate_view_tickets(request: Request, background_tasks: BackgroundTasks, h
     except Exception:
         _ai_cache = {}
 
+    # 3c. Reply cache — 供看板列表展示预计算回复内容
+    _reply_cache: dict = {}
+    try:
+        from reply_cache_service import CACHE_FILE as _rc_file
+        from datetime import datetime as _dt_rc, timedelta as _td
+        if _os2.path.exists(_rc_file):
+            with open(_rc_file, "r", encoding="utf-8") as _rcf:
+                _rc_raw = json.load(_rcf)
+            _now = _dt_rc.now()
+            for _rk, _rv in _rc_raw.items():
+                try:
+                    if _now - _dt_rc.fromisoformat(_rv["timestamp"]) <= _td(days=7):
+                        _reply_cache[_rk] = _rv
+                except Exception:
+                    pass
+    except Exception:
+        _reply_cache = {}
+
     # 4. 融合：以当前工单池为主，补充历史决策记录
     _ACTIVE_STATUS = {"待分析"}
     grouped: dict = {a: [] for a in _ALL_ACTIONS}
@@ -4375,6 +4397,9 @@ def get_gate_view_tickets(request: Request, background_tasks: BackgroundTasks, h
         _ai_a = _ai_cache.get(k) or {}
         _ai_conf = _ai_a.get("confidence")
         _priority = issue.get("priority", "")
+        _rc_entry = _reply_cache.get(k, {})
+        _reply_content = _rc_entry.get("reply_content", "")
+        _reply_status = "cached" if _reply_content else "unavailable"
         if dec:
             action = dec.get("action", "manual")
             desc = issue.get("description", "") or ""
@@ -4392,15 +4417,6 @@ def get_gate_view_tickets(request: Request, background_tasks: BackgroundTasks, h
                 "reply_content": _reply_content,
                 "reply_cached_at": _rc_entry.get("timestamp", ""),
                 "reply_status": _reply_status,
-                # drawer fields — live values from current issue
-                "summary": (issue.get("summary", "") or "")[:120],
-                "status": issue.get("status", "") or "",
-                "due_date": issue.get("due_date", "") or "",
-                "assignee": issue.get("assignee", "") or "",
-                "reporter": issue.get("reporter", "") or "",
-                "contact_name": issue.get("contact_name", "") or "",
-                "contact_info": issue.get("contact_info", "") or "",
-                "customer_name": issue.get("customer_name", "") or "",
             }
             if action in grouped:
                 grouped[action].append(k)
@@ -4422,12 +4438,21 @@ def get_gate_view_tickets(request: Request, background_tasks: BackgroundTasks, h
                 "description_length": len(desc),
                 "attachment_count": attachments,
                 "recommendation": _classify_recommendation_type(issue),
+                "reply_content": _reply_content,
+                "reply_cached_at": _rc_entry.get("timestamp", ""),
+                "reply_status": _reply_status,
             }
             grouped["manual"].append(k)
 
     # 历史决策中已不在当前工单池（含跨项目、非待分析）的条目不在看板中展示
     by_key = {k: v for k, v in by_key.items() if k in seen_keys}
 
+    _cached_count = sum(1 for k in seen_keys if _reply_cache.get(k, {}).get("reply_content"))
+    grouped["precompute_progress"] = {
+        "total": len(seen_keys),
+        "cached": _cached_count,
+        "missing": len(seen_keys) - _cached_count,
+    }
     grouped["by_key"] = by_key
     # 后台入队：对本次可见工单触发 AI 分析（不阻塞响应）
     background_tasks.add_task(board_service._auto_submit_analysis, list(all_issues))
@@ -4446,7 +4471,6 @@ _precompute_running: dict = {}  # lock_key → start_timestamp (float)
 async def precompute_replies(
     request_data: PrecomputeRepliesRequest,
     raw_request: Request,
-    background_tasks: BackgroundTasks,
 ):
     """Fire-and-forget：批量预生成看板工单的智能回复并写入 reply_cache.json。
     幂等：同一 project+modules 组合同时只允许一个任务在跑。"""
@@ -4505,10 +4529,6 @@ async def precompute_replies(
     if not issue_keys:
         return {"status": "done", "queued": 0, "already_cached": already_cached}
 
-    # 后台入队：对待预计算工单触发 AI 分析（不阻塞响应）
-    _analysis_tickets = [{"key": k} for k in issue_keys]
-    background_tasks.add_task(board_service._auto_submit_analysis, _analysis_tickets)
-
     import time as _time_pc2
     _precompute_running[lock_key] = _time_pc2.time()
 
@@ -4523,7 +4543,7 @@ async def precompute_replies(
                     try:
                         _result['data'] = board_service.generate_reply_content(
                             _k, force=False, user_id="precompute",
-                            project_key=proj_key, force_pass_gate1=True, force_pass_gate2=True,
+                            project_key=proj_key, force_pass_gate1=True,
                         )
                     except Exception as _e:
                         _result['error'] = str(_e)
