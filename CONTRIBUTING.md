@@ -5,7 +5,7 @@
 ## 快速入门
 
 ```bash
-git clone https://github.com/iuap/aiticket.git
+git clone https://github.com/crosswarm/aiticket.git
 cd aiticket
 cp .env.example .env          # 填写 JIRA_BASE_URL 和 LLM API Key
 docker compose up             # 启动服务

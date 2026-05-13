@@ -100,7 +100,7 @@
     - [TOP-WF.DOWNSTREAM.MESSAGE] 消息中心
 
 - [TOP-APCOM] 应用与开发平台
-    面向 `iuap-apcom-docs` 文档仓的总主题，覆盖平台公共、开发框架、应用支撑、应用构建、档案和应用。
+    面向 `crosswarm-apcom-docs` 文档仓的总主题，覆盖平台公共、开发框架、应用支撑、应用构建、档案和应用。
 
     - [TOP-APCOM.PUBLIC] 平台公共
         跨团队共享的通用文档、规范、手册和演进记录。
