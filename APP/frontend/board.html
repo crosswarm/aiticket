@@ -5095,21 +5095,23 @@ ${_colDecision(byKey)}
                 <button onclick="batchRejectReplies()" class="ds-btn ds-btn-ghost ds-btn-sm">驳回转人工</button>
             </div>`;
             const stagingCards = items.map(item => {
-                const issueKey = item.issue_key || '';
-                const cs = item.decision?.composite_score;
-                const confChip = cs != null
-                    ? `<span style="font-size:10px;padding:1px 5px;border-radius:4px;background:#dcfce7;color:#15803d;font-weight:600">${Math.round(cs*100)}%</span>`
-                    : `<span style="font-size:10px;padding:1px 5px;border-radius:4px;background:#f1f5f9;color:#94a3b8">综合 · 预计算中</span>`;
+                const score = item.decision?.composite_score != null ? Math.round(item.decision.composite_score*100)+'%' : '';
+                const scoreChip = score ? `<span style="font-size:10px;padding:1px 5px;border-radius:4px;background:var(--ds-warning-subtle,#fefce8);color:var(--ds-warning-text,#a16207);font-weight:600">${score}</span>` : '';
                 const preview = item.reply_content ? `<div style="font-size:11px;color:var(--ds-text-secondary,#475569);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(item.reply_content.slice(0,60))}…</div>` : '';
                 const summary = item.issue_summary ? `<div style="font-size:11px;color:var(--ds-text-secondary,#475569);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(item.issue_summary)}</div>` : '';
-                return `<div class="gate-card pending-card gate-card-clickable" role="listitem" onclick="openGateCardDetail('${issueKey}')">
+                return `<div class="gate-card pending-card" role="listitem">
                     <div style="display:flex;align-items:flex-start;gap:8px">
-                        <input type="checkbox" class="pending-checkbox" data-approval-id="${item.approval_id}" data-issue-key="${issueKey}" onchange="updatePendingCount()" onclick="event.stopPropagation()" aria-label="选中 ${issueKey} 用于批量通过" style="width:14px;height:14px;cursor:pointer;margin-top:2px;flex-shrink:0">
+                        <input type="checkbox" class="pending-checkbox" data-approval-id="${item.approval_id}" onchange="updatePendingCount()" aria-label="选中 ${item.issue_key||''} 用于批量通过" style="width:14px;height:14px;cursor:pointer;margin-top:2px;flex-shrink:0">
                         <div style="flex:1;min-width:0">
                             <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:2px">
                                 <span style="font-size:10px;background:#eef2ff;color:#4338ca;border-radius:4px;padding:1px 5px;font-weight:600;flex-shrink:0">待审批</span>
-                                <span style="font-size:11px;font-family:var(--ds-font-mono,monospace);color:var(--ds-text-muted,#94a3b8)">${issueKey}</span>
-                                ${confChip}
+                                <span style="font-size:11px;font-family:var(--ds-font-mono,monospace);color:var(--ds-text-muted,#94a3b8)">${item.issue_key||''}</span>
+                                ${scoreChip}
+                            </div>
+                            ${summary}${preview}
+                            <div style="display:flex;gap:6px;margin-top:5px">
+                                <button onclick="approveSingle('${item.approval_id}')" class="ds-btn ds-btn-primary ds-btn-xs">单条通过</button>
+                                <button onclick="viewReplyDraft('${item.approval_id}')" class="ds-btn ds-btn-ghost ds-btn-xs">查看草稿</button>
                             </div>
                             ${summary}${preview}
                         </div>
