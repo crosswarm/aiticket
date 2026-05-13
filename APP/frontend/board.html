@@ -4545,13 +4545,9 @@
             const dateBoard = document.getElementById('kanban-grid') || document.getElementById('board-container');
             if (gateBoard) gateBoard.style.display = mode === 'gate' ? '' : 'none';
             if (dateBoard) dateBoard.style.display = mode === 'date' ? '' : 'none';
-            // 闸门模式：隐藏过滤栏并压缩 main 底部 padding，避免幽灵空白
+            // 闸门模式：隐藏与看板筛选无关的过滤栏，避免顶部大片空白
             const filterBar = document.querySelector('.filter-bar');
             if (filterBar) filterBar.style.display = mode === 'gate' ? 'none' : '';
-            const gateToolbar = document.getElementById('gate-view-toolbar');
-            if (gateToolbar) gateToolbar.style.display = mode === 'gate' ? 'flex' : 'none';
-            const mainEl = document.querySelector('main');
-            if (mainEl) mainEl.style.paddingBottom = mode === 'gate' ? '0' : '';
             if (mode === 'gate') loadGateView();
         }
 
@@ -4684,6 +4680,19 @@
             const gateContainer = document.getElementById('kanban-grid-gate');
             gateContainer.style.flexWrap = 'wrap';
             gateContainer.innerHTML = `
+<div style="width:100%;display:flex;justify-content:space-between;gap:8px;padding:0 0 8px;flex-shrink:0;align-items:center">
+    <div style="display:inline-flex;border:1px solid var(--ds-border,#e2e8f0);border-radius:8px;overflow:hidden">
+        <button onclick="setViewMode('date')" style="padding:4px 12px;font-size:12px;font-weight:500;border:none;cursor:pointer;background:var(--ds-bg-surface,#fff);color:var(--ds-text-secondary,#475569);border-radius:6px 0 0 6px">按到期日</button>
+        <button style="padding:4px 12px;font-size:12px;font-weight:500;border:none;cursor:default;background:var(--ds-accent,#4f46e5);color:#fff;border-radius:0 6px 6px 0">智能决策</button>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+        <button onclick="openBoardSettings()" style="font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--ds-border,#e2e8f0);background:var(--ds-bg-surface,#fff);color:var(--ds-text-secondary,#475569);cursor:pointer;display:flex;align-items:center;gap:4px">⚙️ 闸门设置</button>
+        <button onclick="showProcessingLog()" style="font-size:11px;padding:4px 12px;border-radius:6px;border:1px solid var(--ds-border,#e2e8f0);background:var(--ds-bg-surface,#fff);color:var(--ds-text-secondary,#475569);cursor:pointer;display:flex;align-items:center;gap:4px">
+            📋 处理日志（7天）
+        </button>
+        <button onclick="loadGateView()" style="font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--ds-border,#e2e8f0);background:var(--ds-bg-surface,#fff);color:var(--ds-text-secondary,#475569);cursor:pointer">↻ 刷新</button>
+    </div>
+</div>
 ${_colVip([], byKey)}
 ${_colPending(pending, pendingCandidates, byKey)}
 ${_colAuto(d, autoCounts, autoTotal)}
@@ -5551,9 +5560,11 @@ ${_colDecision(byKey)}
         }
 
         async function _openGateDrawer(node, cfg) {
-            if (!window._gateDrawer) {
+            // 必须挂到 body，避免被 board-settings-inner(overflow:hidden) 裁剪
+            if (!window._gateDrawer || !document.body.contains(window._gateDrawer._el)) {
+                if (window._gateDrawer) { try { window._gateDrawer._el.remove(); } catch(e) {} }
                 const m = await import('/assets/components/pipeline/pipeline-drawer.js');
-                window._gateDrawer = new m.PipelineDrawer({container: '#reply-gates-outer'});
+                window._gateDrawer = new m.PipelineDrawer({container: document.body});
             }
             const gateKey = node.id.startsWith('gate') ? ['completeness','classification','reuse','specificity','supervisor'][parseInt(node.id.replace('gate',''))-1] : null;
             if (!gateKey) return;
@@ -6709,6 +6720,11 @@ ${_colDecision(byKey)}
             }
             document.getElementById('board-settings-modal').classList.add('hidden');
             closeRuleEditor();
+            // 清理闸门 drawer，下次从 body 重新挂载（避免 orphaned element）
+            if (window._gateDrawer) {
+                try { window._gateDrawer._el.remove(); } catch(e) {}
+                window._gateDrawer = null;
+            }
         }
 
         function renderColumnSettings() {
