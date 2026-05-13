@@ -1,0 +1,21 @@
+module_id: classify
+lineage_file: .agent/skills/ticket-analysis-pipeline/scripts/classify_tickets.py
+slots:
+  product_themes:
+    kind: rule_list
+    path: .agent/skills/ticket-analysis-pipeline/scripts/themes-product.yaml
+    key: leaf_themes
+    bounds:
+      max_items: 80
+  rd_cluster_keywords:
+    kind: rule_list
+    path: .agent/skills/ticket-analysis-pipeline/scripts/cluster_rd.py
+    key: R_SPECIFIC_RULES
+    bounds:
+      max_items: 100
+  sso_noise_pattern:
+    kind: regex
+    path: .agent/skills/ticket-analysis-pipeline/scripts/cluster_impl.py
+    key: SSO_NOISE_PAT
+    constraint:
+      type: regex_valid

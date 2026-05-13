@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r APP/backend/requirements.txt
+
+      - name: Lint (ruff)
+        run: |
+          pip install ruff
+          ruff check APP/backend/ --exclude APP/backend/tests/
+
+      - name: Run tests
+        env:
+          CHROMA_MODE: in-memory
+          APP_SECRET_KEY: ci-test-secret
+          SKILL_TOKEN_SALT: ci-test-salt
+          JIRA_BASE_URL: https://jira.example.com
+          LLM_DEFAULT_PROVIDER: zhipu
+          DATA_DIR: /tmp/aiticket-test-data
+        run: |
+          cd APP/backend
+          pytest tests/ -v --tb=short -x
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t aiticket:ci .

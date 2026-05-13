@@ -1,0 +1,35 @@
+[
+  {
+    "key": "DEMO-1001",
+    "summary": "审批流节点配置后无法保存",
+    "status": "待处理",
+    "priority": "高",
+    "assignee": "bob",
+    "reporter": "alice",
+    "created": "2026-05-01T10:00:00",
+    "description": "在审批流设计器中配置节点参数并点击保存后，页面提示成功但刷新后配置丢失。复现步骤：1. 新建审批流 2. 添加审批节点 3. 设置审批人 4. 保存 5. 刷新页面",
+    "labels": ["审批流", "配置", "bug"]
+  },
+  {
+    "key": "DEMO-1002",
+    "summary": "数据导出功能在数据量超过1万条时超时",
+    "status": "处理中",
+    "priority": "中",
+    "assignee": "carol",
+    "reporter": "dave",
+    "created": "2026-05-02T14:30:00",
+    "description": "导出功能在数据量超过1万条时出现超时错误，小数据量（<1000条）正常。",
+    "labels": ["导出", "性能", "bug"]
+  },
+  {
+    "key": "DEMO-1003",
+    "summary": "希望支持批量修改工单优先级",
+    "status": "已完成",
+    "priority": "低",
+    "assignee": "alice",
+    "reporter": "carol",
+    "created": "2026-05-03T09:00:00",
+    "description": "需求：在看板视图中支持多选工单后批量设置优先级，提升运营效率。",
+    "labels": ["看板", "批量操作", "需求"]
+  }
+]

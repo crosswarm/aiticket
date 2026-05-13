@@ -1,0 +1,33 @@
+# 团队成员配置示例
+# 复制为项目根目录下 crewlist.yaml 并按实际情况修改
+# 字段说明：
+#   username: Jira 用户名（用于工单 assignee 匹配）
+#   realname: 真实姓名（用于报告展示）
+#   role: 主要角色（产品经理 / 开发 / 测试 / 运维）
+#   subrole: 子角色（可选）
+#   modules: 负责的业务模块（用于智能分派建议）
+
+team:
+  - username: alice
+    realname: 爱丽丝
+    role: 产品经理
+    subrole: 流程
+    modules: [工作流, 审批, 表单]
+
+  - username: bob
+    realname: 鲍勃
+    role: 开发
+    subrole: 后端开发
+    modules: [API, 数据库, 集成]
+
+  - username: carol
+    realname: 卡罗尔
+    role: 开发
+    subrole: 前端开发
+    modules: [UI, 交互, 移动端]
+
+  - username: dave
+    realname: 戴夫
+    role: 测试
+    subrole: QA
+    modules: []

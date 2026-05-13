@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PM协作任务管理看板</title>
+    <link rel="stylesheet" href="/assets/ds/tokens.css">
+    <link rel="stylesheet" href="/assets/ds/base.css">
+    <link rel="stylesheet" href="/assets/ds/components.css">
+    <link rel="stylesheet" href="/assets/ds/command-palette.css">
+    <link rel="stylesheet" href="/assets/responsive.css">
+    <script src="/assets/vendor/tailwind-browser.min.js"></script>
+    <style>
+        .glass { background: var(--ds-bg-surface); border: 1px solid var(--ds-border); }
+        .card-hover:hover { transform: translateY(-2px); box-shadow: var(--ds-shadow-md); }
+        .status-badge { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 500; }
+        .status-wait { background: var(--ds-warning-subtle); color: var(--ds-warning-text); }
+        .status-accept { background: var(--ds-success-subtle); color: var(--ds-success-text); }
+        .status-hang { background: var(--ds-danger-subtle); color: var(--ds-danger-text); }
+        .status-overdue { background: var(--ds-danger-subtle); color: var(--ds-danger-text); }
+        .fade-in { animation: ds-fade-in 0.3s ease-in; }
+    </style>
+    <link rel="stylesheet" href="/assets/notification-center.css">
+</head>
+<body class="min-h-screen">
+    <!-- 侧边栏 -->
+    <aside id="ds-sidebar" class="ds-sidebar"></aside>
+    <div id="ds-sidebar-overlay" class="ds-sidebar-overlay"></div>
+
+    <!-- 主内容区 -->
+    <div id="ds-main" class="ds-main">
+        <!-- 页面头部 -->
+        <div class="ds-page-header">
+            <div class="ds-page-header-left">
+                <button class="ds-hamburger" onclick="DSSidebar.open()">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                </button>
+                <h1 class="ds-page-title">PM协作任务管理看板</h1>
+                <span id="connection-status" class="ds-badge ds-badge-success" style="font-size:11px">● 已连接</span>
+            </div>
+            <div class="ds-page-header-actions">
+                <button onclick="refreshData()" class="ds-btn ds-btn-primary ds-btn-sm">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                    <span>刷新</span>
+                </button>
+                <button onclick="showSettings()" class="ds-btn ds-btn-ghost ds-btn-icon ds-btn-sm">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                </button>
+            </div>
+        </div>
+
+    <main class="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        <!-- Stats Cards -->
+        <div class="grid grid-cols-5 gap-4 mb-6">
+            <div class="glass rounded-xl p-4 card-hover transition cursor-pointer" onclick="filterByStatus('WAIT_ANALYSIS')">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500">待分析</p>
+                        <p id="stat-wait" class="text-2xl font-bold text-yellow-600">-</p>
+                    </div>
+                    <div class="w-10 h-10 bg-yellow-100 rounded-lg flex items-center justify-center text-yellow-600">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="glass rounded-xl p-4 card-hover transition cursor-pointer" onclick="filterByStatus('COO_ACCEPT')">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500">已采纳</p>
+                        <p id="stat-accept" class="text-2xl font-bold text-green-600">-</p>
+                    </div>
+                    <div class="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center text-green-600">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="glass rounded-xl p-4 card-hover transition cursor-pointer" onclick="filterByStatus('COO_HANG')">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500">已挂起</p>
+                        <p id="stat-hang" class="text-2xl font-bold text-red-600">-</p>
+                    </div>
+                    <div class="w-10 h-10 bg-red-100 rounded-lg flex items-center justify-center text-red-600">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="glass rounded-xl p-4 card-hover transition cursor-pointer" onclick="filterByOverdue()">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500">已超时</p>
+                        <p id="stat-overdue" class="text-2xl font-bold text-red-700">-</p>
+                    </div>
+                    <div class="w-10 h-10 bg-red-200 rounded-lg flex items-center justify-center text-red-700">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                    </div>
+                </div>
+            </div>
+            <div class="glass rounded-xl p-4 card-hover transition">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm text-gray-500">今日处理</p>
+                        <p id="stat-today" class="text-2xl font-bold text-blue-600">-</p>
+                    </div>
+                    <div class="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center text-blue-600">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Predefines Section -->
+        <div class="glass rounded-xl p-6 mb-6">
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center space-x-2">
+                    <svg class="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+                    <h2 class="text-lg font-semibold">预定义协作</h2>
+                </div>
+                <button onclick="showAddPredefineModal()" class="flex items-center space-x-1 px-3 py-1.5 bg-purple-600 text-white text-sm rounded-lg hover:bg-purple-700 transition">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                    <span>新增预定义</span>
+                </button>
+            </div>
+            <div id="predefines-list" class="space-y-2">
+                <!-- Predefines will be loaded here -->
+                <div class="text-gray-400 text-sm">加载中...</div>
+            </div>
+        </div>
+
+        <!-- Auto Process Settings -->
+        <div class="glass rounded-xl p-6 mb-6">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-4">
+                    <div class="flex items-center space-x-2">
+                        <svg class="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                        <h2 class="text-lg font-semibold">自动处理</h2>
+                    </div>
+                    <div id="auto-process-status" class="flex items-center space-x-2 text-sm">
+                        <span class="w-2 h-2 rounded-full bg-green-500"></span>
+                        <span>运行中</span>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-3">
+                    <span id="auto-process-stats" class="text-sm text-gray-500">今日处理: 0</span>
+                    <button onclick="toggleAutoProcess()" id="auto-process-toggle" class="relative inline-flex h-6 w-11 items-center rounded-full bg-green-600 transition-colors focus:outline-none">
+                        <span class="translate-x-6 inline-block h-4 w-4 transform rounded-full bg-white transition-transform"></span>
+                    </button>
+                </div>
+            </div>
+            <p class="mt-2 text-sm text-gray-500">规则: 自动采纳符合预定义的协作，其他自动拒绝（按照统一模板回复）</p>
+        </div>
+
+        <!-- Demands Table -->
+        <div class="glass rounded-xl overflow-hidden">
+            <!-- Toolbar -->
+            <div class="px-6 py-4 border-b bg-gray-50">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-2">
+                        <button onclick="filterByStatus('')" class="filter-btn px-3 py-1.5 text-sm rounded-lg bg-white border border-gray-300 hover:bg-gray-50 active">全部</button>
+                        <button onclick="filterByStatus('WAIT_ANALYSIS')" class="filter-btn px-3 py-1.5 text-sm rounded-lg bg-white border border-gray-300 hover:bg-gray-50">待分析</button>
+                        <button onclick="filterByStatus('COO_ACCEPT')" class="filter-btn px-3 py-1.5 text-sm rounded-lg bg-white border border-gray-300 hover:bg-gray-50">已采纳</button>
+                        <button onclick="filterByStatus('COO_HANG')" class="filter-btn px-3 py-1.5 text-sm rounded-lg bg-white border border-gray-300 hover:bg-gray-50">已挂起</button>
+                        <button onclick="filterByOverdue()" class="filter-btn px-3 py-1.5 text-sm rounded-lg bg-red-50 border border-red-200 text-red-700 hover:bg-red-100">已超时</button>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <input type="text" id="search-input" placeholder="搜索需求..." class="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" oninput="debounceSearch()">
+                        <button onclick="triggerSync()" class="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition">同步数据</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Table -->
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortBy('code')">需求编号 ↕</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">标题</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">状态</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">提出人</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">分析人</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortBy('commit_delivery_time')">承诺交付 ↕</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer" onclick="sortBy('waiting_days')">等待天数 ↕</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="demands-table-body" class="divide-y divide-gray-200">
+                        <!-- Demands will be loaded here -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Empty State -->
+            <div id="empty-state" class="hidden py-12 text-center">
+                <svg class="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                <p class="mt-2 text-gray-500">暂无数据</p>
+            </div>
+        </div>
+    </main>
+
+    <!-- Add Predefine Modal -->
+    <div id="add-predefine-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
+        <div class="bg-white rounded-xl p-6 w-full max-w-lg mx-4">
+            <h3 class="text-lg font-semibold mb-4">新增预定义协作</h3>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">协作提出人名称</label>
+                    <input type="text" id="predefine-proposer" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="如：张三">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">所属领域/部门</label>
+                    <input type="text" id="predefine-domain" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="如：研发部">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">期望解决天数</label>
+                    <input type="number" id="predefine-days" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="如：3" value="3">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">匹配关键词（逗号分隔）</label>
+                    <input type="text" id="predefine-keywords" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" placeholder="如：平台,架构,优化">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">备注</label>
+                    <textarea id="predefine-desc" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" rows="2" placeholder="可选"></textarea>
+                </div>
+            </div>
+            <div class="flex justify-end space-x-3 mt-6">
+                <button onclick="hideAddPredefineModal()" class="px-4 py-2 text-gray-600 hover:text-gray-800">取消</button>
+                <button onclick="submitPredefine()" class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700">创建</button>
+            </div>
+        </div>
+    </div>
+
+    </div><!-- end ds-main -->
+
+    <script src="/assets/common.js"></script>
+    <script src="/assets/ds/theme.js"></script>
+    <script src="/assets/ds/sidebar.js"></script>
+    <script src="/assets/project-context.js"></script>
+  <script src="/assets/nav.js"></script>
+    <script src="/assets/ds/command-palette.js"></script>
+    <script>
+        // State
+        let demands = [];
+        let predefines = [];
+        let currentFilter = '';
+        let currentSort = { field: 'waiting_days', asc: false };
+        let searchTimeout;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            loadData();
+            loadPredefines();
+            loadAutoProcessStatus();
+            // Auto refresh every 30 seconds
+            setInterval(loadData, 30000);
+        });
+
+        // Load demands data
+        async function loadData() {
+            try {
+                const url = currentFilter
+                    ? `/api/pm/board?status=${currentFilter}`
+                    : '/api/pm/board';
+                const response = await fetch(url);
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    demands = result.data.demands || [];
+                    updateStats(result.stats);
+                    renderDemands();
+                }
+            } catch (error) {
+                console.error('Failed to load data:', error);
+                document.getElementById('connection-status').textContent = '● 连接失败';
+                document.getElementById('connection-status').className = 'text-xs px-2 py-1 rounded-full bg-red-100 text-red-700';
+            }
+        }
+
+        // Update stats
+        function updateStats(stats) {
+            document.getElementById('stat-wait').textContent = stats.wait_analysis || 0;
+            document.getElementById('stat-accept').textContent = stats.coo_accept || 0;
+            document.getElementById('stat-hang').textContent = stats.coo_hang || 0;
+            document.getElementById('stat-overdue').textContent = stats.overdue || 0;
+            document.getElementById('stat-today').textContent = stats.processed_today || 0;
+        }
+
+        // Render demands table
+        function renderDemands() {
+            const tbody = document.getElementById('demands-table-body');
+            const searchTerm = document.getElementById('search-input').value.toLowerCase();
+
+            let filtered = demands;
+            if (searchTerm) {
+                filtered = demands.filter(d =>
+                    (d.title || '').toLowerCase().includes(searchTerm) ||
+                    (d.code || '').toLowerCase().includes(searchTerm)
+                );
+            }
+
+            // Sort
+            filtered.sort((a, b) => {
+                let aVal = a[currentSort.field];
+                let bVal = b[currentSort.field];
+                if (currentSort.asc) return aVal > bVal ? 1 : -1;
+                return aVal < bVal ? 1 : -1;
+            });
+
+            if (filtered.length === 0) {
+                tbody.innerHTML = '';
+                document.getElementById('empty-state').classList.remove('hidden');
+                return;
+            }
+
+            document.getElementById('empty-state').classList.add('hidden');
+
+            tbody.innerHTML = filtered.map(d => {
+                const statusClass = {
+                    'WAIT_ANALYSIS': 'status-wait',
+                    'COO_ACCEPT': 'status-accept',
+                    'COO_HANG': 'status-hang'
+                }[d.status] || 'status-wait';
+
+                const statusLabel = {
+                    'WAIT_ANALYSIS': '待分析',
+                    'COO_ACCEPT': '已采纳',
+                    'COO_HANG': '已挂起'
+                }[d.status] || d.status;
+
+                const waitingDays = d.waiting_days || 0;
+                const isOverdue = waitingDays > 2;
+
+                return `
+                    <tr class="hover:bg-gray-50 fade-in">
+                        <td class="px-4 py-3 text-sm font-medium text-blue-600 cursor-pointer" onclick="openDemand('${d.aid}')">${d.code || '-'}</td>
+                        <td class="px-4 py-3 text-sm text-gray-900 max-w-xs truncate" title="${d.title || ''}">${d.title || '-'}</td>
+                        <td class="px-4 py-3"><span class="status-badge ${statusClass}">${statusLabel}</span></td>
+                        <td class="px-4 py-3 text-sm text-gray-600">${d.proposer_display || '-'}</td>
+                        <td class="px-4 py-3 text-sm text-gray-600">${d.analyst?.name || '-'}</td>
+                        <td class="px-4 py-3 text-sm text-gray-600">${d.commit_delivery_time ? new Date(d.commit_delivery_time).toLocaleDateString() : '-'}</td>
+                        <td class="px-4 py-3 text-sm ${isOverdue ? 'text-red-600 font-semibold' : 'text-gray-600'}">${waitingDays}天 ${isOverdue ? '⚠️' : ''}</td>
+                        <td class="px-4 py-3 text-sm">
+                            <button onclick="openDemand('${d.aid}')" class="text-blue-600 hover:text-blue-800">查看</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        // Load predefines
+        async function loadPredefines() {
+            try {
+                const response = await fetch(API_BASE+'/api/pm/predefines');
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    predefines = result.data || [];
+                    renderPredefines();
+                }
+            } catch (error) {
+                console.error('Failed to load predefines:', error);
+            }
+        }
+
+        // Render predefines
+        function renderPredefines() {
+            const container = document.getElementById('predefines-list');
+
+            if (predefines.length === 0) {
+                container.innerHTML = '<div class="text-gray-400 text-sm">暂无预定义协作</div>';
+                return;
+            }
+
+            container.innerHTML = predefines.map(p => `
+                <div class="flex items-center justify-between p-3 bg-white border border-gray-200 rounded-lg">
+                    <div class="flex items-center space-x-3">
+                        <span class="text-sm font-medium">${p.proposer_name}/${p.proposer_domain}</span>
+                        <span class="text-xs text-gray-500">${p.keywords_display || ''}</span>
+                        <span class="text-xs ${p.is_active ? 'text-green-600' : 'text-gray-400'}">${p.is_active ? '有效' : '已过期'}</span>
+                    </div>
+                    <button onclick="deletePredefine('${p.id}')" class="text-red-500 hover:text-red-700 text-sm">删除</button>
+                </div>
+            `).join('');
+        }
+
+        // Load auto process status
+        async function loadAutoProcessStatus() {
+            try {
+                const response = await fetch(API_BASE+'/api/pm/auto-process/status');
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    updateAutoProcessUI(result.data);
+                }
+            } catch (error) {
+                console.error('Failed to load auto process status:', error);
+            }
+        }
+
+        // Update auto process UI
+        function updateAutoProcessUI(data) {
+            const statusEl = document.getElementById('auto-process-status');
+            const toggleEl = document.getElementById('auto-process-toggle');
+            const statsEl = document.getElementById('auto-process-stats');
+
+            if (data.enabled) {
+                statusEl.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500"></span><span>运行中</span>';
+                toggleEl.classList.remove('bg-gray-200');
+                toggleEl.classList.add('bg-green-600');
+                toggleEl.querySelector('span').classList.remove('translate-x-1');
+                toggleEl.querySelector('span').classList.add('translate-x-6');
+            } else {
+                statusEl.innerHTML = '<span class="w-2 h-2 rounded-full bg-gray-400"></span><span>已停止</span>';
+                toggleEl.classList.remove('bg-green-600');
+                toggleEl.classList.add('bg-gray-200');
+                toggleEl.querySelector('span').classList.remove('translate-x-6');
+                toggleEl.querySelector('span').classList.add('translate-x-1');
+            }
+
+            statsEl.textContent = `今日处理: ${data.today_processed || 0}`;
+        }
+
+        // Toggle auto process
+        async function toggleAutoProcess() {
+            const toggleEl = document.getElementById('auto-process-toggle');
+            const isEnabled = toggleEl.classList.contains('bg-green-600');
+
+            try {
+                const response = await fetch(`/api/pm/auto-process/toggle?enabled=${!isEnabled}`, {
+                    method: 'POST'
+                });
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    updateAutoProcessUI({ enabled: !isEnabled });
+                }
+            } catch (error) {
+                console.error('Failed to toggle auto process:', error);
+            }
+        }
+
+        // Filter functions
+        function filterByStatus(status) {
+            currentFilter = status;
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.classList.remove('bg-blue-100', 'border-blue-500', 'text-blue-700');
+            });
+            event.target.classList.add('bg-blue-100', 'border-blue-500', 'text-blue-700');
+            loadData();
+        }
+
+        function filterByOverdue() {
+            currentFilter = 'overdue';
+            loadData();
+        }
+
+        // Sort function
+        function sortBy(field) {
+            if (currentSort.field === field) {
+                currentSort.asc = !currentSort.asc;
+            } else {
+                currentSort.field = field;
+                currentSort.asc = false;
+            }
+            renderDemands();
+        }
+
+        // Search
+        function debounceSearch() {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(renderDemands, 300);
+        }
+
+        // Refresh
+        async function refreshData() {
+            await loadData();
+            await loadPredefines();
+        }
+
+        // Trigger sync
+        async function triggerSync() {
+            try {
+                const response = await fetch(API_BASE+'/api/pm/sync', { method: 'POST' });
+                const result = await response.json();
+                if (result.status === 'success') {
+                    alert('同步成功: ' + result.message);
+                    loadData();
+                }
+            } catch (error) {
+                alert('同步失败');
+            }
+        }
+
+        // Modal functions
+        function showAddPredefineModal() {
+            document.getElementById('add-predefine-modal').classList.remove('hidden');
+        }
+
+        function hideAddPredefineModal() {
+            document.getElementById('add-predefine-modal').classList.add('hidden');
+        }
+
+        async function submitPredefine() {
+            const data = {
+                proposer_name: document.getElementById('predefine-proposer').value,
+                proposer_domain: document.getElementById('predefine-domain').value,
+                expected_resolve_days: parseInt(document.getElementById('predefine-days').value) || 3,
+                keywords: document.getElementById('predefine-keywords').value.split(',').map(k => k.trim()).filter(k => k),
+                description: document.getElementById('predefine-desc').value
+            };
+
+            if (!data.proposer_name || !data.proposer_domain) {
+                alert('请填写完整信息');
+                return;
+            }
+
+            try {
+                const response = await fetch(API_BASE+'/api/pm/predefines', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    hideAddPredefineModal();
+                    loadPredefines();
+                    // Clear form
+                    document.getElementById('predefine-proposer').value = '';
+                    document.getElementById('predefine-domain').value = '';
+                    document.getElementById('predefine-keywords').value = '';
+                }
+            } catch (error) {
+                alert('创建失败');
+            }
+        }
+
+        async function deletePredefine(id) {
+            if (!confirm('确定要删除这个预定义吗？')) return;
+
+            try {
+                const response = await fetch(`/api/pm/predefines/${id}`, { method: 'DELETE' });
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    loadPredefines();
+                }
+            } catch (error) {
+                alert('删除失败');
+            }
+        }
+
+        // Open demand in PM system
+        function openDemand(aid) {
+            window.open(`https://pm.example.com/demand/${aid}`, '_blank');
+        }
+
+        // Settings
+        function showSettings() {
+            alert('设置功能开发中...');
+        }
+    </script>
+    <script src="/assets/scope-switcher.js"></script>
+    <script>
+        ScopeSwitcher.init();
+        window.addEventListener('scope-changed', function(e) {
+            const s = (e && e.detail) || {};
+            const mods = (s.domain_modules || []).join('+') || '全部模块';
+            if (typeof showToast === 'function') showToast('作用域已切换至 ' + (s.project_key||'') + ' · ' + mods + '，PM 看板数据未联动', 'info');
+        });
+    </script>
+    <script src="/assets/notification-center.js"></script>
+</body>
+</html>

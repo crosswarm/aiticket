@@ -1,0 +1,13 @@
+{
+  "_default": "minimax",
+  "smart_reply": [
+    "minimax",
+    "local"
+  ],
+  "darwin_eval": "minimax",
+  "req_analysis": "minimax",
+  "spec_gen": "zhipu",
+  "competitive": "minimax",
+  "classification": "local",
+  "weekly_report": "minimax"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "monthly-report-PM",
+  "name": "PM 月报自动生成",
+  "cron": "0 9 1 * *",
+  "trigger_type": "cron",
+  "enabled": false,
+  "task_type": "monthly_report",
+  "cooldown_hours": 600,
+  "params": {
+    "notify_on_complete": true,
+    "project_key": "PM"
+  },
+  "created_by": "system",
+  "created_at": "2026-05-12T00:00:00",
+  "host_constraint": "mini",
+  "run_count": 0,
+  "schema_version": "1.0"
+}

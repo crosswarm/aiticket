@@ -1,0 +1,37 @@
+services:
+  aiticket:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aiticket
+    restart: unless-stopped
+    ports:
+      - "${PORT:-18000}:18000"
+    env_file:
+      - .env
+    volumes:
+      - ./APP/backend/config/deployment.yaml:/app/config/deployment.yaml:ro
+      - aiticket-data:/data
+      - aiticket-logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:18000/api/board/stats"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # 可选：独立 nginx 反向代理（提供 HTTPS + 静态资源）
+  # nginx:
+  #   image: nginx:alpine
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./deploy/docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+  #     - ./APP/frontend:/var/www/aiticket/frontend:ro
+  #   depends_on:
+  #     - aiticket
+
+volumes:
+  aiticket-data:
+  aiticket-logs:

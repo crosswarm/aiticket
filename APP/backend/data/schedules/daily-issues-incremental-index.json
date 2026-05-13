@@ -1,0 +1,27 @@
+{
+  "id": "daily-issues-incremental-index",
+  "name": "每日工单增量向量索引",
+  "task_type": "script",
+  "trigger_type": "cron",
+  "cron": "0 3 * * *",
+  "enabled": true,
+  "catchup_window_hours": 36,
+  "cooldown_hours": 20,
+  "command": [
+    "__PYTHON__",
+    "scripts/incremental_issues_index.py",
+    "--days",
+    "2"
+  ],
+  "description": "每日03:00：拉取最近2天在 Jira 更新的工单，将尚未入库的条目补充写入 Chroma issues_collection，解决新工单无法被语义搜索命中的问题",
+  "last_run": null,
+  "created_at": "2026-05-12T09:00:00",
+  "host_constraint": "mini",
+  "preflight_local_llm": false,
+  "llm_strategy": "none",
+  "run_count": 0,
+  "last_status": "unknown",
+  "created_by": "claude",
+  "created_by_uuid": "aaac6ff8-d4a6-ce54-1d0b-0538426b0028",
+  "schema_version": "1.0"
+}

@@ -1,0 +1,25 @@
+{
+  "id": "hourly-adopted-facts-consume",
+  "name": "每小时采纳规则消费",
+  "task_type": "script",
+  "trigger_type": "cron",
+  "cron": "0 * * * *",
+  "enabled": true,
+  "catchup_window_hours": 2,
+  "cooldown_hours": 0,
+  "command": [
+    "__PYTHON__",
+    "scripts/consume_adopted_facts.py"
+  ],
+  "description": "每小时：将 adopted_facts_pending.json 中待审核规则写入 product_facts.md 并触发重索引，防止死池积压",
+  "last_run": null,
+  "created_at": "2026-05-12T09:00:00",
+  "host_constraint": "mini",
+  "preflight_local_llm": false,
+  "llm_strategy": "none",
+  "run_count": 0,
+  "last_status": "unknown",
+  "created_by": "claude",
+  "created_by_uuid": "aaac6ff8-d4a6-ce54-1d0b-0538426b0028",
+  "schema_version": "1.0"
+}

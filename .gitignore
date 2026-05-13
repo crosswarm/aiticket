@@ -1,0 +1,97 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+._*
+
+# Runtime & data (挂载自外部 volume，不入 git)
+KB/**
+!KB/.gitkeep
+!KB/README.md
+conclusion/**
+!conclusion/.gitkeep
+!conclusion/README.md
+design/**
+!design/.gitkeep
+!design/README.md
+!design/spec/
+
+# Instance config (复制自 *.example，含 secrets，不入 git)
+.env
+APP/backend/config/deployment.yaml
+APP/backend/llm_config.json
+
+# Runtime databases & state
+APP/backend/data/app_auth.db
+APP/backend/data/app_auth.key
+APP/backend/data/feishu_sessions.db
+APP/backend/data/agent_tasks.db
+APP/backend/data/auth.db
+APP/backend/data/jobmaster.db
+APP/backend/data/jobmaster_state.json*
+APP/backend/data/jobmaster_events.jsonl
+APP/backend/data/operation_history.jsonl
+APP/backend/data/handover_suggestion_cache.json
+APP/backend/data/.product_facts_mtime
+APP/backend/data/sqlite/
+APP/backend/data/reply_trainer/
+APP/backend/data/training_mem0_chroma/
+APP/backend/data/data_cache/
+
+# ChromaDB (向量库)
+chroma_db/
+chroma_db_backup*/
+chroma_db.backup*/
+APP/backend/data/chroma*/
+
+# Logs
+*.log
+nohup.out
+APP/backend/logs/
+
+# Test outputs
+.pytest_cache/
+playwright-report/
+test-results/
+.coverage
+*.webm
+
+# Node
+node_modules/
+APP/frontend/node_modules/
+
+# Internal tool configs
+.claude/
+.omc/
+.agent/
+.gemini/
+.agentbridge/
+.learnings/
+.qoder/
+.gitnexus/
+.ladybug/
+.gstack/
+
+# Claude backups
+.claude.backup*/
+
+# Temp
+conclusion/temp/
+aiticket-suite.zip
+board_ai_cache.json

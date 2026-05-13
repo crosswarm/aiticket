@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "predicted_project": "消息中心",
+      "target_board_id": "",
+      "target_swimlane": "消息推送",
+      "sub_module_keywords": ["短信", "推送", "邮件模板"],
+      "default_assignee": "",
+      "fallback_assignee": "",
+      "auto_move_enabled": true,
+      "min_confidence": 0.92
+    },
+    {
+      "predicted_project": "流程中心",
+      "target_board_id": "",
+      "target_swimlane": "",
+      "sub_module_keywords": ["审批", "流程节点", "发起人"],
+      "default_assignee": "",
+      "fallback_assignee": "",
+      "auto_move_enabled": true,
+      "min_confidence": 0.92
+    }
+  ],
+  "global_fallback": {
+    "target_board_id": null,
+    "default_assignee": null,
+    "auto_move_enabled": false
+  }
+}

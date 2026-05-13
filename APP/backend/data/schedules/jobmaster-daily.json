@@ -1,0 +1,30 @@
+{
+  "id": "jobmaster-daily",
+  "name": "JobMaster 日报与任务编排",
+  "cron": "30 7 * * *",
+  "trigger_type": "cron",
+  "enabled": true,
+  "task_type": "jobmaster_daily",
+  "cooldown_hours": 20,
+  "params": {},
+  "created_by": "system",
+  "created_at": "2026-04-22T00:00:00",
+  "last_run": "2026-05-11T09:33:14.011503",
+  "host_constraint": "mini",
+  "run_count": 8,
+  "last_status": "success",
+  "recent_runs": [
+    {
+      "ts": "2026-05-09T07:30:42.003334",
+      "status": "success",
+      "duration_s": 104.6
+    },
+    {
+      "ts": "2026-05-11T09:33:14.011503",
+      "status": "success",
+      "duration_s": 69.5
+    }
+  ],
+  "created_by_uuid": "aaac6ff8-d4a6-ce54-1d0b-0538426b0028",
+  "schema_version": "1.0"
+}

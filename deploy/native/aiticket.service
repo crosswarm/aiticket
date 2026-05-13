@@ -1,0 +1,21 @@
+[Unit]
+Description=AITicket Service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/aiticket/backend
+Environment="DATA_DIR=/data/aiticket"
+Environment="CONFIG_FILE=/etc/aiticket/deployment.yaml"
+EnvironmentFile=/etc/aiticket/.env
+ExecStartPre=/opt/aiticket/venv/bin/python -m bootstrap.init_db --data-dir ${DATA_DIR}/sqlite
+ExecStart=/opt/aiticket/venv/bin/uvicorn main:app --host 127.0.0.1 --port 18000 --workers 1
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/aiticket/uvicorn.log
+StandardError=append:/var/log/aiticket/uvicorn.log
+
+[Install]
+WantedBy=multi-user.target

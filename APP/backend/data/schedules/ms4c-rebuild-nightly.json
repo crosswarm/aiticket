@@ -1,0 +1,25 @@
+{
+  "id": "ms4c-rebuild-nightly",
+  "name": "夜间全量重建 issues 向量集合",
+  "task_type": "script",
+  "trigger_type": "cron",
+  "cron": "0 2 * * 1",
+  "enabled": true,
+  "catchup_window_hours": 0,
+  "cooldown_hours": 120,
+  "command": [
+    "__PYTHON__",
+    "scripts/rebuild_issues_v2.py"
+  ],
+  "description": "每周一 02:00：全量重建 issues_collection，将 description 真实嵌入取代原先纯标题嵌入，提升语义匹配准确度。enabled=false 待人工确认后开启",
+  "last_run": null,
+  "created_at": "2026-05-12T09:00:00",
+  "host_constraint": "mini",
+  "preflight_local_llm": false,
+  "llm_strategy": "none",
+  "run_count": 0,
+  "last_status": "unknown",
+  "created_by": "claude",
+  "created_by_uuid": "aaac6ff8-d4a6-ce54-1d0b-0538426b0028",
+  "schema_version": "1.0"
+}

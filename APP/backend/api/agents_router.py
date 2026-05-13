@@ -1,0 +1,1118 @@
+"""
+agents_router — /api/agents/* REST + SSE
+
+端点：
+  GET  /api/agents                     — 所有 Agent 状态卡片
+  GET  /api/agents/{name}              — 单 Agent 详情
+  GET  /api/agents/tasks               — 近 48h 任务列表
+  GET  /api/agents/tasks/{id}          — 任务详情（含 log_tail / children）
+  POST /api/agents/tasks/{id}/cancel   — 取消任务
+  POST /api/agents/{name}/trigger      — 手动触发 Agent
+  GET  /api/agents/stream              — SSE 实时推送
+  GET  /api/agents/jobmaster           — JobMaster 聚合状态
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import subprocess
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
+
+from agents.base import AgentStatus, AgentTask
+from agents.registry import AgentRegistry
+from auth_deps import require_admin_user, require_authenticated_user
+from services.agent_task_store import AgentTaskStore
+from services.host_context import HOST, PEER_BRIDGE_URL, is_mini, is_qcl, proxy_to_peer
+from services.jobmaster_service import (
+    get_jobmaster_state,
+    get_schedule_summary,
+    get_pending_decisions,
+    resolve_pending_decision,
+    enqueue_pending_decision,
+    check_local_llm,
+)
+
+router = APIRouter(prefix="/api/agents", tags=["agents"],
+                   dependencies=[Depends(require_admin_user)])
+
+_PLIST = Path.home() / "Library/LaunchAgents/com.aiticket.supergemma4.plist"
+_LOCAL_MODEL_PORT = 8090
+_TRANSITION_FILE = Path(__file__).resolve().parent.parent / "data" / "local_model_transition.json"
+_TRANSITION_TTL_SEC = 120
+
+def _gui_target() -> str:
+    return f"gui/{os.getuid()}/com.aiticket.supergemma4"
+
+def _set_transition(action: str) -> None:
+    _TRANSITION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _TRANSITION_FILE.write_text(
+        json.dumps({"action": action, "started_at": time.time()}),
+        encoding="utf-8",
+    )
+
+def _get_transition() -> Optional[dict]:
+    if not _TRANSITION_FILE.exists():
+        return None
+    try:
+        d = json.loads(_TRANSITION_FILE.read_text(encoding="utf-8"))
+        elapsed = time.time() - float(d.get("started_at", 0))
+        if elapsed > _TRANSITION_TTL_SEC:
+            _TRANSITION_FILE.unlink(missing_ok=True)
+            return None
+        d["elapsed_seconds"] = int(elapsed)
+        return d
+    except Exception:
+        return None
+
+def _clear_transition() -> None:
+    try:
+        _TRANSITION_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+def _resolve_transition_against_state(is_online: bool) -> Optional[dict]:
+    """Auto-clears transition marker when reality matches expectation."""
+    t = _get_transition()
+    if not t:
+        return None
+    action = t.get("action")
+    if (action == "start" and is_online) or (action == "stop" and not is_online):
+        _clear_transition()
+        return None
+    return t
+
+# SSE 广播队列（轻量级 in-process pub/sub）
+_sse_subscribers: list[asyncio.Queue] = []
+
+
+def _broadcast(event: str, data: dict) -> None:
+    msg = {"event": event, "data": json.dumps(data, ensure_ascii=False, default=str)}
+    for q in list(_sse_subscribers):
+        try:
+            q.put_nowait(msg)
+        except asyncio.QueueFull:
+            pass
+
+
+# ── 工具函数 ────────────────────────────────────────────────────────
+
+def _check_peer_online() -> bool:
+    """快速检查对端 bridge 是否可达（HEAD /api/board/stats，超时 2s）。"""
+    if not PEER_BRIDGE_URL:
+        return False
+    try:
+        import requests as _req
+        r = _req.head(f"{PEER_BRIDGE_URL.rstrip('/')}/api/board/stats", timeout=2)
+        return r.status_code < 500
+    except Exception:
+        return False
+
+
+def _task_to_dict(t: AgentTask, include_detail: bool = False) -> dict:
+    d = t.to_dict()
+    if not include_detail:
+        # 保留 log_snippet（前 80 字符）供卡片副标题显示
+        log_tail = d.pop("log_tail", None) or ""
+        d["log_snippet"] = log_tail[:80].strip() if log_tail else ""
+        d.pop("payload_json", None)
+        d.pop("result_json", None)
+    return d
+
+
+# ── GET /api/agents ──────────────────────────────────────────────────
+
+@router.get("")
+def list_agents(request: Request, include_hidden: bool = False):
+    from services.agent_task_store import AgentTaskStore
+    reg = AgentRegistry.get_instance()
+    agents = reg.list()
+    if not include_hidden:
+        agents = [a for a in agents if not getattr(a, "hidden", False)]
+    user_id = getattr(request.state, "current_user", {}) or {}
+    uid = user_id.get("id") if isinstance(user_id, dict) else None
+    # Batch-fetch today stats + running tasks + schedules once instead of N× per-agent
+    store = AgentTaskStore.get_instance()
+    try:
+        from services.jobmaster_service import get_schedules as _get_schedules
+        _schedules = _get_schedules()
+    except Exception:
+        _schedules = []
+    try:
+        from auth_service import get_auth_service as _gas
+        _nicknames = _gas().get_user_nicknames(uid) if uid else {}
+    except Exception:
+        _nicknames = {}
+    prefetch = {
+        "stats": store.today_stats_all(),
+        "running": store.all_running_task_ids(),
+        "schedules": _schedules,
+        "user_nicknames": _nicknames,
+    }
+    return [reg.build_agent_summary(a.name, user_id=uid, prefetch=prefetch) for a in agents]
+
+
+# ── GET /api/agents/jobmaster ────────────────────────────────────────
+
+@router.get("/jobmaster")
+def jobmaster_state():
+    state = get_jobmaster_state()
+    transition = _resolve_transition_against_state(bool(state.get("local_llm_healthy")))
+    if transition:
+        state["local_model_transition"] = transition
+    state["host"] = HOST
+    state["peer_bridge_url"] = PEER_BRIDGE_URL
+    state["peer_online"] = _check_peer_online()
+    state["action_required"] = _build_action_required()
+    return state
+
+
+def _build_action_required() -> list:
+    """聚合多源待确认事项，返回 action_required 列表。"""
+    items: list = []
+
+    # 1. 需求池流水线 waiting_theme_confirm
+    try:
+        from services.requirements_pool_aggregate_service import RequirementsPoolAggregateService
+        svc = RequirementsPoolAggregateService.get_instance()
+        pipeline_state = svc.get_pipeline_state() if hasattr(svc, "get_pipeline_state") else {}
+        ps = pipeline_state if isinstance(pipeline_state, dict) else {}
+        if ps.get("status") == "waiting_theme_confirm":
+            items.append({
+                "kind": "theme_confirm",
+                "title": "需求池流水线等待主题确认",
+                "description": f"已聚 {ps.get('theme_count', '?')} 个主题，请确认后进入加工流程",
+                "parent_id": ps.get("pipeline_id"),
+                "since": ps.get("updated_at"),
+                "actions": [
+                    {
+                        "id": "confirm",
+                        "label": "确认主题",
+                        "method": "POST",
+                        "path": "/api/requirements_pool/themes/confirm",
+                    },
+                    {
+                        "id": "drop",
+                        "label": "全部丢弃",
+                        "method": "POST",
+                        "path": "/api/requirements_pool/themes/drop",
+                    },
+                ],
+            })
+    except Exception:
+        pass
+
+    # 2. agent_tasks 中状态为 awaiting_human_review 的任务
+    try:
+        from services.agent_task_store import AgentTaskStore
+        from agents.base import AgentStatus
+        store = AgentTaskStore.get_instance()
+        # 用 list_recent 后过滤（store 不一定支持按状态查）
+        for t in store.list_recent(limit=50):
+            td = _task_to_dict(t) if not isinstance(t, dict) else t
+            if td.get("status") == "awaiting_human_review":
+                items.append({
+                    "kind": "human_review",
+                    "title": td.get("title", "待人工审核"),
+                    "description": f"任务 {td.get('id')} 需要人工介入",
+                    "parent_id": td.get("id"),
+                    "since": td.get("created_at"),
+                    "actions": [
+                        {"id": "approve", "label": "批准", "method": "POST",
+                         "path": f"/api/agents/tasks/{td.get('id')}/approve"},
+                        {"id": "reject", "label": "驳回", "method": "POST",
+                         "path": f"/api/agents/tasks/{td.get('id')}/reject"},
+                    ],
+                })
+    except Exception:
+        pass
+
+    # 3. pending_decisions（已有字段，提升为 action_required 同格式）
+    try:
+        pending_decisions = state.get("pending_decisions") or []
+        for decision in pending_decisions:
+            items.append({
+                "kind": "jobmaster_decision",
+                "title": decision.get("description", "JobMaster 待决策"),
+                "description": decision.get("detail", ""),
+                "parent_id": decision.get("id"),
+                "since": decision.get("created_at"),
+                "actions": [
+                    {"id": "approve", "label": "批准", "method": "POST",
+                     "path": f"/api/jobmaster/decisions/{decision.get('id')}/approve"},
+                ],
+            })
+    except Exception:
+        pass
+
+    # 4. team_dispatch 子任务（queued + trigger_src 以 "team_dispatch:" 开头）
+    try:
+        import json as _json
+        from services.agent_task_store import AgentTaskStore
+        _store4 = AgentTaskStore.get_instance()
+        for _t in _store4.list_recent(status="queued", limit=200):
+            _raw_payload = getattr(_t, "payload_json", None) if not isinstance(_t, dict) else _t.get("payload_json")
+            _td = _task_to_dict(_t) if not isinstance(_t, dict) else _t
+            _src = _td.get("trigger_src") or ""
+            if _src.startswith("team_dispatch:"):
+                try:
+                    _pl = _json.loads(_raw_payload or "{}")
+                except Exception:
+                    _pl = {}
+                _desc = _pl.get("description") or ""
+                items.append({
+                    "kind": "subagent_authorization",
+                    "title": _td.get("title", "子任务待批准"),
+                    "description": _desc,
+                    "parent_id": _td.get("parent_id") or _td.get("id"),
+                    "task_id": _td.get("id"),
+                    "agent_name": _td.get("agent_name"),
+                    "since": _td.get("created_at"),
+                    "actions": [
+                        {"id": "approve", "label": "批准", "method": "POST",
+                         "path": f"/api/agents/tasks/{_td.get('id')}/approve"},
+                        {"id": "reject", "label": "驳回", "method": "POST",
+                         "path": f"/api/agents/tasks/{_td.get('id')}/reject"},
+                    ],
+                })
+    except Exception:
+        pass
+
+    # 5. Hook Bridge 事件（queued + trigger_src 以 "hook:" 开头）
+    try:
+        import json as _json5
+        from services.agent_task_store import AgentTaskStore
+        _store5 = AgentTaskStore.get_instance()
+        _seen_hook_kinds: set = set()  # (kind, session_id) dedup
+        for _t5 in _store5.list_recent(status="queued", limit=100):
+            _src5 = (_t5.trigger_src or "")
+            if _src5.startswith("hook:"):
+                try:
+                    _pl5 = _json5.loads(_t5.payload_json or "{}")
+                except Exception:
+                    _pl5 = {}
+                _kind5 = _pl5.get("kind", "hook_notification")
+                _sess5 = _pl5.get("session_id", "")
+                _dedup5 = (_kind5, _sess5)
+                if _dedup5 in _seen_hook_kinds:
+                    continue
+                _seen_hook_kinds.add(_dedup5)
+                _label = "批准" if _kind5 == "hook_plan_exit" else "已读"
+                _tmux5 = _pl5.get("tmux_session", "")
+                _keymap5 = _pl5.get("cli_keymap", {"approve": ["Enter"], "reject": ["Escape"]})
+                _approve_keys5 = ",".join(_keymap5.get("approve", ["Enter"]))
+                _reject_keys5 = ",".join(_keymap5.get("reject", ["Escape"]))
+                _reject_action = (
+                    [{"id": "reject", "label": "驳回", "method": "POST",
+                      "path": f"/api/agents/tasks/{_t5.id}/reject",
+                      "cli_session": _tmux5, "cli_keys": _reject_keys5}]
+                    if _kind5 == "hook_plan_exit" else []
+                )
+                items.append({
+                    "kind": _kind5,
+                    "title": _t5.title,
+                    "description": _pl5.get("description") or _pl5.get("message") or _pl5.get("plan_summary") or "",
+                    "task_id": _t5.id,
+                    "agent_name": "claude",
+                    "since": str(_t5.created_at or ""),
+                    "pane_session": _tmux5,
+                    "actions": [
+                        {"id": "approve", "label": _label, "method": "POST",
+                         "path": f"/api/agents/tasks/{_t5.id}/approve",
+                         "cli_session": _tmux5, "cli_keys": _approve_keys5},
+                        *_reject_action,
+                    ],
+                })
+    except Exception:
+        pass
+
+    # 6. JobMaster playbook 待审（data/jobmaster_playbook_pending.md 存在）
+    try:
+        import pathlib as _pl6
+        _pending6 = _pl6.Path("APP/backend/data/jobmaster_playbook_pending.md")
+        if not _pending6.exists():
+            _pending6 = _pl6.Path(__file__).parent.parent / "data" / "jobmaster_playbook_pending.md"
+        if _pending6.exists():
+            _preview6 = _pending6.read_text(encoding="utf-8", errors="ignore")[:600]
+            items.append({
+                "kind": "jobmaster_playbook_review",
+                "title": "JobMaster 学习成果待审：multica 借鉴守则",
+                "description": _preview6,
+                "since": None,
+                "actions": [
+                    {"id": "approve", "label": "批准并合入运行时", "method": "POST",
+                     "path": "/api/agents/jobmaster/playbook/approve"},
+                    {"id": "reject", "label": "驳回（保留 pending）", "method": "POST",
+                     "path": "/api/agents/jobmaster/playbook/reject"},
+                ],
+            })
+    except Exception:
+        pass
+
+    return items
+
+
+# ── POST /api/agents/jobmaster/playbook/approve ───────────────────────
+
+@router.post("/jobmaster/playbook/approve")
+def playbook_approve():
+    import pathlib as _pap
+    pending = _pap.Path(__file__).parent.parent / "data" / "jobmaster_playbook_pending.md"
+    target = _pap.Path(__file__).parent.parent / "data" / "jobmaster_playbook.md"
+    if not pending.exists():
+        raise HTTPException(404, "jobmaster_playbook_pending.md not found")
+    pending.rename(target)
+    _broadcast("playbook_approved", {"path": str(target)})
+    return {"ok": True, "path": str(target)}
+
+
+# ── POST /api/agents/jobmaster/playbook/reject ────────────────────────
+
+@router.post("/jobmaster/playbook/reject")
+def playbook_reject():
+    import pathlib as _prj
+    pending = _prj.Path(__file__).parent.parent / "data" / "jobmaster_playbook_pending.md"
+    if not pending.exists():
+        raise HTTPException(404, "jobmaster_playbook_pending.md not found")
+    pending.unlink()
+    _broadcast("playbook_rejected", {})
+    return {"ok": True}
+
+
+# ── GET /api/agents/jobmaster/llm-health ─────────────────────────────
+
+@router.get("/jobmaster/llm-health")
+def jobmaster_llm_health():
+    return check_local_llm()
+
+
+# ── POST /api/agents/jobmaster/local-model/start ─────────────────────
+
+@router.post("/jobmaster/local-model/start")
+def local_model_start():
+    if is_qcl():
+        return proxy_to_peer("/api/agents/jobmaster/local-model/start")
+    if not _PLIST.exists():
+        raise HTTPException(404, "launchd plist not found")
+    _set_transition("start")
+    r = subprocess.run(["launchctl", "kickstart", "-k", _gui_target()],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        subprocess.run(["launchctl", "load", "-w", str(_PLIST)], check=False)
+    return {"ok": True, "action": "start"}
+
+
+# ── POST /api/agents/jobmaster/local-model/stop ──────────────────────
+
+@router.post("/jobmaster/local-model/stop")
+def local_model_stop():
+    if is_qcl():
+        return proxy_to_peer("/api/agents/jobmaster/local-model/stop")
+    _set_transition("stop")
+    subprocess.run(["launchctl", "bootout", _gui_target()], check=False)
+    subprocess.run(f"lsof -ti:{_LOCAL_MODEL_PORT} | xargs kill -9 2>/dev/null",
+                   shell=True, check=False)
+    return {"ok": True, "action": "stop"}
+
+
+# ── GET /api/agents/jobmaster/local-model/stats ──────────────────────
+
+@router.get("/jobmaster/local-model/stats")
+def local_model_stats():
+    if is_qcl():
+        return proxy_to_peer("/api/agents/jobmaster/local-model/stats", method="GET")
+    import psutil
+    pid = None
+    try:
+        out = subprocess.run(["lsof", "-ti", f":{_LOCAL_MODEL_PORT}"],
+                             capture_output=True, text=True, timeout=2)
+        line = out.stdout.strip().splitlines()[0] if out.stdout.strip() else ""
+        pid = int(line) if line else None
+    except Exception:
+        pid = None
+    proc_info = None
+    if pid:
+        try:
+            p = psutil.Process(pid)
+            with p.oneshot():
+                proc_info = {
+                    "pid": pid,
+                    "cpu_percent": p.cpu_percent(interval=0.3),
+                    "rss_mb": round(p.memory_info().rss / 1024 / 1024, 1),
+                    "vms_mb": round(p.memory_info().vms / 1024 / 1024, 1),
+                    "running_seconds": int(time.time() - p.create_time()),
+                    "num_threads": p.num_threads(),
+                }
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            proc_info = None
+    vm = psutil.virtual_memory()
+    sm = psutil.swap_memory()
+    running = proc_info is not None
+    transition = _resolve_transition_against_state(running)
+    return {
+        "running": running,
+        "process": proc_info,
+        "system_mem": {
+            "total_mb": round(vm.total / 1e6, 0),
+            "used_mb": round(vm.used / 1e6, 0),
+            "percent": vm.percent,
+        },
+        "system_swap": {
+            "total_mb": round(sm.total / 1e6, 0),
+            "used_mb": round(sm.used / 1e6, 0),
+            "percent": sm.percent,
+        },
+        "transition": transition,
+        "ts": time.time(),
+    }
+
+
+# ── GET /api/agents/jobmaster/pending ────────────────────────────────
+
+@router.get("/jobmaster/pending")
+def jobmaster_pending():
+    return get_pending_decisions()
+
+
+# ── POST /api/agents/jobmaster/pending/{id}/resolve ──────────────────
+
+class ResolveBody(BaseModel):
+    choice: str   # "A", "B", "C", "skip", or "custom"
+    note: str = ""
+
+@router.post("/jobmaster/pending/{decision_id}/resolve")
+def jobmaster_resolve(decision_id: str, body: ResolveBody):
+    if body.choice not in ("A", "B", "C", "skip", "custom"):
+        raise HTTPException(400, "choice must be A, B, C, skip, or custom")
+    if body.choice == "custom" and not (body.note or "").strip():
+        raise HTTPException(400, "custom choice requires a non-empty note")
+    ok = resolve_pending_decision(decision_id, body.choice, body.note)
+    if not ok:
+        raise HTTPException(404, f"decision not found: {decision_id}")
+    return {"ok": True, "decision_id": decision_id, "choice": body.choice}
+
+
+# ── POST /api/agents/jobmaster/pending/{id}/enqueue ──────────────────
+
+@router.post("/jobmaster/pending/{decision_id}/enqueue", status_code=202)
+def jobmaster_enqueue(decision_id: str):
+    """将决策加入 JobMaster 编排队列，由 JobMaster 在闲时自动执行（自动判断本地模型状态）。"""
+    ok = enqueue_pending_decision(decision_id)
+    if not ok:
+        raise HTTPException(404, f"decision not found: {decision_id}")
+    return {"ok": True, "decision_id": decision_id, "status": "queued"}
+
+
+# ── GET /api/agents/schedules ─────────────────────────────────────────
+
+@router.get("/schedules")
+def list_schedules():
+    return get_schedule_summary()
+
+
+# ── GET /api/agents/schedules/{id}/tasks ─────────────────────────────
+
+@router.get("/schedules/{schedule_id}/tasks")
+def schedule_tasks(
+    schedule_id: str,
+    limit: int = Query(30, ge=1, le=100),
+    days: int = Query(30, ge=1, le=365),
+):
+    store = AgentTaskStore.get_instance()
+    tasks = store.list_by_schedule(schedule_id, limit=limit, days=days)
+    return [_task_to_dict(t) for t in tasks]
+
+
+# ── GET /api/agents/tasks ────────────────────────────────────────────
+
+def _add_host_badge(tasks: list, host_label: str) -> list:
+    for t in tasks:
+        t["host"] = host_label
+    return tasks
+
+
+@router.get("/tasks")
+def list_tasks(
+    agent: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    since: Optional[str] = Query(None),
+    host: Optional[str] = Query(None),  # mini | qcl | all
+):
+    target = (host or HOST).lower()
+
+    if target == "all":
+        store = AgentTaskStore.get_instance()
+        local = _add_host_badge(
+            [_task_to_dict(t) for t in store.list_recent(agent_name=agent, status=status, limit=limit, since=since)],
+            HOST,
+        )
+        try:
+            peer_tasks = proxy_to_peer(
+                f"/api/agents/tasks?limit={limit}" + (f"&agent={agent}" if agent else "") + (f"&status={status}" if status else ""),
+                method="GET",
+            )
+            peer_label = "mini" if is_qcl() else "qcl"
+            peer_tasks = _add_host_badge(peer_tasks if isinstance(peer_tasks, list) else [], peer_label)
+        except HTTPException:
+            peer_tasks = []
+        merged = sorted(local + peer_tasks, key=lambda x: x.get("started_at") or "", reverse=True)
+        return merged[:limit]
+
+    if target != HOST:
+        try:
+            peer = proxy_to_peer(
+                f"/api/agents/tasks?limit={limit}" + (f"&agent={agent}" if agent else "") + (f"&status={status}" if status else ""),
+                method="GET",
+            )
+            peer_label = target
+            return _add_host_badge(peer if isinstance(peer, list) else [], peer_label)
+        except HTTPException as exc:
+            raise exc
+
+    store = AgentTaskStore.get_instance()
+    if agent or status:
+        # 有过滤条件时走精确查询
+        tasks = store.list_recent(agent_name=agent, status=status, limit=limit, since=since)
+    else:
+        # 无过滤时用 diverse 查询，每 agent 最多 15 条，防止 claude CLI 独占视图
+        tasks = store.list_recent_diverse(limit=limit * 2, since=since, limit_per_agent=15)
+    return _add_host_badge([_task_to_dict(t) for t in tasks], HOST)
+
+
+# ── GET /api/agents/tasks/{id} ───────────────────────────────────────
+
+@router.get("/tasks/{task_id}")
+def get_task(task_id: str):
+    store = AgentTaskStore.get_instance()
+    task = store.get(task_id)
+    if not task:
+        raise HTTPException(404, f"task not found: {task_id}")
+    d = _task_to_dict(task, include_detail=True)
+    def _child_dict(c):
+        cd = _task_to_dict(c, include_detail=True)
+        cd.pop("log_tail", None)
+        cd.pop("payload_json", None)
+        return cd
+    d["children"] = [_child_dict(c) for c in store.list_children(task_id)]
+    d["messages"] = store.get_messages(task_id)
+    return d
+
+
+# ── POST /api/agents/tasks/{id}/cancel ──────────────────────────────
+
+@router.post("/tasks/{task_id}/cancel")
+def cancel_task(task_id: str):
+    store = AgentTaskStore.get_instance()
+    task = store.get(task_id)
+    if not task:
+        raise HTTPException(404, f"task not found: {task_id}")
+    ok = store.cancel(task_id)
+    if not ok:
+        raise HTTPException(409, f"task already terminal: {task.status.value}")
+    updated = store.get(task_id)
+    _broadcast("task_updated", _task_to_dict(updated))
+    return {"ok": True}
+
+
+# ── POST /api/agents/tasks/{id}/approve ─────────────────────────────
+
+class ApproveBody(BaseModel):
+    comment: str = ""
+
+@router.post("/tasks/{task_id}/approve")
+def approve_task(task_id: str, body: ApproveBody = ApproveBody()):
+    store = AgentTaskStore.get_instance()
+    task = store.get(task_id)
+    if not task:
+        raise HTTPException(404, f"task not found: {task_id}")
+    terminal = {AgentStatus.SUCCEEDED, AgentStatus.FAILED, AgentStatus.CANCELLED}
+    if task.status in terminal:
+        raise HTTPException(409, f"task already terminal: {task.status.value}")
+    store.update_status(task_id, AgentStatus.RUNNING)
+    comment = body.comment or "已批准，等待执行"
+    store.append_message(task_id, "system", comment)
+    updated = store.get(task_id)
+    _broadcast("task_updated", _task_to_dict(updated))
+
+    # 若 agent 覆盖了 run_task，后台线程中派工（team_dispatch 协调任务除外）
+    try:
+        from agents.registry import AgentRegistry
+        import json as _json
+        _src = task.trigger_src or ""
+        _is_team_dispatch = _src.startswith("team_dispatch:") or _src.startswith("hook:")
+        reg = AgentRegistry.get_instance()
+        agent = reg.get(task.agent_name)
+        BaseAgent = __import__("agents.base", fromlist=["BaseAgent"]).BaseAgent
+        if agent and not _is_team_dispatch and type(agent).run_task is not BaseAgent.run_task:
+            import threading
+            from datetime import datetime as _dt
+            _tid = task_id
+
+            def _exec():
+                try:
+                    result = agent.run_task(store.get(_tid))
+                    store.update_status(
+                        _tid, AgentStatus.SUCCEEDED,
+                        finished_at=_dt.utcnow(),
+                        result_json=_json.dumps(result or {}, ensure_ascii=False, default=str),
+                        progress=100,
+                    )
+                except Exception as exc:
+                    store.update_status(
+                        _tid, AgentStatus.FAILED,
+                        finished_at=_dt.utcnow(),
+                        result_json=_json.dumps({"error": str(exc)}, ensure_ascii=False),
+                    )
+                    store.append_log(_tid, f"ERROR: {exc}")
+                finally:
+                    _broadcast("task_updated", _task_to_dict(store.get(_tid)))
+
+            threading.Thread(target=_exec, daemon=True).start()
+    except Exception:
+        pass
+
+    return {"ok": True, "status": AgentStatus.RUNNING.value, "agent": task.agent_name}
+
+
+# ── POST /api/agents/tasks/{id}/reject ──────────────────────────────
+
+class RejectBody(BaseModel):
+    reason: str = ""
+
+@router.post("/tasks/{task_id}/reject")
+def reject_task(task_id: str, body: RejectBody = RejectBody()):
+    store = AgentTaskStore.get_instance()
+    task = store.get(task_id)
+    if not task:
+        raise HTTPException(404, f"task not found: {task_id}")
+    terminal = {AgentStatus.SUCCEEDED, AgentStatus.FAILED, AgentStatus.CANCELLED}
+    if task.status in terminal:
+        raise HTTPException(409, f"task already terminal: {task.status.value}")
+    store.update_status(task_id, AgentStatus.CANCELLED)
+    if body.reason:
+        store.append_message(task_id, "system", f"已驳回：{body.reason}")
+    updated = store.get(task_id)
+    _broadcast("task_updated", _task_to_dict(updated))
+    return {"ok": True, "status": AgentStatus.CANCELLED.value}
+
+
+# ── GET /api/agents/tasks/{id}/messages ─────────────────────────────
+
+@router.get("/tasks/{task_id}/messages")
+def get_task_messages(task_id: str, since: str = None):
+    store = AgentTaskStore.get_instance()
+    task = store.get(task_id)
+    if not task:
+        raise HTTPException(404, f"task not found: {task_id}")
+    msgs = store.get_messages(task_id)
+    if since:
+        msgs = [m for m in msgs if m.get("ts", "") > since]
+    return {"messages": msgs, "task_id": task_id, "status": task.status.value}
+
+
+# ── POST /api/agents/tasks/{id}/chat ────────────────────────────────
+
+class ChatBody(BaseModel):
+    text: str = ""
+    intent: str = "comment"  # comment | adjust | confirm | reject
+
+@router.post("/tasks/{task_id}/chat")
+def chat_task(task_id: str, body: ChatBody):
+    store = AgentTaskStore.get_instance()
+    task = store.get(task_id)
+    if not task:
+        raise HTTPException(404, f"task not found: {task_id}")
+    txt = (body.text or "").strip()
+    intent = body.intent or "comment"
+
+    terminal = {AgentStatus.SUCCEEDED, AgentStatus.FAILED, AgentStatus.CANCELLED}
+
+    # intent shortcuts
+    if intent == "confirm":
+        if task.status not in terminal:
+            store.update_status(task_id, AgentStatus.RUNNING)
+            store.append_message(task_id, "system", f"已确认{('：' + txt) if txt else ''}")
+        _broadcast("task_updated", _task_to_dict(store.get(task_id)))
+        return {"messages": store.get_messages(task_id)}
+
+    if intent == "reject":
+        if task.status not in terminal:
+            store.update_status(task_id, AgentStatus.CANCELLED)
+            store.append_message(task_id, "system", f"已驳回{('：' + txt) if txt else ''}")
+        _broadcast("task_updated", _task_to_dict(store.get(task_id)))
+        return {"messages": store.get_messages(task_id)}
+
+    if not txt:
+        raise HTTPException(400, "text is empty")
+
+    store.append_message(task_id, "user", txt)
+
+    if intent == "adjust" and task.status not in terminal:
+        # 记录到 payload_json.adjustments[]
+        try:
+            import json as _json
+            payload = _json.loads(task.payload_json or "{}")
+            adjustments = payload.get("adjustments", [])
+            adjustments.append({"text": txt, "ts": datetime.utcnow().isoformat()})
+            payload["adjustments"] = adjustments
+            with store._write_lock, store._connect() as conn:
+                conn.execute(
+                    "UPDATE agent_tasks SET payload_json=? WHERE id=?",
+                    (_json.dumps(payload, ensure_ascii=False), task_id),
+                )
+        except Exception:
+            pass
+        store.append_message(task_id, "system", "调整指令已记录，等待 agent 处理")
+    elif task.status in terminal:
+        store.append_message(task_id, "agent", f"任务已结束（{task.status.value}），消息已记录。")
+
+    msgs = store.get_messages(task_id)
+    _broadcast("task_updated", {"id": task_id, "messages_updated": True})
+    return {"messages": msgs}
+
+
+# ── POST /api/agents/alert (broadcast system_alert to all SSE clients) ──
+
+class AlertBody(BaseModel):
+    title: str
+    body: str = ""
+    level: str = "warning"   # "warning" | "critical" | "info"
+    kind: str = "system_alert"
+
+@router.post("/alert", status_code=200)
+def broadcast_alert(req: AlertBody):
+    """供 JobMaster / 后端内部调用：向所有在线页面推送 system_alert SSE 事件
+    同时在 agent_tasks 里写一行便于 agents.html 追溯。"""
+    _broadcast("system_alert", {
+        "kind": req.kind,
+        "title": req.title,
+        "body": req.body,
+        "level": req.level,
+    })
+    return {"ok": True, "subscribers": len(_sse_subscribers)}
+
+
+# ── GET /api/agents/stream (SSE) — must be registered before /{name} ──
+
+@router.get("/stream")
+async def sse_stream(request: Request):
+    queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+    _sse_subscribers.append(queue)
+
+    async def event_gen():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    msg = queue.get_nowait()
+                    yield {"event": msg["event"], "data": msg["data"]}
+                except asyncio.QueueEmpty:
+                    yield {"event": "ping", "data": "{}"}
+                    await asyncio.sleep(20)
+        finally:
+            try:
+                _sse_subscribers.remove(queue)
+            except ValueError:
+                pass
+
+    return EventSourceResponse(
+        event_gen(),
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
+
+
+# ── GET /api/agents/registry ────────────────────────────────────────
+
+@router.get("/registry")
+async def get_agents_registry(request: Request):
+    """返回已注册 agent 列表，供 Pipeline Drawer agent 下拉使用。"""
+    from agents.registry import AgentRegistry
+    registry = AgentRegistry.get_instance()
+    result = []
+    for agent in registry.list():
+        entry = {
+            "name": agent.name,
+            "description": getattr(agent, "description", "") or "",
+            "hidden": getattr(agent, "hidden", False),
+        }
+        try:
+            from agents.identity_schema import load_identity
+            identity = load_identity(agent.name)
+            if identity:
+                entry["default_nickname"] = identity.default_nickname
+                entry["llm_feature_key"] = identity.llm_feature_key
+        except Exception:
+            pass
+        result.append(entry)
+    return {"agents": result}
+
+
+# ── GET /api/agents/{name} ───────────────────────────────────────────
+
+@router.get("/{name}")
+def get_agent(name: str, request: Request):
+    reg = AgentRegistry.get_instance()
+    agent = reg.get(name)
+    if not agent:
+        raise HTTPException(404, f"agent not found: {name}")
+    user_id = getattr(request.state, "current_user", {}) or {}
+    uid = user_id.get("id") if isinstance(user_id, dict) else None
+    summary = reg.build_agent_summary(name, user_id=uid)
+    store = AgentTaskStore.get_instance()
+    summary["recent_tasks"] = [
+        _task_to_dict(t) for t in store.list_recent(agent_name=name, limit=20)
+    ]
+    return summary
+
+
+# ── POST /api/agents/{name}/trigger ─────────────────────────────────
+
+class TriggerBody(BaseModel):
+    title: Optional[str] = None
+    payload: Optional[dict] = None
+    force: bool = False
+
+
+@router.post("/{name}/trigger", status_code=202)
+def trigger_agent(name: str, body: TriggerBody = TriggerBody()):
+    reg = AgentRegistry.get_instance()
+    agent = reg.get(name)
+    if not agent:
+        raise HTTPException(404, f"agent not found: {name}")
+
+    # OMC subagent：必须通过父 agent authorize_subagent()，不允许直接 dispatch
+    try:
+        from agents.identity_schema import load_identity
+        identity = load_identity(name)
+        if identity and identity.kind == "omc_subagent":
+            parent_name = identity.parent_agent
+            parent = reg.get(parent_name)
+            if not parent:
+                raise HTTPException(503, detail={
+                    "detail": f"父 agent '{parent_name}' 未注册，无法授权 {name}",
+                    "status": "rejected",
+                })
+            from agents.parent_mixin import ParentAgentMixin
+            if not isinstance(parent, ParentAgentMixin):
+                raise HTTPException(503, detail={
+                    "detail": f"父 agent '{parent_name}' 未实现授权协议",
+                    "status": "rejected",
+                })
+            result = parent.authorize_subagent(
+                child_name=name,
+                payload={"title": body.title, **(body.payload or {})},
+                requester="api:manual",
+            )
+            _broadcast("task_created", {"type": "omc_authorized", "child": name, "parent": parent_name})
+            return result
+    except HTTPException:
+        raise
+    except Exception as _e:
+        import logging as _log
+        _log.getLogger(__name__).warning(f"[trigger] identity check failed for {name}: {_e}")
+
+    store = AgentTaskStore.get_instance()
+    running_id = store.get_running_task_id(name)
+    if running_id and not body.force:
+        raise HTTPException(409, detail={
+            "detail": "agent busy",
+            "running_task_id": running_id,
+        })
+
+    import json as _json
+    task = AgentTask.new(
+        agent_name=name,
+        title=body.title or f"手动触发 {agent.display_name}",
+        trigger_src="api:manual",
+        payload_json=_json.dumps(body.payload or {}, ensure_ascii=False),
+    )
+    store.insert(task)
+    _broadcast("task_created", _task_to_dict(task))
+
+    # 若 Agent 覆盖了 run_task，后台线程中执行主体逻辑
+    if type(agent).run_task is not __import__("agents.base", fromlist=["BaseAgent"]).BaseAgent.run_task:
+        import threading
+        from datetime import datetime as _dt
+        _tid = task.id
+
+        def _exec():
+            store.update_status(_tid, AgentStatus.RUNNING, started_at=_dt.utcnow())
+            _broadcast("task_updated", _task_to_dict(store.get(_tid)))
+            try:
+                result = agent.run_task(store.get(_tid))
+                store.update_status(
+                    _tid, AgentStatus.SUCCEEDED,
+                    finished_at=_dt.utcnow(),
+                    result_json=_json.dumps(result or {}, ensure_ascii=False, default=str),
+                    progress=100,
+                )
+            except Exception as exc:
+                store.update_status(
+                    _tid, AgentStatus.FAILED,
+                    finished_at=_dt.utcnow(),
+                    result_json=_json.dumps({"error": str(exc)}, ensure_ascii=False),
+                )
+                store.append_log(_tid, f"ERROR: {exc}")
+            _broadcast("task_updated", _task_to_dict(store.get(_tid)))
+
+        threading.Thread(target=_exec, daemon=True).start()
+
+    return {"task_id": task.id}
+
+
+# ─── Agent 记忆与配置治理端点 ────────────────────────────────────────────────
+
+class _IdentityPatch(BaseModel):
+    """PUT /{name}/identity 请求体 — 仅允许覆盖以下字段（内存级，重启丢失）"""
+    personality: Optional[str] = None
+    behavioral_guidelines: Optional[list] = None
+    memory_write_trigger: Optional[str] = None
+
+
+@router.get("/{name}/identity", summary="读取 agent L5 身份配置")
+def get_agent_identity(name: str):
+    """返回 agents/identity/{name}.yaml 内容（含运行时覆盖字段）。"""
+    reg = AgentRegistry.get_instance()
+    agent = reg.get(name)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' 不存在")
+    identity = agent.get_identity()
+    if not identity:
+        raise HTTPException(status_code=404, detail=f"agents/identity/{name}.yaml 不存在")
+    return {"agent": name, "identity": identity, "has_override": bool(getattr(agent, "_identity_override", {}))}
+
+
+@router.get("/{name}/memory-summary", summary="读取 agent L2/L3 记忆健康度")
+def get_agent_memory_summary(name: str):
+    """返回 L2 近期任务数 + L3 private/shared 记忆数 + L5 校验状态。"""
+    reg = AgentRegistry.get_instance()
+    agent = reg.get(name)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' 不存在")
+    try:
+        summary = agent.memory_summary()
+        return summary
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put(
+    "/{name}/identity",
+    summary="临时覆盖 agent L5 身份配置（内存级，重启丢失）",
+    dependencies=[Depends(require_admin_user)],
+)
+def patch_agent_identity(name: str, patch: _IdentityPatch):
+    """
+    运行时临时调整 personality / behavioral_guidelines / memory_write_trigger。
+    更改仅存于内存，重启后回到 YAML 原值。
+    永久修改请直接编辑 agents/identity/{name}.yaml 并重启后端。
+    """
+    reg = AgentRegistry.get_instance()
+    agent = reg.get(name)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' 不存在")
+
+    override: dict = {}
+    if patch.personality is not None:
+        override["personality"] = patch.personality
+    if patch.behavioral_guidelines is not None:
+        override["behavioral_guidelines"] = patch.behavioral_guidelines
+    if patch.memory_write_trigger is not None:
+        override["memory_write_trigger"] = patch.memory_write_trigger
+
+    if not override:
+        raise HTTPException(status_code=422, detail="未提供任何可覆盖字段")
+
+    agent._identity_override = {**getattr(agent, "_identity_override", {}), **override}
+
+    import logging
+    logging.getLogger(__name__).info(
+        f"[IdentityPatch] {name} 覆盖字段: {list(override.keys())}"
+    )
+    return {
+        "applied": True,
+        "agent": name,
+        "overridden_fields": list(override.keys()),
+        "persistent": False,
+        "expires_on_restart": True,
+    }
+
+
+@router.post(
+    "/{name}/memory/clear",
+    summary="清空 agent L3 私有记忆（admin，事故降级工具）",
+    dependencies=[Depends(require_admin_user)],
+)
+def clear_agent_memory(name: str, scope: str = "private"):
+    """
+    清空指定 scope 记忆。scope=shared 需走 CLI 双确认，此端点拒绝 shared 清理。
+    """
+    if scope == "shared":
+        raise HTTPException(
+            status_code=403,
+            detail="shared scope 清理需走 CLI: agent_memory_cli.py clear <agent> --scope shared --confirm-twice",
+        )
+    reg = AgentRegistry.get_instance()
+    if not reg.get(name):
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' 不存在")
+    try:
+        from services.memory_service import MemoryService
+        removed = MemoryService.get_instance().clear_scope(f"agent:{name}")
+        return {"agent": name, "scope": scope, "cleared": removed}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── 用户级 nickname 管理（所有登录用户可用）────────────────────────────
+
+user_router = APIRouter(
+    prefix="/api/agents",
+    tags=["agents"],
+    dependencies=[Depends(require_authenticated_user)],
+)
+
+
+class NicknameBody(BaseModel):
+    nickname: str
+
+
+@user_router.put("/{code}/nickname", summary="设置当前用户对某 agent 的昵称")
+def set_nickname(code: str, body: NicknameBody, request: Request):
+    reg = AgentRegistry.get_instance()
+    if not reg.get(code):
+        raise HTTPException(404, f"agent not found: {code}")
+    user = getattr(request.state, "current_user", None) or {}
+    uid = user.get("id") if isinstance(user, dict) else None
+    if not uid:
+        raise HTTPException(401, "未登录")
+    try:
+        from auth_service import get_auth_service
+        get_auth_service().set_user_nickname(uid, code, body.nickname)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "code": code, "nickname": body.nickname}
+
+
+@user_router.delete("/{code}/nickname", summary="恢复某 agent 默认昵称")
+def delete_nickname(code: str, request: Request):
+    reg = AgentRegistry.get_instance()
+    if not reg.get(code):
+        raise HTTPException(404, f"agent not found: {code}")
+    user = getattr(request.state, "current_user", None) or {}
+    uid = user.get("id") if isinstance(user, dict) else None
+    if not uid:
+        raise HTTPException(401, "未登录")
+    from auth_service import get_auth_service
+    get_auth_service().delete_user_nickname(uid, code)
+    return {"ok": True, "code": code, "nickname": "restored_to_default"}
+
