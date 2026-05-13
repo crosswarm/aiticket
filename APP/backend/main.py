@@ -910,6 +910,8 @@ class CreateUserRequest(BaseModel):
     password: str
     display_name: str
     role: str = "member"
+    current_project: Optional[str] = None
+    project_modules: Optional[dict] = None
 
 
 class JiraBindingUpdateRequest(BaseModel):
@@ -1191,9 +1193,23 @@ def create_admin_user(payload: CreateUserRequest, request: Request):
         payload.display_name,
         role=payload.role,
         created_by=admin["id"],
+        project_modules=payload.project_modules,
     )
+    if payload.current_project:
+        auth_service.update_current_project(user["id"], payload.current_project.strip().upper())
+        user["current_project"] = payload.current_project.strip().upper()
     auth_service.log_audit(admin["id"], "create_user", "user", user["id"], {"role": user["role"]})
     return {"status": "success", "user": user}
+
+
+@app.patch("/api/admin/users/{user_id}")
+def update_admin_user(user_id: str, payload: dict, request: Request):
+    require_admin_user(request)
+    if "project_modules" in payload and isinstance(payload["project_modules"], dict):
+        auth_service.update_user_modules(user_id, payload["project_modules"])
+    if "current_project" in payload and payload["current_project"]:
+        auth_service.update_current_project(user_id, str(payload["current_project"]).strip().upper())
+    return {"status": "ok"}
 
 
 @app.post("/api/admin/reset-demo")
