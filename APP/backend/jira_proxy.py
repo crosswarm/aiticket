@@ -346,7 +346,10 @@ def _load_browser_session_cookies(user_id: Optional[str] = None) -> dict:
     if user_id:
         safe = _re.sub(r"[^A-Za-z0-9._-]+", "_", user_id)
         paths.append(f"/tmp/jira-session-{safe}.json")
-    paths.append("/tmp/jira-session.json")
+    # strict 模式不允许回落到全局 session（qiangxiao），仅用 per-user session
+    from role_guard import is_strict_role
+    if not is_strict_role():
+        paths.append("/tmp/jira-session.json")
 
     for state_path in paths:
         if not os.path.exists(state_path):
@@ -701,6 +704,9 @@ def transparent_proxy(subpath):
             logger.info(f"[session-iso] {request.path} → USER session (JSESSIONID={incoming['JSESSIONID'][:8]}...), Authorization removed")
         else:
             # 请求方未带 session（如 Mini 本地 fallback），回退到 jira_service 本地 cookies
+            from role_guard import is_strict_role
+            if is_strict_role():
+                return jsonify(error_response('NO_USER_SESSION', '匿名 Jira 代理在 strict 模式下被拒绝')), 401
             forward_cookies = jira_service.cookies
             logger.info(f"[session-iso] {request.path} → FALLBACK to Mini local (incoming cookies: {list(request.cookies.keys())})")
 

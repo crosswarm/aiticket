@@ -163,6 +163,15 @@ async def validation_exception_handler(request, exc):
         }
     )
 
+from role_guard import NoUserContextError, is_strict_role
+
+@app.exception_handler(NoUserContextError)
+async def _no_user_ctx_handler(request: Request, exc: NoUserContextError):
+    return JSONResponse(
+        {"detail": str(exc), "code": "NO_USER_CONTEXT", "where": exc.where},
+        status_code=401,
+    )
+
 # Enable CORS for Frontend
 app.add_middleware(
     CORSMiddleware,
@@ -342,6 +351,9 @@ def build_request_jira_client(request: Request, require_binding: bool = True) ->
 
     # demo 用户：无需个人 Jira 绑定，使用服务器默认凭据（只读）
     if user and user.get("is_demo"):
+        if is_strict_role():
+            request.state.jira_client = None
+            return None
         jira_client = JiraService(base_url=_resolve_jira_base_url())
         request.state.jira_client = jira_client
         return jira_client
@@ -351,7 +363,10 @@ def build_request_jira_client(request: Request, require_binding: bool = True) ->
         request.state.jira_client = None
         return None
 
-    # 未登录（公开 API 等场景）：回退到默认 Jira 配置
+    # 未登录（公开 API 等场景）：strict 模式拒绝匿名访问
+    if is_strict_role():
+        request.state.jira_client = None
+        return None
     jira_client = JiraService(base_url=_resolve_jira_base_url())
     request.state.jira_client = jira_client
     return jira_client
@@ -3025,7 +3040,7 @@ def get_board_meta(request: Request):
                 pass
         projects = fallback_projects
         print(f"[board/meta] Jira不可达，使用回退项目列表: {[p['key'] for p in projects]}")
-    if not current_user:
+    if not current_user and not is_strict_role():
         current_user = {"name": "qiangxiao", "displayName": "强骁"}
     return {"projects": projects, "current_user": current_user}
 

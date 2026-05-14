@@ -313,6 +313,7 @@ def _resolve_pm_user(request: Request) -> str | None:
 
 def _svc(module_key: str, request: Request):
     """获取 PMModuleService 并注入当前用户（用于钱包路由）。"""
+    from role_guard import is_strict_role, NoUserContextError
     svc = get_pm_module_service(module_key)
     svc.current_pm_user = _resolve_pm_user(request)
     return svc
