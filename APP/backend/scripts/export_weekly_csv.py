@@ -24,6 +24,16 @@ SRC_DIR = PROJECT_ROOT / "src"
 SRC_DIR.mkdir(parents=True, exist_ok=True)
 
 sys.path.insert(0, str(BACKEND_DIR))
+
+# strict 模式（QCL/deployable）禁用周报脚本；改为前端在线触发
+try:
+    from role_guard import is_strict_role
+    if is_strict_role():
+        print("[export_weekly_csv] strict 模式（QCL/deployable），周报脚本已禁用，直接退出")
+        sys.exit(0)
+except ImportError:
+    pass
+
 from jira_service import JiraService
 from analysis import PROJECT_DISPLAY_NAMES
 
