@@ -13,7 +13,7 @@ STRICT_ROLES = {"qcl", "deployable"}
 
 
 def is_strict_role() -> bool:
-    return os.environ.get("AITICKET_ROLE", "mini").lower() in STRICT_ROLES
+    return os.environ.get("AITICKET_ROLE", "deployable").lower() in STRICT_ROLES
 
 
 class NoUserContextError(Exception):

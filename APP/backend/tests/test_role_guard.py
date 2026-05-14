@@ -22,10 +22,10 @@ def _reload_modules(*names):
 # ---------------------------------------------------------------------------
 
 class TestIsStrictRole:
-    def test_no_env_is_mini(self, monkeypatch):
+    def test_no_env_is_strict(self, monkeypatch):
         monkeypatch.delenv("AITICKET_ROLE", raising=False)
         from role_guard import is_strict_role
-        assert is_strict_role() is False
+        assert is_strict_role() is True  # default=deployable (strict-by-default)
 
     def test_mini_explicit(self, monkeypatch):
         monkeypatch.setenv("AITICKET_ROLE", "mini")
@@ -69,7 +69,7 @@ class TestJiraServiceStrictMode:
         assert svc._no_default_creds is False
 
     def test_mini_no_creds_not_blocked(self, monkeypatch):
-        monkeypatch.delenv("AITICKET_ROLE", raising=False)
+        monkeypatch.setenv("AITICKET_ROLE", "mini")
         from jira_service import JiraService
         from role_guard import NoUserContextError
         svc = JiraService()
@@ -99,7 +99,7 @@ class TestPMWalletStrictMode:
             _wm.get_effective_cookies("someuser")
 
     def test_unbound_user_mini_returns_empty(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("AITICKET_ROLE", raising=False)
+        monkeypatch.setenv("AITICKET_ROLE", "mini")
         import services.pm_wallet_service as _wm
         monkeypatch.setattr(_wm, "WALLET_DIR", tmp_path / "pm_tokens")
         monkeypatch.setattr(_wm, "DEFAULT_TOKEN_PATH", tmp_path / "pm_token.json")
