@@ -7,9 +7,10 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from typing import Optional
-from fastapi import APIRouter, Request, HTTPException
+from typing import List, Optional
+from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel
+from auth_deps import require_reply_quota, log_api_request
 
 router = APIRouter(prefix="/api/reply", tags=["reply-module"])
 
@@ -21,8 +22,9 @@ class GenerateByModuleRequest(BaseModel):
 
 
 @router.post("/generate-by-module")
-def generate_by_module(req: GenerateByModuleRequest, raw_request: Request):
+def generate_by_module(req: GenerateByModuleRequest, raw_request: Request, _quota=Depends(require_reply_quota)):
     """按模块生成回复。module 指定时覆盖自动推断；空时走自动推断（同 /api/board/generate-reply）。"""
+    log_api_request(raw_request, _quota, issue_key=req.issue_key)
     try:
         from board_service_chroma import BoardService
         # 获取主服务实例（main.py 已实例化，通过 app.state 或直接 import 全局）
@@ -113,5 +115,78 @@ def module_coverage(module: str, raw_request: Request):
                 else "覆盖不足，建议先通过知识库管理补充该模块文档"
             ),
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── 智能扩展（完善方案）端点 ──────────────────────────────────────────────────
+
+class RefineRequest(BaseModel):
+    issue_key: str
+    user_draft: str
+    focus_keywords: List[str] = []
+    module: Optional[str] = None
+
+
+@router.post("/refine")
+def refine_reply(req: RefineRequest, raw_request: Request, _quota=Depends(require_reply_quota)):
+    """基于用户修订草稿重跑语义搜索，返回精准扩展方案供 Claude 参考。"""
+    log_api_request(raw_request, _quota, issue_key=req.issue_key, query_text=req.user_draft[:200])
+    try:
+        from board_service_chroma import BoardService
+        from kb_runtime_service import KnowledgeRuntimeService
+        import main as _main
+
+        bs = _main.board_service
+
+        ai_analysis = {}
+        try:
+            ai_analysis = bs.vector_store.get_cached_analysis(req.issue_key) or {}
+        except Exception:
+            pass
+
+        query = " ".join([*req.focus_keywords, req.user_draft])[:500]
+        module_cat = req.module or BoardService._resolve_module_category(ai_analysis)
+
+        sim_results = bs.search_engine.search(query, top_k=5, min_score=0.6)
+        sim = sim_results.get("results", []) if isinstance(sim_results, dict) else []
+
+        kb_svc = KnowledgeRuntimeService()
+        kb_raw = kb_svc.search_bundle(query, top_k=6, category=module_cat) or {}
+        kb_evidence = (kb_raw.get("items") or [])[:4]
+
+        ai_aug = {
+            **ai_analysis,
+            "solution_suggestion": req.user_draft,
+            "user_focus_keywords": req.focus_keywords,
+        }
+
+        try:
+            specificity = bs._compute_specificity_level(kb_evidence)
+        except Exception:
+            specificity = "normal"
+
+        refined = bs._generate_styled_reply(
+            ai_aug, sim, [], kb_evidence,
+            module_category=module_cat,
+            specificity_level=specificity,
+        )
+
+        return {
+            "refined_solution": refined,
+            "kb_sources": [i.get("name", "") for i in kb_evidence],
+            "similar_issues": [
+                {
+                    "key": s.get("key", ""),
+                    "summary": (s.get("summary") or "")[:80],
+                    "score": s.get("score"),
+                }
+                for s in sim
+            ],
+            "search_keywords_used": req.focus_keywords + [req.user_draft[:60]],
+            "module_used": module_cat,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

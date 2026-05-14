@@ -19,7 +19,7 @@ for _host in (
         _existing_no_proxy = _bootstrap_os.environ["no_proxy"]
 _bootstrap_os.environ["NO_PROXY"] = _bootstrap_os.environ["no_proxy"]
 
-from fastapi import FastAPI, BackgroundTasks, Body, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi import Depends, FastAPI, BackgroundTasks, Body, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 
 # HTTPException已在上方导入，此处删除重复导入
@@ -51,6 +51,7 @@ from requirements_pool_service import RequirementsPoolService, register_req_pool
 from spec_generation import SpecGenerator
 from crew_service import crew_service
 from auth_service import get_auth_service
+from auth_deps import require_reply_quota, log_api_request
 
 # 网络缓存和监控服务 (三节点架构)
 from jira_cache_service import get_jira_cache_service, JiraCacheService
@@ -887,8 +888,9 @@ class AnalyzeStreamRequest(BaseModel):
 
 class GenerateReplyRequest(BaseModel):
     issue_key: str
-    force: bool = False  # 是否强制重新生成
-    force_pass_gate1: bool = False  # 是否跳过 Gate 1 信息完整性检查
+    force: bool = False
+    force_pass_gate1: bool = False
+    force_pass_gate2: bool = False
 
 
 class BootstrapRequest(BaseModel):
@@ -1107,6 +1109,50 @@ def logout(request: Request):
 def get_current_session_user(request: Request):
     user = require_authenticated_user(request)
     return {"user": user}
+
+
+# ── Skill Device Token 端点（/api/auth 前缀已在 PUBLIC_PREFIXES 内，无需额外白名单）────
+
+class DeviceTokenRequest(BaseModel):
+    username: str
+    password: str
+    client_fingerprint: str
+    label: str = ""
+
+class DeviceVerifyRequest(BaseModel):
+    token: str
+    client_fingerprint: str
+
+class DeviceRevokeRequest(BaseModel):
+    token: str
+    client_fingerprint: str
+
+@app.post("/api/auth/device-token")
+def issue_device_token(req: DeviceTokenRequest):
+    try:
+        token = auth_service.issue_device_token(req.username, req.password, req.client_fingerprint, req.label)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="用户名或密码不正确")
+    with auth_service._connect() as conn:
+        row = conn.execute(
+            """SELECT users.id, users.display_name FROM device_tokens
+               JOIN users ON users.id = device_tokens.user_id
+               WHERE device_tokens.client_fingerprint = ? AND device_tokens.revoked = 0""",
+            (req.client_fingerprint,),
+        ).fetchone()
+    return {"token": token, "user_id": row["id"] if row else "", "display_name": row["display_name"] if row else ""}
+
+@app.post("/api/auth/device-verify")
+def verify_device_token(req: DeviceVerifyRequest):
+    user = auth_service.verify_device_token(req.token, req.client_fingerprint)
+    if not user:
+        return {"ok": False, "user_id": "", "display_name": ""}
+    return {"ok": True, "user_id": user["id"], "display_name": user["display_name"]}
+
+@app.post("/api/auth/device-revoke")
+def revoke_device_token(req: DeviceRevokeRequest):
+    ok = auth_service.revoke_device_token(req.token, req.client_fingerprint)
+    return {"ok": ok}
 
 
 @app.patch("/api/user/settings")
@@ -2413,8 +2459,9 @@ def search_kb(request: Request, q: str, top_k: int = Query(20, description="返�
     return kb_runtime_service.search_bundle(q, top_k=top_k, source_kind=source_kind or None, module_boost=getattr(request.state, "current_modules", []))
 
 @app.post("/api/kb/qa")
-def ask_kb_question(request: KBQuestionRequest):
+def ask_kb_question(request: KBQuestionRequest, raw_request: Request, _quota=Depends(require_reply_quota)):
     """Answer user question from knowledge base"""
+    log_api_request(raw_request, _quota, query_text=request.query)
     llm_runtime = resolve_effective_llm_runtime(
         provider=request.provider,
         api_key=request.api_key or "",
@@ -2945,17 +2992,21 @@ def run_automation_rule(rule_id: str, dry_run: bool = Query(True, description="�
 
 @app.get("/api/board/search")
 def search_similar_issues(
+    background_tasks: BackgroundTasks,
     q: str = Query(..., description="搜索查询"),
     top_k: int = Query(5, description="返回数量"),
     min_score: float = Query(0.6, description="最小相似度")
 ):
     """
     语义搜索相似工单（Chroma优化版）
-    
+
     相比原有/search端点，使用语义向量搜索，结果更准确
     """
     try:
         results = search_engine.search(q, top_k=top_k, min_score=min_score)
+        # 后台入队：对搜索结果工单触发 AI 分析（不阻塞响应）
+        if results:
+            background_tasks.add_task(board_service._auto_submit_analysis, list(results))
         return {
             "status": "success",
             "query": q,
@@ -3126,7 +3177,7 @@ def get_board_assignees(request: Request, project_key: str = Query("MYPROJECT"))
 # --- 工单详情 / Jira移动 / 附件代理 端点 ---
 
 @app.get("/api/board/issue-detail/{issue_key}")
-def get_issue_detail(issue_key: str, request: Request):
+def get_issue_detail(issue_key: str, request: Request, background_tasks: BackgroundTasks):
     """获取工单详情: 附件 + 活动日志(changelog + comments)
 
     会话隔离：必须使用 build_request_jira_client(request) 得到当前用户的
@@ -3184,6 +3235,18 @@ def get_issue_detail(issue_key: str, request: Request):
                 })
 
         labels = data.get("fields", {}).get("labels", []) or []
+        # 后台入队：对当前工单触发 AI 分析（不阻塞响应）
+        _fields = data.get("fields", {})
+        _ticket_dict = {
+            "key": issue_key,
+            "summary": (_fields.get("summary") or "")[:200],
+            "description": (_fields.get("description") or "")[:2000],
+            "status": (_fields.get("status") or {}).get("name", ""),
+            "priority": (_fields.get("priority") or {}).get("name", ""),
+            "assignee": ((_fields.get("assignee") or {}).get("displayName") or ""),
+            "reporter": ((_fields.get("reporter") or {}).get("displayName") or ""),
+        }
+        background_tasks.add_task(board_service._auto_submit_analysis, [_ticket_dict])
         return {
             "status": "success",
             "attachments": attachments,
@@ -4027,8 +4090,9 @@ def trainer_daily_report():
 # --- Smart Reply Endpoints ---
 
 @app.post("/api/board/generate-reply")
-def generate_reply(request: GenerateReplyRequest, raw_request: Request):
+def generate_reply(request: GenerateReplyRequest, raw_request: Request, _quota=Depends(require_reply_quota)):
     """基于AI分析生成智能回复内容"""
+    log_api_request(raw_request, _quota, issue_key=request.issue_key)
     try:
         _cu = get_current_user(raw_request)
         result = board_service.generate_reply_content(
@@ -4037,6 +4101,7 @@ def generate_reply(request: GenerateReplyRequest, raw_request: Request):
             user_id=_cu["id"] if _cu else "",
             project_key=getattr(raw_request.state, "project_key", "") or "",
             force_pass_gate1=request.force_pass_gate1,
+            force_pass_gate2=request.force_pass_gate2,
         )
         if result.get("gate") == "completeness":
             _insuf_type = result.get("insufficient_type", "missing_fields")
@@ -4225,7 +4290,7 @@ def _classify_recommendation_type(issue: dict) -> str:
 
 
 @app.get("/api/board/gate-view-tickets")
-def get_gate_view_tickets(request: Request, hours: int = Query(720, ge=1), include_unscored: bool = True, project_key: str = Query("MYPROJECT"), domain_modules: Optional[str] = Query(None)):
+def get_gate_view_tickets(request: Request, background_tasks: BackgroundTasks, hours: int = Query(720, ge=1), include_unscored: bool = True, project_key: str = Query("MYPROJECT"), domain_modules: Optional[str] = Query(None)):
     """
     闸门看板数据源：将当前可见的 Jira 工单与历史闸门决策缓存融合。
     无决策记录的工单默认归入 manual 列并标记 unscored=True。
@@ -4364,7 +4429,129 @@ def get_gate_view_tickets(request: Request, hours: int = Query(720, ge=1), inclu
     by_key = {k: v for k, v in by_key.items() if k in seen_keys}
 
     grouped["by_key"] = by_key
+    # 后台入队：对本次可见工单触发 AI 分析（不阻塞响应）
+    background_tasks.add_task(board_service._auto_submit_analysis, list(all_issues))
     return grouped
+
+
+class PrecomputeRepliesRequest(BaseModel):
+    project_key: str = "MYPROJECT"
+    modules: list = []
+
+
+_precompute_running: dict = {}  # lock_key → start_timestamp (float)
+
+
+@app.post("/api/board/precompute-replies")
+async def precompute_replies(
+    request_data: PrecomputeRepliesRequest,
+    raw_request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """Fire-and-forget：批量预生成看板工单的智能回复并写入 reply_cache.json。
+    幂等：同一 project+modules 组合同时只允许一个任务在跑。"""
+    lock_key = f"{request_data.project_key}:{','.join(sorted(str(m) for m in request_data.modules))}"
+    import time as _time_pc
+    _lock_started = _precompute_running.get(lock_key)
+    if _lock_started and (_time_pc.time() - _lock_started) < 1800:  # 30 分钟 max-age
+        return {"status": "running", "message": "预计算任务已在运行中"}
+
+    _reply_cache_keys: set = set()
+    try:
+        from reply_cache_service import CACHE_FILE as _rc_file2
+        from datetime import datetime as _dt_pc, timedelta as _td2
+        if os.path.exists(_rc_file2):
+            with open(_rc_file2, "r", encoding="utf-8") as _rcf2:
+                _rc_raw2 = json.load(_rcf2)
+            _now2 = _dt_pc.now()
+            for _rk2, _rv2 in _rc_raw2.items():
+                try:
+                    if _now2 - _dt_pc.fromisoformat(_rv2["timestamp"]) <= _td2(days=7):
+                        if _rv2.get("reply_content"):
+                            _reply_cache_keys.add(_rk2)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    issue_keys: list = []
+    try:
+        jira_client = build_request_jira_client(raw_request, require_binding=False)
+        _gv_mods = list(request_data.modules)
+        board_data = board_service.get_board_data(
+            jira_client=jira_client,
+            project_key=request_data.project_key,
+            domain_modules=_gv_mods,
+        )
+        _ACTIVE_ST = {"待分析"}
+        for col_issues in board_data.values():
+            for iss in col_issues:
+                if not isinstance(iss, dict):
+                    continue
+                k = iss.get("key", "")
+                if not k:
+                    continue
+                if request_data.project_key and not k.startswith(f"{request_data.project_key}-"):
+                    continue
+                cur_st = (iss.get("status") or "").strip()
+                if cur_st and cur_st not in _ACTIVE_ST:
+                    continue
+                if k not in _reply_cache_keys:
+                    issue_keys.append(k)
+    except Exception as _e:
+        print(f"[Precompute] 获取工单列表失败: {_e}")
+
+    already_cached = len(_reply_cache_keys)
+    if not issue_keys:
+        return {"status": "done", "queued": 0, "already_cached": already_cached}
+
+    # 后台入队：对待预计算工单触发 AI 分析（不阻塞响应）
+    _analysis_tickets = [{"key": k} for k in issue_keys]
+    background_tasks.add_task(board_service._auto_submit_analysis, _analysis_tickets)
+
+    import time as _time_pc2
+    _precompute_running[lock_key] = _time_pc2.time()
+
+    def _run_precompute(keys: list, proj_key: str, lk: str):
+        import threading as _th2
+        success = 0
+        failed = 0
+        try:
+            for k in keys[:200]:
+                _result: dict = {}
+                def _worker(_k=k):
+                    try:
+                        _result['data'] = board_service.generate_reply_content(
+                            _k, force=False, user_id="precompute",
+                            project_key=proj_key, force_pass_gate1=True, force_pass_gate2=True,
+                        )
+                    except Exception as _e:
+                        _result['error'] = str(_e)
+                _t = _th2.Thread(target=_worker, daemon=True)
+                _t.start()
+                _t.join(timeout=150)
+                if _t.is_alive():
+                    print(f"[Precompute] {k}: timeout 150s, skipping")
+                    failed += 1
+                elif 'error' in _result:
+                    print(f"[Precompute] {k}: {_result['error']}")
+                    failed += 1
+                else:
+                    success += 1
+        finally:
+            _precompute_running.pop(lk, None)
+            print(f"[Precompute] done lock={lk} success={success} failed={failed}")
+
+    import threading as _threading
+    _threading.Thread(target=_run_precompute, args=(issue_keys, request_data.project_key, lock_key), daemon=True).start()
+
+    from datetime import datetime as _dt_pc2
+    return {
+        "status": "started",
+        "queued": len(issue_keys),
+        "already_cached": already_cached,
+        "started_at": _dt_pc2.now().isoformat(),
+    }
 
 
 @app.get("/api/board/pending-approvals")
@@ -5168,6 +5355,44 @@ def get_field_options_admin(request: Request):
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取缓存失败: {str(e)}")
+
+
+@app.post("/api/jira/session-established")
+async def jira_session_established(
+    background_tasks: BackgroundTasks,
+    project_key: str = Query(default="LCZX"),
+    scope_modules: list[str] = Query(default=[])
+):
+    """Jira 会话建立后触发全量基线扫描（异步，不阻塞响应）"""
+    def _baseline_scan():
+        try:
+            tickets = jira_svc.load_board_cache()
+            ticket_dicts = [
+                {
+                    "key": t.key,
+                    "summary": t.summary or "",
+                    "description": t.description or "",
+                    "status": t.status or "",
+                    "priority": t.priority or "",
+                    "due_date": t.due_date or "",
+                    "domain_module": getattr(t, "domain_module", None),
+                }
+                for t in tickets
+            ]
+            if scope_modules:
+                ticket_dicts = [t for t in ticket_dicts if t.get("domain_module") in scope_modules]
+            # 按 due_date 升序，前30张高优先级
+            ticket_dicts.sort(key=lambda x: x.get("due_date") or "9999-99-99")
+            high_prio = ticket_dicts[:30]
+            rest = ticket_dicts[30:]
+            board_service._auto_submit_analysis(high_prio)
+            board_service._auto_submit_analysis(rest)
+            print(f"[SessionEstablished] 基线扫描: 共 {len(ticket_dicts)} 张工单入队, 高优先级 {len(high_prio)} 张")
+        except Exception as e:
+            print(f"[SessionEstablished] 基线扫描失败: {e}")
+
+    background_tasks.add_task(_baseline_scan)
+    return {"baseline_started": True, "message": "基线扫描已在后台启动"}
 
 
 # --- Reply Training Endpoints (回复训练器) ---
