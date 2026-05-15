@@ -1,0 +1,123 @@
+[
+  {
+    "category": "functional",
+    "description": "Layer1-1: KBLocalBuilder 增加 _scan_orphans_in_converted，扫描 KB/OUTPUT/converted/**/*.md 自动补 manifest 缺失 content_id",
+    "steps": [
+      "改 APP/backend/kb_local_builder.py 增加孤儿扫描分支",
+      "运行 python -c 从根目录调用 KBLocalBuilder().build()",
+      "断言 KB/INDEX/manifest.json 含至少 30 条 公式/ 下条目（grep 公式 | wc -l >= 30）"
+    ],
+    "passes": true
+  },
+  {
+    "category": "functional",
+    "description": "Layer1-2: priority_topics 数据驱动 — 从 KB/OUTPUT/converted/ 目录自动推导，不再硬编码",
+    "steps": [
+      "改 APP/backend/kb_compile_service.py:259/297 默认 priority_topics 来源改为目录扫描",
+      "python -c 调用 compile_service 内部方法，打印候选 topics 列表",
+      "断言列表含 公式/规则/元数据/组织/权限/云平台/业务流/消息 共 >= 17 个域名"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Layer1-3: batch_compile_kb.py 增加 --force 与 --changed-only 命令行开关",
+    "steps": [
+      "改 APP/backend/scripts/batch_compile_kb.py 加 argparse --force/--changed-only",
+      "python APP/backend/scripts/batch_compile_kb.py --help 输出包含 --force 和 --changed-only"
+    ],
+    "passes": false
+  },
+  {
+    "category": "integration",
+    "description": "全量灌库：POST /api/kb/sync 后 chunks 表出现 kb_local 且全部 17 个域 chunks > 0",
+    "steps": [
+      "启动后端（确认 uvicorn 单 worker）",
+      "curl -s -X POST http://localhost:8000/api/kb/sync 成功返回",
+      "sqlite3 data/sqlite/kb_chunks.db SELECT source_kind,COUNT(*) FROM chunks GROUP BY source_kind 显示 kb_local > 0",
+      "跑域分布 SQL，17 个域每个 chunks > 0"
+    ],
+    "passes": false
+  },
+  {
+    "category": "integration",
+    "description": "全量编译：batch_compile_kb --force 后 documents 表含综合解析：公式",
+    "steps": [
+      "python APP/backend/scripts/batch_compile_kb.py --force（后台跑，等待完成）",
+      "sqlite3 data/sqlite/kb_chunks.db SELECT name FROM documents WHERE name LIKE '综合解析：公式%' COUNT > 0"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Layer2-1: hybrid_index 增加 source_mtime 列，rebuild/add_item 按 (content_id, mtime) 去重跳过未变化 item",
+    "steps": [
+      "改 APP/backend/kb_hybrid_index.py，documents 表 ALTER ADD COLUMN source_mtime TEXT（向后兼容 NULL）",
+      "rebuild 时记录 mtime，已有且 mtime 相同的 item 跳过",
+      "验证：连续两次调 sync，第二次日志或返回体显示 skipped_unchanged > 0"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Layer2-2: 新增 POST /api/kb/refresh 统一 ingestion 入口（build+sync+compile 级联）",
+    "steps": [
+      "APP/backend/main.py 新增 /api/kb/refresh 路由",
+      "curl -X POST http://localhost:8000/api/kb/refresh 返回 {task_id: ...}",
+      "GET /api/kb/refresh/status/{task_id} 返回进度（running/done/error）"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Layer2-3: scheduler_service 注册 KB 定时任务：30min 增量 + 每日凌晨全量 + 失败飞书告警",
+    "steps": [
+      "改 APP/backend/services/scheduler_service.py 增加 kb_refresh_incremental（30min）和 kb_refresh_full（每日凌晨）任务",
+      "重启后端，GET /api/scheduler/tasks（或等效接口）返回包含 kb_refresh_* 任务",
+      "失败路径：mock 一次 sync 异常，确认飞书告警触发"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Layer2-4: main.py lifespan 启动时跑 incremental sync + 对比目录与 compiled 话题，缺失域打 WARN",
+    "steps": [
+      "改 main.py lifespan startup（~:687 行附近）",
+      "重启后端，日志含 [KB] incremental sync 字样",
+      "在 KB/OUTPUT/converted/ 下临时建一个空 test_warn_domain/ 目录，重启后日志出现 WARN: domain 'test_warn_domain' not compiled，清理后恢复"
+    ],
+    "passes": false
+  },
+  {
+    "category": "functional",
+    "description": "Layer2-5: _is_valid_qa_answer token 命中阈值 2→1，fallback 不空返回 top-3 引用",
+    "steps": [
+      "改 APP/backend/kb_runtime_service.py:1510 阈值改为 1",
+      "改 556-572 fallback 分支：即使无有效 answer 也返回 top-3 references（含 source_rel_path + name）",
+      "curl POST /api/kb/qa 用一个在库内但 LLM 答案较短的问题，确认 references 非空且 answer 不被丢弃"
+    ],
+    "passes": false
+  },
+  {
+    "category": "integration",
+    "description": "端到端 E2E：KB QA 能回答『如何通过部门字段获取在这个部门下任职的所有员工？』+ 智能回复 kb_evidence 含公式引用",
+    "steps": [
+      "curl POST /api/kb/qa question=如何通过部门字段获取在这个部门下任职的所有员工 → answer 非空，references 含 getValueMore 或 控制参照 或 业务函数描述文档",
+      "curl GET /api/kb/search?q=部门字段获取员工&top_k=10 → items 至少 1 条 source_kind=kb_local 来自公式域",
+      "找一张含公式字样的 Jira 工单，curl POST /api/board/generate-reply → kb_evidence 非空"
+    ],
+    "passes": false
+  },
+  {
+    "category": "edge-case",
+    "description": "增量冒烟：新增 test_new.md 后触发 refresh，可被检索到；清理后再 refresh，从库中消失",
+    "steps": [
+      "写入 KB/OUTPUT/converted/公式/产品使用文档/test_new_ZZZ.md，内容含关键词 ZZZTESTNEWKB",
+      "curl -X POST http://localhost:8000/api/kb/refresh，等待完成",
+      "curl /api/kb/search?q=ZZZTESTNEWKB 返回该文档",
+      "删除 test_new_ZZZ.md，再 curl refresh",
+      "重新 search ZZZTESTNEWKB 确认 0 结果（或过期）"
+    ],
+    "passes": false
+  }
+]
