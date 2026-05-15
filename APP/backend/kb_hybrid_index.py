@@ -437,10 +437,15 @@ class KnowledgeHybridIndex:
                 })
                 chunk_count += 1
 
-            if chroma_ids:
-                self.collection.add(ids=chroma_ids, documents=chroma_docs, metadatas=chroma_metas)
-
+            # Commit SQLite first — SQLite is source of truth; ChromaDB is best-effort
             self.conn.commit()
+
+            if chroma_ids:
+                try:
+                    self.collection.add(ids=chroma_ids, documents=chroma_docs, metadatas=chroma_metas)
+                except Exception as _chroma_err:
+                    logger.warning("[add_item] ChromaDB add failed (SQLite committed OK): %s", _chroma_err)
+
             return chunk_count
 
     def search(self, query: str, top_k: int = 20, source_kind: str | None = None, category: str | None = None, project_key: str | None = None) -> list[dict[str, Any]]:
@@ -647,15 +652,23 @@ class KnowledgeHybridIndex:
         return rows
 
     def _search_vector(self, query: str, top_k: int, source_kind: str | None, category: str | None, project_key: str | None = None) -> list[dict[str, Any]]:
-        if self.collection.count() == 0:
+        try:
+            if self.collection.count() == 0:
+                return []
+        except Exception as _chroma_err:
+            logger.warning("[_search_vector] ChromaDB collection unavailable, falling back to FTS only: %s", _chroma_err)
             return []
         where = {"source_kind": source_kind} if source_kind else None
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=min(max(top_k, 1), self.collection.count()),
-            where=where,
-            include=["metadatas", "distances", "documents"],
-        )
+        try:
+            results = self.collection.query(
+                query_texts=[query],
+                n_results=min(max(top_k, 1), self.collection.count()),
+                where=where,
+                include=["metadatas", "distances", "documents"],
+            )
+        except Exception as _chroma_err:
+            logger.warning("[_search_vector] ChromaDB query failed, falling back to FTS only: %s", _chroma_err)
+            return []
 
         hits: list[dict[str, Any]] = []
         ids = results.get("ids", [[]])[0]

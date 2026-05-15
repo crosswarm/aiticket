@@ -96,7 +96,7 @@
       "改 556-572 fallback 分支：即使无有效 answer 也返回 top-3 references（含 source_rel_path + name）",
       "curl POST /api/kb/qa 用一个在库内但 LLM 答案较短的问题，确认 references 非空且 answer 不被丢弃"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "integration",
