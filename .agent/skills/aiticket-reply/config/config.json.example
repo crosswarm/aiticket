@@ -1,4 +1,4 @@
 {
   "backend_url": "http://ticket.spux.cn",
-  "default_project": "LCZX"
+  "default_project": "MYPROJECT"
 }

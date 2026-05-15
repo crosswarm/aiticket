@@ -161,7 +161,7 @@ def setup_config() -> None:
     backend_url = input(f"  后端地址 [{default_url}]: ").strip() or default_url
     backend_url = backend_url.rstrip("/")
 
-    default_project = existing.get("default_project", "LCZX")
+    default_project = existing.get("default_project", "MYPROJECT")
     project = input(f"  默认项目 [{default_project}]: ").strip() or default_project
 
     # 连通性预检（打轻量健康检查端点）
@@ -242,7 +242,7 @@ def rotate_key() -> None:
     print("\n  🔄 密钥轮换 — 用当前机器密钥重新加密配置")
     print("  请输入当前配置的明文后端地址（用于验证）：")
     backend_url = input("  后端地址: ").strip().rstrip("/")
-    default_project = input("  默认项目 [LCZX]: ").strip() or "LCZX"
+    default_project = input("  默认项目 [MYPROJECT]: ").strip() or "MYPROJECT"
 
     payload = {"backend_url": backend_url, "default_project": default_project}
     _save_config(payload)

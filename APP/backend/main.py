@@ -3169,7 +3169,7 @@ def get_board_meta(request: Request):
         projects = fallback_projects
         print(f"[board/meta] Jira不可达，使用回退项目列表: {[p['key'] for p in projects]}")
     if not current_user and not is_strict_role():
-        current_user = {"name": "qiangxiao", "displayName": "强骁"}
+        current_user = {"name": "admin", "displayName": "管理员"}
     return {"projects": projects, "current_user": current_user}
 
 
@@ -3199,7 +3199,7 @@ def get_issue_detail(issue_key: str, request: Request, background_tasks: Backgro
     会话隔离：必须使用 build_request_jira_client(request) 得到当前用户的
     JiraService（base_url = mini_proxy on QCL, 带用户自己的 JSESSIONID）。
     不再走老的 /proxy/jira/issue/{key}（那条路径 mini_proxy 用的是自己的
-    session，会让所有用户看到 qiangxiao 的视角）。
+    session，会让所有用户看到 admin 的视角）。
     透明代理 /rest/* 会读 request.cookies 转发用户 session 到真实 Jira。
     """
     try:
@@ -3543,7 +3543,7 @@ def proxy_attachment(attachment_id: str, request: Request):
 
     会话隔离：必须用当前用户的 JiraService（带自己的 JSESSIONID），
     不再走老的 /proxy/jira/attachment/{id} 端点（那条路径用的是 mini_proxy
-    自己的 qiangxiao session，会暴露错人的附件权限）。
+    自己的 admin session，会暴露错人的附件权限）。
     QCL 上 jira_client.base_url 已自动指向 mini_proxy (frp 5001)，
     transparent_proxy 会透传用户 cookies 到真实 Jira。
     """
@@ -3572,7 +3572,7 @@ def proxy_attachment(attachment_id: str, request: Request):
         # 优先使用 jira_client.cookies (已是当前用户的 session)
         import json as _json
         download_cookies = dict(getattr(jira_client, 'cookies', {}) or {})
-        # per-user session 文件 → 全局兜底（避免让 lihum 看到 qiangxiao 附件）
+        # per-user session 文件 → 全局兜底（避免让 user2 看到 admin 附件）
         cur_user = get_current_user(request)
         session_candidates = []
         if cur_user:
@@ -5396,7 +5396,7 @@ def get_field_options_admin(request: Request):
 @app.post("/api/jira/session-established")
 async def jira_session_established(
     background_tasks: BackgroundTasks,
-    project_key: str = Query(default="LCZX"),
+    project_key: str = Query(default="MYPROJECT"),
     scope_modules: list[str] = Query(default=[])
 ):
     """Jira 会话建立后触发全量基线扫描（异步，不阻塞响应）"""

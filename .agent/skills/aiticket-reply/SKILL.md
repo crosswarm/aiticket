@@ -92,7 +92,7 @@ LOGIN_STATUS=$(python3 .agent/skills/aiticket-reply/scripts/setup_config.py --wh
 curl -s -X POST "$BASE_URL/api/reply/generate-by-module" \
   $(echo "$HEADERS_RAW" | awk '{print "-H \""$0"\""}') \
   -H "Content-Type: application/json" \
-  -d '{"issue_key":"LCZX-61234","module":"流程中心","force":false}'
+  -d '{"issue_key":"MYPROJECT-12345","module":"流程中心","force":false}'
 ```
 
 **URL 编码提示**: 中文查询参数必须 URL 编码：
@@ -113,7 +113,7 @@ curl -s -G "$BASE_URL/api/board/search" \
 
 ## 模式 A: 工单智能回复
 
-当用户提供工单号（如 LCZX-61234）时执行此流程。
+当用户提供工单号（如 MYPROJECT-12345）时执行此流程。
 
 ### 路径判断
 
@@ -126,7 +126,7 @@ curl -s "$BASE_URL/api/reply/module-coverage?module=流程中心"
 # 主回复生成（模块感知）
 curl -s -X POST "$BASE_URL/api/reply/generate-by-module" \
   -H "Content-Type: application/json" \
-  -d '{"issue_key":"LCZX-61234","module":"流程中心","force":false}'
+  -d '{"issue_key":"MYPROJECT-12345","module":"流程中心","force":false}'
 ```
 
 **不指定模块** → 走全库融合路径：
@@ -134,7 +134,7 @@ curl -s -X POST "$BASE_URL/api/reply/generate-by-module" \
 ```bash
 curl -s -X POST "$BASE_URL/api/board/generate-reply" \
   -H "Content-Type: application/json" \
-  -d '{"issue_key":"LCZX-61234","force":false}'
+  -d '{"issue_key":"MYPROJECT-12345","force":false}'
 ```
 
 ### 步骤 1: 模块覆盖度预检（可选，指定模块时执行）
