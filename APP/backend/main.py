@@ -2251,6 +2251,67 @@ def sync_kb():
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"KB sync failed: {exc}")
 
+
+# ── KB Refresh (build+sync+compile cascade) ───────────────────────────────────
+import uuid as _uuid
+_kb_refresh_tasks: dict[str, dict] = {}
+
+
+def _run_kb_refresh(task_id: str, force: bool) -> None:
+    """Background thread: build → sync → compile-all cascade."""
+    _kb_refresh_tasks[task_id]["status"] = "running"
+    try:
+        # 1. Build (scan orphans, update manifest)
+        try:
+            from kb_local_builder import KBLocalBuilder
+            KBLocalBuilder().build()
+            _kb_refresh_tasks[task_id]["step"] = "build_done"
+        except Exception as e:
+            logger.warning("[kb/refresh] build step failed (non-fatal): %s", e)
+
+        # 2. Sync (rebuild SQLite index from manifest)
+        sync_result = kb_runtime_service.sync(force_refresh=True)
+        _kb_refresh_tasks[task_id]["step"] = "sync_done"
+        _kb_refresh_tasks[task_id]["sync"] = sync_result if isinstance(sync_result, dict) else {}
+
+        # 3. Compile-all (LLM synthesis, incremental or force)
+        try:
+            from kb_compile_service import get_or_create_compile_service
+            svc = get_or_create_compile_service()
+            compiled = svc.compile_all()
+            _kb_refresh_tasks[task_id]["step"] = "compile_done"
+            _kb_refresh_tasks[task_id]["compiled"] = compiled if isinstance(compiled, dict) else {}
+        except Exception as e:
+            logger.warning("[kb/refresh] compile step failed (non-fatal): %s", e)
+            _kb_refresh_tasks[task_id]["step"] = "compile_skipped"
+
+        _kb_refresh_tasks[task_id]["status"] = "done"
+    except Exception as e:
+        logger.exception("[kb/refresh] task %s failed", task_id)
+        _kb_refresh_tasks[task_id]["status"] = "error"
+        _kb_refresh_tasks[task_id]["error"] = str(e)
+
+
+@app.post("/api/kb/refresh", status_code=202)
+def kb_refresh(body: dict = Body({})):
+    """统一 ingestion 入口：build + sync + compile 级联，异步执行。"""
+    import threading
+    force = body.get("force", False)
+    task_id = f"kbr-{_uuid.uuid4().hex[:12]}"
+    _kb_refresh_tasks[task_id] = {"task_id": task_id, "status": "pending", "step": ""}
+    t = threading.Thread(target=_run_kb_refresh, args=(task_id, force), daemon=True)
+    t.start()
+    return {"task_id": task_id, "status": "pending"}
+
+
+@app.get("/api/kb/refresh/status/{task_id}")
+def kb_refresh_status(task_id: str):
+    """查询 kb/refresh 任务进度。"""
+    task = _kb_refresh_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"task not found: {task_id}")
+    return task
+
 class KBAnalyzeRequest(BaseModel):
     summary: str
     module_hint: str = ""

@@ -66,7 +66,7 @@
       "curl -X POST http://localhost:8000/api/kb/refresh 返回 {task_id: ...}",
       "GET /api/kb/refresh/status/{task_id} 返回进度（running/done/error）"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
