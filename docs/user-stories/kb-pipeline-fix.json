@@ -26,7 +26,7 @@
       "改 APP/backend/scripts/batch_compile_kb.py 加 argparse --force/--changed-only",
       "python APP/backend/scripts/batch_compile_kb.py --help 输出包含 --force 和 --changed-only"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "integration",
