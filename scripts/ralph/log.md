@@ -104,6 +104,36 @@ sqlite3 ... "SELECT COUNT(*) FROM chunks_fts WHERE chunks_fts MATCH '公式';" �
 
 ---
 
+## Iter 5 — Integration: 全量编译 + batch_compile_kb --force 修复
+
+**Story**: 全量编译：batch_compile_kb --force 后 documents 表含综合解析：公式
+**Commit**: (本次提交)
+**Files changed**:
+- `APP/backend/scripts/batch_compile_kb.py` — `compile_batch()` 改为直接调用 compile service（绕过异步 job 队列），支持 `skip_bip_validation=True`
+
+**验证结果**:
+```
+# 编译进程后台运行（PID 84318），约 30 分钟完成 98/136 话题
+# 公式排在 topic #82，于 02:07:56 写入
+
+sqlite3 data/sqlite/kb_chunks.db \
+  "SELECT name FROM documents WHERE name LIKE '综合解析：公式%';"
+→ 综合解析：公式  ✅
+
+sqlite3 data/sqlite/kb_chunks.db \
+  "SELECT COUNT(*) FROM documents WHERE name LIKE '综合解析：公式%';"
+→ 1  ✅
+```
+
+**Blockers**:
+- 原 `/api/kb/compile-all` 使用异步 job 队列但无 daemon 消费者，所有 jobs 永久 pending→已修复：直接调用 `get_or_create_compile_service().compile_topic()`
+- 后端 sync/rebuild 会临时清空再恢复 kb_compiled（_PRESERVED_SOURCE_KINDS 机制正常工作）
+- 编译期间计数周期性波动属正常：rebuild 保存/恢复快照期间出现短暂下跌
+
+---
+
+---
+
 ## Iter 5 — 全量编译：综合解析：公式 进入 documents 表
 
 **Story**: batch_compile_kb --force 后 documents 表含综合解析：公式

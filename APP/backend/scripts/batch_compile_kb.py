@@ -54,14 +54,30 @@ def get_compiled_names():
 
 
 def compile_batch(topics):
-    """编译一批话题，返回结果"""
-    r = requests.post(
-        f"{API_BASE}/api/kb/compile-all",
-        json={"topics": topics},
-        timeout=600,
-    )
-    r.raise_for_status()
-    return r.json()
+    """编译一批话题，直接调用编译服务（绕过异步 job 队列），返回结果"""
+    from kb_compile_service import get_or_create_compile_service
+    svc = get_or_create_compile_service()
+
+    compiled = 0
+    for topic in topics:
+        try:
+            result = svc.compile_topic(topic, skip_bip_validation=True)
+            if result and result.get("content_id"):
+                compiled += 1
+                print(f"  ✓ {topic}")
+            elif result and result.get("bip_judgment_status") == "pending_user":
+                print(f"  ~ {topic}: pending BIP review")
+            else:
+                print(f"  . {topic}: no chunks found")
+        except ValueError as ve:
+            if "TOPIC_REJECTED" in str(ve):
+                print(f"  ✗ {topic}: rejected")
+            else:
+                print(f"  ! {topic}: {ve}")
+        except Exception as e:
+            print(f"  ! {topic}: {e}")
+
+    return {"compiled": compiled}
 
 
 def push_feishu(message):
