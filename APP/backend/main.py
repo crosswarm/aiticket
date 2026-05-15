@@ -4256,6 +4256,18 @@ def get_gate_view_tickets(request: Request, hours: int = Query(720, ge=1), inclu
                 "description_length": len(desc),
                 "attachment_count": attachments,
                 "recommendation": _classify_recommendation_type(issue),
+                "reply_content": _reply_content,
+                "reply_cached_at": _rc_entry.get("timestamp", ""),
+                "reply_status": _reply_status,
+                # drawer fields — live values from current issue
+                "summary": (issue.get("summary", "") or "")[:120],
+                "status": issue.get("status", "") or "",
+                "due_date": issue.get("due_date", "") or "",
+                "assignee": issue.get("assignee", "") or "",
+                "reporter": issue.get("reporter", "") or "",
+                "contact_name": issue.get("contact_name", "") or "",
+                "contact_info": issue.get("contact_info", "") or "",
+                "customer_name": issue.get("customer_name", "") or "",
             }
             if action in grouped:
                 grouped[action].append(k)
@@ -4289,13 +4301,15 @@ def get_gate_view_tickets(request: Request, hours: int = Query(720, ge=1), inclu
 
 @app.get("/api/board/pending-approvals")
 def list_pending_approvals(
+    request: Request,
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
-    """列出 staging 中待批准的自动回复草稿。"""
+    """列出 staging 中待批准的自动回复草稿。实时查 Jira 状态过滤掉已完成工单。"""
     try:
         from services.pending_approval_store import list_pending as _list_pending
-        return {"items": _list_pending(limit=limit, offset=offset)}
+        jira_client = build_request_jira_client(request, require_binding=False)
+        return {"items": _list_pending(limit=limit, offset=offset, jira_client=jira_client)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -7304,6 +7318,73 @@ if _RUN_BG and ENABLE_SCHEDULER:
                 pass
 
         register_task_handler("vacation_schedule_cleanup", _task_vacation_schedule_cleanup)
+
+        # 注册任务处理器：KB 增量 sync（每 30 分钟）
+        def _task_kb_refresh_incremental(**kwargs):
+            """每 30 分钟：增量 sync KB（build + sync），仅处理变更文件"""
+            from services.feishu_notifier import get_notifier
+            notifier = get_notifier()
+            try:
+                result = kb_runtime_service.sync()
+                logger.info(
+                    f"[Scheduler] KB incremental sync done: chunks={result.get('chunk_count')}, "
+                    f"local_manifest={result.get('local_manifest_count')}"
+                )
+            except Exception as e:
+                logger.error(f"[Scheduler] KB incremental sync failed: {e}")
+                try:
+                    notifier.send_message(
+                        f"⚠️ KB 增量 sync 失败\n"
+                        f"原因：{str(e)[:300]}\n"
+                        f"任务：kb_refresh_incremental"
+                    )
+                except Exception:
+                    pass
+
+        register_task_handler("kb_refresh_incremental", _task_kb_refresh_incremental)
+
+        # 注册任务处理器：KB 全量 sync + compile（每日凌晨 2:00）
+        def _task_kb_refresh_full(**kwargs):
+            """每日凌晨 2:00：全量 force_refresh sync + compile_all，防 KB 漂移"""
+            from services.feishu_notifier import get_notifier
+            notifier = get_notifier()
+            try:
+                sync_result = kb_runtime_service.sync(force_refresh=True)
+                logger.info(
+                    f"[Scheduler] KB full sync done: chunks={sync_result.get('chunk_count')}, "
+                    f"local_manifest={sync_result.get('local_manifest_count')}"
+                )
+            except Exception as e:
+                logger.error(f"[Scheduler] KB full sync failed: {e}")
+                try:
+                    notifier.send_message(
+                        f"⚠️ KB 全量 sync 失败\n"
+                        f"原因：{str(e)[:300]}\n"
+                        f"任务：kb_refresh_full"
+                    )
+                except Exception:
+                    pass
+                return  # sync 失败不继续 compile
+            try:
+                from kb_compile_service import get_compile_service
+                compile_svc = get_compile_service()
+                if compile_svc is not None:
+                    compiled = compile_svc.compile_all()
+                    logger.info(f"[Scheduler] KB full compile done: {len(compiled)} topics compiled")
+                else:
+                    logger.warning("[Scheduler] KB full compile skipped: compile_service not initialized")
+            except Exception as e:
+                logger.error(f"[Scheduler] KB full compile failed: {e}")
+                try:
+                    notifier.send_message(
+                        f"⚠️ KB 全量 compile 失败\n"
+                        f"原因：{str(e)[:300]}\n"
+                        f"任务：kb_refresh_full"
+                    )
+                except Exception:
+                    pass
+
+        register_task_handler("kb_refresh_full", _task_kb_refresh_full)
 
         start_scheduler()
         print("[Scheduler] v4.0 定时调度服务已启动")

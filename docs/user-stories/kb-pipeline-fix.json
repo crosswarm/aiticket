@@ -76,7 +76,7 @@
       "重启后端，GET /api/scheduler/tasks（或等效接口）返回包含 kb_refresh_* 任务",
       "失败路径：mock 一次 sync 异常，确认飞书告警触发"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

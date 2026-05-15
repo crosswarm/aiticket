@@ -1,0 +1,22 @@
+{
+  "id": "kb-refresh-incremental",
+  "name": "KB 增量 sync（每 30 分钟）",
+  "task_type": "kb_refresh_incremental",
+  "trigger_type": "cron",
+  "cron": "*/30 * * * *",
+  "enabled": true,
+  "catchup_window_hours": 1,
+  "cooldown_hours": 0,
+  "description": "每 30 分钟：增量同步 KB（build + sync），仅处理变更文件，省资源",
+  "last_run": null,
+  "created_at": "2026-05-16T00:00:00",
+  "host_constraint": null,
+  "preflight_local_llm": false,
+  "llm_strategy": "none",
+  "run_count": 0,
+  "last_status": "unknown",
+  "created_by": "claude",
+  "created_by_uuid": "aaac6ff8-d4a6-ce54-1d0b-0538426b0028",
+  "schema_version": "1.0",
+  "agent_hint": "kb_fact"
+}
