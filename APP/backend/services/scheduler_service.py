@@ -163,6 +163,9 @@ class SchedulerService:
         self._timer.daemon = True
         self._timer.start()
 
+    _tick_count: int = 0
+    _HB_PATH = Path(__file__).parent.parent / "data" / "runtime" / "scheduler_heartbeat.json"
+
     def _tick(self) -> None:
         """每 60s 执行一次的主循环"""
         try:
@@ -170,6 +173,16 @@ class SchedulerService:
         except Exception as e:
             logger.error(f"[Scheduler] tick 异常: {e}")
         finally:
+            try:
+                self._HB_PATH.parent.mkdir(parents=True, exist_ok=True)
+                self._HB_PATH.write_text(json.dumps({
+                    "ts": time.time(),
+                    "tick_count": self._tick_count,
+                    "last_check_at": datetime.utcnow().isoformat(),
+                }), encoding="utf-8")
+                self._tick_count += 1
+            except Exception:
+                pass
             self._schedule_next()
 
     def _check_and_execute(self) -> None:
@@ -214,6 +227,20 @@ class SchedulerService:
         schedule["last_run"] = now.isoformat()
         _save_schedule(schedule)
 
+        # 写 agent_tasks 入库（让 history_count 能统计到 cron 任务）
+        try:
+            from services.task_bridge import notify_trigger, notify_done
+            _task_id = notify_trigger(
+                schedule_id=schedule["id"],
+                title=schedule.get("name") or schedule["id"],
+            )
+        except Exception:
+            _task_id = None
+
+        import time as _time
+        _start = _time.monotonic()
+        status = "success"
+        error_msg = ""
         try:
             params = dict(schedule.get("params") or {})
             # 注入 schedule 上下文，供 script 类 handler 读取 command / id
@@ -223,6 +250,31 @@ class SchedulerService:
             logger.info(f"[Scheduler] 任务完成: {schedule['id']}")
         except Exception as e:
             logger.error(f"[Scheduler] 任务执行失败 {schedule['id']}: {e}")
+        finally:
+            duration_s = round(_time.monotonic() - _start, 1)
+            # 持久化运行历史（run_count / last_status / recent_runs）
+            try:
+                fresh = _load_schedule(SCHEDULES_DIR / f"{schedule['id']}.json") or schedule
+                fresh["run_count"] = fresh.get("run_count", 0) + 1
+                fresh["last_status"] = status
+                if error_msg:
+                    fresh["last_error"] = error_msg
+                elif "last_error" in fresh:
+                    del fresh["last_error"]
+                run_record = {"ts": now.isoformat(), "status": status, "duration_s": duration_s}
+                runs = fresh.get("recent_runs", [])
+                runs.append(run_record)
+                fresh["recent_runs"] = runs[-10:]  # 最多保留 10 条
+                _save_schedule(fresh)
+            except Exception as _e:
+                logger.warning(f"[Scheduler] 运行历史写入失败 {schedule['id']}: {_e}")
+            # 同步更新 agent_tasks 状态
+            try:
+                if _task_id:
+                    from services.task_bridge import notify_done
+                    notify_done(_task_id, success=(status == "success"), msg=error_msg or "ok")
+            except Exception:
+                pass
 
     # ─── CRUD API ────────────────────────────────────────────────────────────
 

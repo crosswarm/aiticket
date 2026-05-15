@@ -3,7 +3,7 @@
   "description": "每夜运行 analysis_cache 健康审计，输出 CSV 健康报告",
   "schedule": "0 3 * * *",
   "command": "python -m scripts.analysis_cache_recompute",
-  "enabled": true,
+  "enabled": false,
   "timeout_seconds": 120,
   "tags": [
     "maintenance",

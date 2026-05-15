@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from agents.base import AgentTask, BaseAgent
+from agents.self_monitor_mixin import AgentSelfMonitorMixin
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,8 @@ _SCRIPT  = Path(__file__).resolve().parent.parent / "scripts" / "extract_facts_f
 _FB_FILE = Path(__file__).resolve().parent.parent / "data" / "reply_feedback.json"
 
 
-class AdoptedAgent(BaseAgent):
+class AdoptedAgent(AgentSelfMonitorMixin, BaseAgent):
+    expected_run_interval_hours: float = 168
     name         = "adopted"
     display_name = "采纳反推 Agent"
     description  = "高采纳回复→候选事实→审核队列；发现跨工单采纳模式写入 L3 公共记忆"

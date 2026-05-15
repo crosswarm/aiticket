@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List
 
 from agents.base import AgentTask, AgentStatus, BaseAgent
+from agents.self_monitor_mixin import AgentSelfMonitorMixin
 
 _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "exploration_agent.py"
 
@@ -21,7 +22,8 @@ _TARGETS = [
 ]
 
 
-class CompetitorAgent(BaseAgent):
+class CompetitorAgent(AgentSelfMonitorMixin, BaseAgent):
+    expected_run_interval_hours: float = 24
     name         = "competitor"
     display_name = "竞品调研 Agent"
     description  = "夜间自动探索 BIP+金蝶工作流；网站截图+功能分析+洞察报告"

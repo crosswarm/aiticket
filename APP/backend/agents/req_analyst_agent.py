@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from agents.base import BaseAgent
+from agents.self_monitor_mixin import AgentSelfMonitorMixin
 from llm_service import LLMService
 from vector_store import VectorStore
 
@@ -53,7 +54,8 @@ def _load_default_llm_config() -> dict:
         return {}
 
 
-class ReqAnalystAgent(BaseAgent):
+class ReqAnalystAgent(AgentSelfMonitorMixin, BaseAgent):
+    expected_run_interval_hours: float = 24
     name = "req_analyst"
     display_name = "需求分析 Agent"
     description = "批量分析需求池，发现关联、冲突与依赖，生成结构化分析报告"

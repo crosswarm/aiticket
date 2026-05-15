@@ -3,11 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 from agents.base import BaseAgent
+from agents.self_monitor_mixin import AgentSelfMonitorMixin
 
 _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "extract_facts_from_kb.py"
 
 
-class KbFactAgent(BaseAgent):
+class KbFactAgent(AgentSelfMonitorMixin, BaseAgent):
+    expected_run_interval_hours: float = 168
     name         = "kb_fact"
     display_name = "KB 事实抽取 Agent"
     description  = "124篇KB文档→产品事实条目，SHA1去重；SuperGemma4本地推理，零外部API成本"

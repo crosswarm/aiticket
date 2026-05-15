@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, TYPE_CHECKING
 
 from agents.base import AgentStatus, AgentTask, BaseAgent
+from agents.self_monitor_mixin import AgentSelfMonitorMixin
 
 if TYPE_CHECKING:
     from board_service_chroma import BoardService
@@ -35,7 +36,8 @@ _COLD_START_THRESHOLD = 50
 _CACHE_TTL_HOURS = 24
 
 
-class HandoverSuggestAgent(BaseAgent):
+class HandoverSuggestAgent(AgentSelfMonitorMixin, BaseAgent):
+    expected_run_interval_hours: float = 168
     name = "handover_suggest"
     display_name = "智能转交 Agent"
     description = "基于团队历史操作行为，为看板卡片智能推荐转交对象与目标看板"

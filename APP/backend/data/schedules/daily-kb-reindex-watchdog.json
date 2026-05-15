@@ -13,14 +13,32 @@
     "--force"
   ],
   "description": "每日02:30：强制重索引 product_facts.md，保证 KB chroma 与文件内容完全一致",
-  "last_run": null,
+  "last_run": "2026-05-15T02:30:02.072800",
   "created_at": "2026-05-12T09:00:00",
   "host_constraint": null,
   "preflight_local_llm": false,
   "llm_strategy": "none",
-  "run_count": 0,
-  "last_status": "unknown",
+  "run_count": 3,
+  "last_status": "success",
   "created_by": "claude",
   "created_by_uuid": "aaac6ff8-d4a6-ce54-1d0b-0538426b0028",
-  "schema_version": "1.0"
+  "schema_version": "1.0",
+  "recent_runs": [
+    {
+      "ts": "2026-05-13T02:30:11.728314",
+      "status": "success",
+      "duration_s": 6.0
+    },
+    {
+      "ts": "2026-05-14T02:30:17.124378",
+      "status": "success",
+      "duration_s": 4.5
+    },
+    {
+      "ts": "2026-05-15T02:30:02.072800",
+      "status": "success",
+      "duration_s": 5.1
+    }
+  ],
+  "agent_hint": "kb_fact"
 }
