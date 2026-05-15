@@ -3978,6 +3978,7 @@ def generate_reply(request: GenerateReplyRequest, raw_request: Request):
             force_pass_gate1=request.force_pass_gate1,
         )
         if result.get("gate") == "completeness":
+            _insuf_type = result.get("insufficient_type", "missing_fields")
             return {
                 "status": "gate_blocked",
                 "gate": "completeness",
@@ -3987,6 +3988,12 @@ def generate_reply(request: GenerateReplyRequest, raw_request: Request):
                 "solution_content": "",
                 "ai_analysis": None,
                 "gate_decisions": result.get("gate_decisions", {}),
+                "info_insufficient": True,
+                "insufficient_type": _insuf_type,
+                "suggested_reply_method": {"id": "15702", "value": "退回支持"},
+                "suggested_issue_type": {"id": "15321", "value": "无效问题"} if _insuf_type == "invalid_description" else None,
+                "auto_returned": result.get("auto_returned", False),
+                "operation_steps": result.get("operation_steps", []),
             }
         if result.get("gate") == "classification":
             return {

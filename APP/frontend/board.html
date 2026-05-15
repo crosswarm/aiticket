@@ -434,12 +434,6 @@
                 class="px-4 py-2 sm:py-1.5 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 transition min-h-[44px] sm:min-h-0">
                 筛选
             </button>
-            <!-- 用户模块归属 badge（有配置模块时自动显示） -->
-            <div id="module-scope-badge" class="hidden flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 border border-indigo-200 rounded-lg text-sm text-indigo-700 min-h-[44px] sm:min-h-0">
-                <svg class="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M3 3a1 1 0 000 2v8a2 2 0 002 2h2.586l-1.293 1.293a1 1 0 101.414 1.414L10 15.414l2.293 2.293a1 1 0 001.414-1.414L12.414 15H15a2 2 0 002-2V5a1 1 0 100-2H3zm11.707 4.707a1 1 0 00-1.414-1.414L10 9.586 8.707 8.293a1 1 0 00-1.414 0l-2 2a1 1 0 101.414 1.414L8 10.414l1.293 1.293a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
-                <span id="module-scope-label" class="text-xs font-medium whitespace-nowrap">本人模块</span>
-                <button onclick="setIgnoreModuleScope(true)" class="text-indigo-400 hover:text-indigo-700 transition text-xs font-medium ml-0.5 hover:underline whitespace-nowrap" title="取消模块过滤，查看全部工单">查看全部</button>
-            </div>
             <button onclick="batchReanalyzeAll()"
                 class="px-4 py-2 sm:py-1.5 bg-amber-50 border border-amber-200 text-amber-700 rounded-lg text-sm hover:bg-amber-100 transition flex items-center gap-2 min-h-[44px] sm:min-h-0"
                 title="批量重新分析所有无AI分析的工单">
@@ -479,7 +473,7 @@
         </div>
 
         <!-- Gate Kanban View (4-column) -->
-        <div id="kanban-grid-gate" role="region" aria-label="智能回复闸门看板" style="display:none;overflow-x:auto;background:var(--ds-bg-page,#f8fafc)" class="flex gap-4 p-4 items-start min-h-[calc(100vh-52px)]">
+        <div id="kanban-grid-gate" role="region" aria-label="智能回复闸门看板" style="display:none;overflow-x:auto;background:var(--ds-bg-page,#f8fafc)" class="flex gap-4 p-4 items-start">
             <!-- Columns injected by renderGateBoard() -->
         </div>
 
@@ -1420,6 +1414,14 @@
                             <div class="text-xs font-medium mb-1" style="color:var(--ds-text-secondary,#475569);">回复策略</div>
                             <div id="re-basis-strategy" class="text-xs leading-relaxed" style="color:var(--ds-text-secondary,#475569);white-space:pre-wrap;"></div>
                         </div>
+                        <!-- 信息不足标签 -->
+                        <div id="re-basis-info-insufficient" class="hidden flex items-center gap-2 p-2 rounded-lg" style="background:#fef3c7;border:1px solid #fcd34d;">
+                            <span style="font-size:14px;">⚠️</span>
+                            <div>
+                                <span class="text-xs font-semibold" style="color:#92400e;">信息不足</span>
+                                <span class="text-xs ml-1" style="color:#a16207;">工单描述不满足最低信息要求，已自动退回支持</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -1433,6 +1435,7 @@
                             <span id="re-ai-badge" class="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full hidden">AI生成</span>
                             <span id="re-word-count" class="text-xs text-gray-500">0字</span>
                             <button id="re-regenerate-btn" onclick="regenerateReply()" class="text-xs text-indigo-600 hover:text-indigo-800 transition-colors">重新生成</button>
+                            <button id="re-expand-btn" type="button" onclick="expandSolution()" class="text-xs px-2 py-0.5 rounded border border-indigo-300 text-indigo-600 hover:bg-indigo-50 transition-colors" title="按您当前编辑的方案内容重跑搜索，给出精准补充">智能扩展</button>
                         </div>
                     </div>
                     <textarea
@@ -2270,15 +2273,22 @@
             }
         }
 
+        // 分析队列入队时间戳（用于超时托底）
+        const _analyzingKeyTimestamps = new Map();
+
         // 添加key到分析队列
         function addAnalyzingKey(key) {
             analyzingKeys.add(key);
+            if (!_analyzingKeyTimestamps.has(key)) {
+                _analyzingKeyTimestamps.set(key, Date.now());
+            }
             saveAnalyzingKeysToStorage();
         }
 
         // 从分析队列移除key
         function removeAnalyzingKey(key) {
             analyzingKeys.delete(key);
+            _analyzingKeyTimestamps.delete(key);
             saveAnalyzingKeysToStorage();
         }
 
@@ -2320,33 +2330,32 @@
         // Column definitions
         let columns = [];
 
-        // 用户模块归属（从 /api/auth/me 读取）
-        var _userModulesCache = {};   // { "YYZJ": ["用户权限"], ... }
-        var _ignoreModuleScope = false;
-
         // Initialize
         document.addEventListener('DOMContentLoaded', async () => {
-            // 恢复分析队列状态
             loadAnalyzingKeysFromStorage();
             await loadBoardConfig();
-            await loadBoardMeta();  // 加载Jira项目列表和当前用户
-            _refreshModuleScopeBadge();
-            // 检查 Jira 绑定状态，未绑定显示提示（不阻塞看板加载）
+            await loadBoardMeta();
             await checkJiraBinding();
-            loadBoardData();
-            // 设置全局触摸事件处理器（用于平板/移动端拖拽）
             setupGlobalTouchHandlers();
-            // Start polling for analysis updates
             startPolling();
-            // restore view mode
-            const savedMode = localStorage.getItem('board_view_mode') || 'date';
-            if (savedMode === 'gate') setViewMode('gate');
+            // 触发全量基线扫描（fire-and-forget，不阻塞启动）
+            fetch(API_BASE + '/api/jira/session-established', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            }).catch(() => {});
+            let savedMode = localStorage.getItem('board_view_mode');
+            if (!['date', 'gate'].includes(savedMode)) {
+                savedMode = 'date';
+                localStorage.setItem('board_view_mode', 'date');
+            }
+            setViewMode(savedMode);
         });
 
         async function checkJiraBinding() {
             try {
                 var me = await fetch(API_BASE+'/api/auth/me',{credentials:'include'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;});
-                if (me && me.user && me.user.project_modules) { _userModulesCache = me.user.project_modules; _refreshModuleScopeBadge(); }
+                if (me && me.user && me.user.project_modules) { /* project_modules available via ScopeSwitcher */ }
                 if (me && me.is_demo) return true;
                 var resp = await fetch(API_BASE+'/api/settings/jira-binding');
                 if (!resp.ok) return true;
@@ -2538,7 +2547,7 @@
             opt.text = label;
             sel.value = value;
             cbClose(name);
-            if (name === 'project') { _ignoreModuleScope = false; loadBoardAssignees(value); _refreshModuleScopeBadge(); }
+            if (name === 'project') { loadBoardAssignees(value); }
 
             // 持久化到 localStorage
             const store = _cbLoadStore();
@@ -2641,25 +2650,6 @@
             }
         }
 
-        function _refreshModuleScopeBadge() {
-            const mods = getScopeFromStore().domain_modules || [];
-            const badge = document.getElementById('module-scope-badge');
-            const label = document.getElementById('module-scope-label');
-            if (!badge) return;
-            if (mods.length > 0 && !_ignoreModuleScope) {
-                badge.classList.remove('hidden');
-                if (label) label.textContent = '模块: ' + mods.join('、');
-            } else {
-                badge.classList.add('hidden');
-            }
-        }
-
-        function setIgnoreModuleScope(ignore) {
-            _ignoreModuleScope = ignore;
-            _refreshModuleScopeBadge();
-            loadBoardData();
-        }
-
         // ========== 作用域 Popup (已迁移至 scope-switcher.js) ==========
         let _acctProject = null;
         let _acctModules = [];
@@ -2687,8 +2677,6 @@
                 if (!opt) { opt = document.createElement('option'); opt.value = projKey; sel.appendChild(opt); }
                 sel.value = projKey;
             }
-            _ignoreModuleScope = false;
-            _refreshModuleScopeBadge();
             loadBoardData(true);
         });
 
@@ -2866,9 +2854,9 @@
             loading.classList.remove('hidden');
 
             try {
-                const _scopeMods = _ignoreModuleScope ? [] : (getScopeFromStore().domain_modules || []);
+                const _scopeMods = getScopeFromStore().domain_modules || [];
                 const _domainParam = _scopeMods.length > 0 ? `&domain_modules=${encodeURIComponent(_scopeMods.join(','))}` : '';
-                const url = `${API_BASE}/api/board?project_key=${project}&assignee=${encodeURIComponent(assignee)}${force ? '&force=true' : ''}${_ignoreModuleScope ? '&ignore_module=true' : ''}${_domainParam}`;
+                const url = `${API_BASE}/api/board?project_key=${project}&assignee=${encodeURIComponent(assignee)}${force ? '&force=true' : ''}${_domainParam}`;
                 const res = await fetch(url);
                 const result = await res.json();
 
@@ -2938,7 +2926,7 @@
                 try {
                     const r = await fetch(`${API_BASE}/api/board/generate-reply`, {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ issue_key: issue.key, force: false })
+                        body: JSON.stringify({ issue_key: issue.key, force: false, force_pass_gate1: true })
                     });
                     const d = await r.json();
                     if (d.status === 'success' && d.solution_content) {
@@ -3964,6 +3952,19 @@
             // 每5秒轮询一次分析状态
             pollingInterval = setInterval(() => {
                 pollAnalysisUpdates();
+                // 超时托底：chip 显示 >90s 仍未完成则触发强制重分析
+                const now = Date.now();
+                _analyzingKeyTimestamps.forEach((ts, key) => {
+                    if (now - ts > 90000) {
+                        console.warn('[Board] chip timeout, force reanalyze:', key);
+                        _analyzingKeyTimestamps.delete(key);
+                        fetch(API_BASE + `/api/board/${encodeURIComponent(key)}/reanalyze`, {
+                            method: 'POST', credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ force: true })
+                        }).catch(() => {});
+                    }
+                });
             }, 5000);
         }
 
@@ -4513,16 +4514,40 @@
 
         // ── 视图模式切换 ──────────────────────────────────────────
         function setViewMode(mode) {
+            if (!['date', 'gate'].includes(mode)) mode = 'date';
             localStorage.setItem('board_view_mode', mode);
-            document.getElementById('vm-gate').style.background = mode === 'gate' ? 'var(--ds-accent,#4f46e5)' : 'var(--ds-bg-surface,#fff)';
-            document.getElementById('vm-gate').style.color = mode === 'gate' ? '#fff' : 'var(--ds-text-secondary,#475569)';
-            document.getElementById('vm-date').style.background = mode === 'date' ? 'var(--ds-accent,#4f46e5)' : 'var(--ds-bg-surface,#fff)';
-            document.getElementById('vm-date').style.color = mode === 'date' ? '#fff' : 'var(--ds-text-secondary,#475569)';
+            document.body.classList.toggle('gate-mode', mode === 'gate');
+            // 按钮样式
+            document.querySelectorAll('.vm-btn').forEach(b => {
+                const isActive = b.id === `vm-${mode}`;
+                b.style.background = isActive ? 'var(--ds-accent,#4f46e5)' : 'var(--ds-bg-surface,#fff)';
+                b.style.color = isActive ? '#fff' : 'var(--ds-text-secondary,#475569)';
+                b.classList.toggle('vm-active', isActive);
+            });
             const gateBoard = document.getElementById('kanban-grid-gate');
-            const dateBoard = document.getElementById('kanban-grid') || document.getElementById('board-container');
-            if (gateBoard) gateBoard.style.display = mode === 'gate' ? '' : 'none';
-            if (dateBoard) dateBoard.style.display = mode === 'date' ? '' : 'none';
-            if (mode === 'gate') loadGateView();
+            const dateBoard = document.getElementById('board-container');
+            if (gateBoard) {
+                gateBoard.style.display = mode === 'gate' ? '' : 'none';
+                gateBoard.style.minHeight = mode === 'gate' ? '400px' : '';
+                if (mode !== 'gate') {
+                    gateBoard.style.position = '';
+                    gateBoard.style.marginTop = '';
+                    gateBoard.style.paddingTop = '';
+                    gateBoard.querySelectorAll('[data-gate-empty-diag]').forEach(el => el.remove());
+                }
+            }
+            if (dateBoard) {
+                dateBoard.style.display = mode === 'date' ? 'grid' : 'none';
+                if (mode === 'date') {
+                    dateBoard.style.gridTemplateColumns = 'repeat(auto-fit,minmax(260px,1fr))';
+                    dateBoard.style.gap = '16px';
+                }
+            }
+            const gateToolbar = document.getElementById('gate-view-toolbar');
+            if (gateToolbar) gateToolbar.style.display = mode === 'gate' ? 'flex' : 'none';
+            const mainEl = document.querySelector('main');
+            if (mainEl) mainEl.style.paddingBottom = mode === 'gate' ? '0' : '';
+            if (mode === 'gate') loadGateView(); else loadBoardData();
         }
 
         // ── 闸门看板视图 ──────────────────────────────────────────
@@ -4542,6 +4567,8 @@
                 _gateViewData = gateData;
                 window.gateStatusByKey = gateData.by_key || {};
                 window._pendingItems = pendingData.items || [];
+                // 把已预算的回复灌进 replyCache，让回复按钮秒回
+                Object.keys(window.gateStatusByKey).forEach(k => _seedReplyCacheFromGate(k, window.gateStatusByKey[k]));
                 _pendingSelected.clear();
                 _pendingCandidateSelected.clear();
                 renderGateBoard();
@@ -4554,6 +4581,49 @@
                         <span style="color:var(--ds-text-muted,#94a3b8);font-size:12px">请检查后端日志</span>
                      </div>`;
             }
+        }
+
+        function _startGatePrecomputePoll(projKey, mods, domainParam) {
+            if (_gatePrecomputeTimer) clearInterval(_gatePrecomputeTimer);
+            _gatePrecomputeTimer = setInterval(async () => {
+                try {
+                    const d = await fetch(
+                        API_BASE+'/api/board/gate-view-tickets?hours=720&include_unscored=true&project_key='+encodeURIComponent(projKey)+domainParam
+                    ).then(r=>r.json());
+                    const prog = d.precompute_progress || {};
+                    // 更新 gateStatusByKey（增量）
+                    const newByKey = d.by_key || {};
+                    Object.assign(window.gateStatusByKey, newByKey);
+                    // 更新 toolbar 进度 chip
+                    const chip = document.getElementById('gate-precompute-chip');
+                    if (chip) {
+                        if (prog.missing === 0) {
+                            chip.textContent = `已预算 ${prog.cached}/${prog.total}`;
+                            chip.style.background = '#dcfce7';
+                            chip.style.color = '#15803d';
+                        } else {
+                            chip.textContent = `预算中 ${prog.cached}/${prog.total}`;
+                            chip.style.background = '#fef3c7';
+                            chip.style.color = '#a16207';
+                        }
+                    }
+                    // 全部完成时停止轮询并重渲染
+                    if (prog.missing === 0) {
+                        clearInterval(_gatePrecomputeTimer);
+                        _gatePrecomputeTimer = null;
+                        _gateViewData = d;
+                        window.gateStatusByKey = newByKey;
+                        Object.keys(newByKey).forEach(k => _seedReplyCacheFromGate(k, newByKey[k]));
+                        renderGateBoard();
+                        _checkGateBoardEmpty(d);
+                    } else {
+                        // 增量：把新完成的工单灌进 replyCache
+                        Object.keys(newByKey).forEach(k => {
+                            if (newByKey[k] && newByKey[k].reply_status === 'cached') _seedReplyCacheFromGate(k, newByKey[k]);
+                        });
+                    }
+                } catch(e) { /* ignore poll errors */ }
+            }, 30000);
         }
 
         function _checkGateBoardEmpty(data) {
@@ -4744,13 +4814,39 @@ ${_colDecision(byKey)}
                     if (!findIssueByKey(key)) window.allIssues.push(issue);
                 }
             }
-            if (issue) {
-                showIssueDetail(key);
-            } else {
-                const base = (window.JIRA_BASE_URL || 'https://jira.yonyoucloud.com');
-                if (typeof showToast === 'function') showToast(`工单 ${key} 不在当前看板，正在 Jira 中打开`, 'info');
-                window.open(`${base}/browse/${key}`, '_blank');
+            showIssueDetail(key);
+            // 静默预热 replyCache：无 UI，回复按钮打开时秒回
+            _prewarmReplyCache(key);
+        }
+
+        function _prewarmReplyCache(key) {
+            // 优先从预计算结果即时灌入（零网络）
+            const gateInfo = (window.gateStatusByKey || {})[key];
+            if (gateInfo?.reply_content) {
+                _seedReplyCacheFromGate(key, gateInfo);
+                return;
             }
+            // 已有有效缓存，不重复请求
+            const existing = replyCache.get(key);
+            if (existing && Date.now() - existing.timestamp < 600000) return;
+            // 发起静默后台请求，不占用 currentReplyIssue / _replyRequestSeq
+            (async () => {
+                try {
+                    const r = await fetch(`${API_BASE}/api/board/generate-reply`, {
+                        method: 'POST',
+                        headers: {'Content-Type':'application/json'},
+                        body: JSON.stringify({issue_key: key, force: false}),
+                    });
+                    const data = await r.json();
+                    const content = data.reply_content || '';
+                    if (!content) return;
+                    // 仅写入，不覆盖用户正在编辑中的条目（用户手动 force regenerate 留下的较新条目优先）
+                    const cur = replyCache.get(key);
+                    if (!cur || Date.now() - cur.timestamp >= 600000) {
+                        replyCache.set(key, { content, data, timestamp: Date.now() });
+                    }
+                } catch(e) {}
+            })();
         }
         function _confidenceChip(info) {
             if (!info) return '';
@@ -6950,6 +7046,27 @@ ${_colDecision(byKey)}
         const replyCache = new Map();   // issueKey → {content, data, timestamp}
         const gate1BlockedKeys = new Set(); // issues currently blocked by Gate 1
 
+        // 把预计算结果从 gateStatusByKey 灌进 replyCache，让回复按钮零等待命中本地缓存
+        function _seedReplyCacheFromGate(key, gateInfo) {
+            if (!gateInfo || !gateInfo.reply_content) return;
+            const existing = replyCache.get(key);
+            if (existing && Date.now() - existing.timestamp < 600000) return;
+            replyCache.set(key, {
+                content: gateInfo.reply_content,
+                data: {
+                    reply_content: gateInfo.reply_content,
+                    word_count: (gateInfo.reply_content || '').length,
+                    ai_analysis: gateInfo.ai_analysis || null,
+                    suggested_reply_method: gateInfo.suggested_reply_method || null,
+                    suggested_issue_type: gateInfo.suggested_issue_type || null,
+                    grounded_confidence: { score: gateInfo.composite_score },
+                },
+                timestamp: Date.now(),
+            });
+        }
+        let _replyAbort = null;         // AbortController for in-flight generate-reply request
+        let _replyRequestSeq = 0;       // monotonic counter — stale responses are dropped
+
         // 打开回复编辑器
         async function openReplyEditor(issueKey, issueData) {
             console.log('[ReplyEditor] 打开回复编辑器:', issueKey, issueData);
@@ -7012,8 +7129,15 @@ ${_colDecision(byKey)}
                 document.getElementById('re-ref-confidence').textContent = '-';
             }
 
-            // 优先使用前端缓存，避免每次打开都请求API
-            const cached = replyCache.get(issueKey);
+            // 优先使用前端缓存；cache miss 时尝试从预计算结果即时灌入，避免任何网络等待
+            let cached = replyCache.get(issueKey);
+            if (!cached || Date.now() - cached.timestamp >= 600000) {
+                const gateInfo = (window.gateStatusByKey || {})[issueKey];
+                if (gateInfo?.reply_content) {
+                    _seedReplyCacheFromGate(issueKey, gateInfo);
+                    cached = replyCache.get(issueKey);
+                }
+            }
             if (cached && (Date.now() - cached.timestamp < 600000)) {
                 // 缓存有效（10分钟内）
                 originalReplyContent = cached.content;
@@ -7040,12 +7164,22 @@ ${_colDecision(byKey)}
         }
 
         // 生成智能回复
-        async function generateSmartReply(issueKey, force = false) {
+        async function generateSmartReply(issueKey, force = false, passGates = false) {
+            // ── 竞态防护 ─────────────────────────────────────────────
+            if (_replyAbort) _replyAbort.abort();
+            _replyAbort = new AbortController();
+            const mySeq = ++_replyRequestSeq;
+            const myKey = issueKey;
+
+            // 用于在回调内校验是否仍为"当前"请求
+            const _stale = () => mySeq !== _replyRequestSeq || myKey !== currentReplyIssue;
+
             try {
                 const response = await fetch(`${API_BASE}/api/board/generate-reply`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ issue_key: issueKey, force: force })
+                    body: JSON.stringify({ issue_key: issueKey, force, force_pass_gate1: passGates, force_pass_gate2: passGates }),
+                    signal: _fetchSig,
                 });
                 const data = await response.json();
 
@@ -7063,8 +7197,20 @@ ${_colDecision(byKey)}
                     document.getElementById('re-solution').placeholder = '补充信息后可重新生成解决方案...';
                     document.getElementById('re-solution').value = '';
                     document.getElementById('re-gen-details')?.classList.add('hidden');
-                    document.getElementById('re-reply-basis')?.classList.add('hidden');
-                    return; // don't throw, modal stays open
+                    // 信息不足：显示回复依据区 + 标签
+                    if (data.info_insufficient) {
+                        const basisEl = document.getElementById('re-reply-basis');
+                        if (basisEl) basisEl.classList.remove('hidden');
+                        document.getElementById('re-basis-info-insufficient')?.classList.remove('hidden');
+                        pendingSuggestions = {
+                            reply_method: data.suggested_reply_method,
+                            issue_type: data.suggested_issue_type,
+                        };
+                        applyPendingSuggestions();
+                    } else {
+                        document.getElementById('re-reply-basis')?.classList.add('hidden');
+                    }
+                    return;
                 }
 
                 const replyText = data.solution_content || data.reply_content || '';
@@ -7129,6 +7275,8 @@ ${_colDecision(byKey)}
             const basis = document.getElementById('re-reply-basis');
             if (!basis) return;
             basis.classList.remove('hidden');
+            // 正常回复路径：隐藏信息不足标签
+            document.getElementById('re-basis-info-insufficient')?.classList.add('hidden');
 
             // 综合置信度 breakdown
             const g = data.grounded_confidence;
@@ -7328,6 +7476,52 @@ ${_colDecision(byKey)}
             } finally {
                 btn.disabled = false;
                 btn.innerHTML = origHtml;
+                btn.classList.remove('opacity-60', 'pointer-events-none');
+            }
+        }
+
+        // 智能扩展：基于用户当前编辑内容重跑搜索，精准完善方案
+        async function expandSolution() {
+            if (!currentReplyIssue) return;
+            const draft = (document.getElementById('re-solution').value || '').trim();
+            if (!draft) {
+                showToast('请先在方案文本框里写入需要完善的内容或关键词', 'warning');
+                return;
+            }
+            const btn = document.getElementById('re-expand-btn');
+            const origText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = '完善中...';
+            btn.classList.add('opacity-60', 'pointer-events-none');
+            try {
+                const keywords = draft.split(/[\s,，、。；;]+/).filter(s => s.length >= 2).slice(0, 8);
+                const r = await fetch(`${API_BASE}/api/reply/refine`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...getJiraHeaders() },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        issue_key: currentReplyIssue,
+                        user_draft: draft,
+                        focus_keywords: keywords,
+                    }),
+                });
+                if (r.status === 429) {
+                    showToast('今日免费额度已用完，请登录 QCL 账号后继续使用', 'warning');
+                    return;
+                }
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                const data = await r.json();
+                const refined = data.refined_solution || draft;
+                document.getElementById('re-solution').value = refined;
+                // 保留 originalReplyContent 不变，确保「直接采纳/加工处理」判定准确
+                if (typeof handleReplyInput === 'function') handleReplyInput(refined);
+                showToast('方案已扩展完善', 'success');
+            } catch (e) {
+                console.error('[expandSolution]', e);
+                showToast('完善失败：' + (e.message || '未知错误'), 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = origText;
                 btn.classList.remove('opacity-60', 'pointer-events-none');
             }
         }

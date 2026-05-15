@@ -3359,7 +3359,8 @@ class BoardService:
 
         # 拦截 — 自动退回支持（填解决方案 + 退回支持 transition）
         _g1_ok, _g1_steps = self._gate1_auto_return_to_support(
-            issue_key, result.missing_fields, result.inquiry_draft
+            issue_key, result.missing_fields, result.inquiry_draft,
+            insufficient_type=result.insufficient_type,
         )
         try:
             from services import gate_decision_log as _gdl1
@@ -3385,6 +3386,7 @@ class BoardService:
             "rule_matched": result.rule_matched,
             "auto_returned": _g1_ok,
             "operation_steps": _g1_steps,
+            "insufficient_type": result.insufficient_type,
             "gate_decisions": {"completeness": {
                 "passed": False,
                 "missing_fields": result.missing_fields,
@@ -3392,7 +3394,7 @@ class BoardService:
             }},
         }
 
-    def _gate1_auto_return_to_support(self, issue_key: str, missing_fields: list, inquiry_draft: str) -> tuple:
+    def _gate1_auto_return_to_support(self, issue_key: str, missing_fields: list, inquiry_draft: str, insufficient_type: str = "") -> tuple:
         """
         Gate 1 自动退回：填解决方案 + 选「退回支持」+ 触发 Jira transition。
         上限 2 次/ticket（防误判反复退回）。计数记录在 data/gate1_inquiry_log.json。
@@ -3419,13 +3421,16 @@ class BoardService:
         ]
         try:
             from datetime import datetime as _dt
+            _custom_fields = {
+                "solution": inquiry_draft,
+                "reply_method": "退回支持",
+            }
+            if insufficient_type == "invalid_description":
+                _custom_fields["issue_type_confirmed"] = "无效问题"
             result = jira_service.reply_and_close_via_transition(
                 issue_id=issue_key,
                 comment=inquiry_draft,
-                custom_fields={
-                    "solution": inquiry_draft,
-                    "reply_method": "退回支持",
-                },
+                custom_fields=_custom_fields,
                 ai_fields=None,
             )
             ok = result.get("success", False)
