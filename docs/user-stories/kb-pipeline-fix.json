@@ -56,7 +56,7 @@
       "rebuild 时记录 mtime，已有且 mtime 相同的 item 跳过",
       "验证：连续两次调 sync，第二次日志或返回体显示 skipped_unchanged > 0"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
