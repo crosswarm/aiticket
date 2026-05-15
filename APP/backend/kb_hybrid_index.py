@@ -125,6 +125,22 @@ class KnowledgeHybridIndex:
             except Exception:
                 pass  # 表不存在或列缺失时退化为全量
 
+            # 对 mtime 未变的条目，在 reset 前缓存其 chunk_text（reset 后用缓存代替磁盘读）
+            _cached_text: dict[str, str] = {}
+            for item in items:
+                _mtime = item.get("source_mtime")
+                if _mtime is not None and _existing_mtime.get(item["content_id"]) == _mtime:
+                    try:
+                        chunks = self.conn.execute(
+                            "SELECT chunk_text FROM chunks WHERE content_id=? ORDER BY chunk_index",
+                            (item["content_id"],)
+                        ).fetchall()
+                        _text = "\n".join(c["chunk_text"] for c in chunks)
+                        if _text.strip():
+                            _cached_text[item["content_id"]] = _text
+                    except Exception:
+                        pass  # 缓存失败时 reset 后 fallback 到 text_loader
+
             self._reset()
             chunk_count = 0
             skipped_unchanged = 0
@@ -134,14 +150,21 @@ class KnowledgeHybridIndex:
                 for item in items:
                     _item_mtime: str | None = item.get("source_mtime")
 
-                    # 若 mtime 有效且与上次相同 → 跳过（增量去重）
+                    # 若 mtime 有效且缓存命中 → 用缓存文本，计入 skipped_unchanged
                     if _item_mtime is not None:
                         _prev = _existing_mtime.get(item["content_id"])
                         if _prev is not None and _prev == _item_mtime:
-                            skipped_unchanged += 1
-                            continue
-
-                    text = text_loader(item).strip()
+                            _ct = _cached_text.get(item["content_id"])
+                            if _ct:
+                                skipped_unchanged += 1
+                                # 仍需写回 db（reset 已清空），使用缓存文本代替磁盘读
+                                text = _ct
+                            else:
+                                text = text_loader(item).strip()  # fallback: cache miss
+                        else:
+                            text = text_loader(item).strip()
+                    else:
+                        text = text_loader(item).strip()
                     if not text:
                         continue
 
