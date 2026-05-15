@@ -46,7 +46,7 @@
       "python APP/backend/scripts/batch_compile_kb.py --force（后台跑，等待完成）",
       "sqlite3 data/sqlite/kb_chunks.db SELECT name FROM documents WHERE name LIKE '综合解析：公式%' COUNT > 0"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

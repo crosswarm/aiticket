@@ -204,6 +204,7 @@ def _execute(job: dict) -> None:
                 override_content=payload.get("override_content"),
                 extra_metadata=payload.get("extra_metadata"),
                 project_key=payload.get("project_key", "_global"),
+                skip_bip_validation=payload.get("skip_bip_validation", True),
             )
             if result:
                 _finish(job["id"], "done", result, None)
