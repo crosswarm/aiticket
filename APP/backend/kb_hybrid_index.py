@@ -93,8 +93,12 @@ class KnowledgeHybridIndex:
         self.client = get_chroma_client(persist_path=str(self.chroma_path))
         self.collection = self._create_collection_with_recovery()
 
-    def rebuild(self, items: list[dict[str, Any]], text_loader: Callable[[dict[str, Any]], str]) -> int:
-        """全量重建索引。fcntl flock 防止多进程同时 rebuild 损坏文件。"""
+    def rebuild(self, items: list[dict[str, Any]], text_loader: Callable[[dict[str, Any]], str]) -> dict[str, int]:
+        """全量重建索引。fcntl flock 防止多进程同时 rebuild 损坏文件。
+
+        返回 dict with keys: chunk_count, skipped_unchanged
+        （向后兼容：调用方可继续用 int(result) 或 result.get("chunk_count")）
+        """
         import fcntl
         _lock_path = str(self.sqlite_path) + ".rebuild.lock"
         with open(_lock_path, "w") as _flock_file:
@@ -102,20 +106,41 @@ class KnowledgeHybridIndex:
                 fcntl.flock(_flock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 logger.warning("[KnowledgeHybridIndex] rebuild: 另一进程正在重建，跳过")
-                return -1
+                return {"chunk_count": -1, "skipped_unchanged": 0}
             return self._rebuild_locked(items, text_loader)
 
-    def _rebuild_locked(self, items: list[dict[str, Any]], text_loader: Callable[[dict[str, Any]], str]) -> int:
+    def _rebuild_locked(self, items: list[dict[str, Any]], text_loader: Callable[[dict[str, Any]], str]) -> dict[str, int]:
         with self._lock:
             # 重建前先备份受保护的 source_kind（不在 manifest 里，清空后无法自动恢复）
             preserved = self._dump_preserved_kinds()
             if preserved:
                 print(f"[KnowledgeHybridIndex] rebuild: 保护 {len(preserved)} 条受保护数据（{set(p[0]['source_kind'] for p in preserved)}）")
 
+            # 增量去重：在 reset 前先快照当前 (content_id → source_mtime) 映射
+            _existing_mtime: dict[str, str | None] = {}
+            try:
+                rows = self.conn.execute("SELECT content_id, source_mtime FROM documents").fetchall()
+                for r in rows:
+                    _existing_mtime[r["content_id"]] = r["source_mtime"]
+            except Exception:
+                pass  # 表不存在或列缺失时退化为全量
+
             self._reset()
             chunk_count = 0
+            skipped_unchanged = 0
+            _batch_counter = 0
+            _chroma_queue: list[tuple[list, list, list]] = []
             try:
                 for item in items:
+                    _item_mtime: str | None = item.get("source_mtime")
+
+                    # 若 mtime 有效且与上次相同 → 跳过（增量去重）
+                    if _item_mtime is not None:
+                        _prev = _existing_mtime.get(item["content_id"])
+                        if _prev is not None and _prev == _item_mtime:
+                            skipped_unchanged += 1
+                            continue
+
                     text = text_loader(item).strip()
                     if not text:
                         continue
@@ -125,8 +150,9 @@ class KnowledgeHybridIndex:
                         """
                         INSERT INTO documents (
                             content_id, source_kind, name, summary, source_rel_path,
-                            citation_label, l1_module, l2_module, doc_type, project_key
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            citation_label, l1_module, l2_module, doc_type, project_key,
+                            source_mtime
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             item["content_id"],
@@ -139,6 +165,7 @@ class KnowledgeHybridIndex:
                             item.get("l2_module", ""),
                             item.get("doc_type", ""),
                             _pk,
+                            _item_mtime,
                         ),
                     )
 
@@ -206,19 +233,39 @@ class KnowledgeHybridIndex:
                         chunk_count += 1
 
                     if chroma_ids:
-                        self.collection.add(ids=chroma_ids, documents=chroma_docs, metadatas=chroma_metas)
+                        _chroma_queue.append((chroma_ids, chroma_docs, chroma_metas))
 
+                    _batch_counter += 1
+                    if _batch_counter % 50 == 0:
+                        self.conn.commit()
+
+                # Final commit for remaining items
                 self.conn.commit()
             finally:
                 # 无论 rebuild 成功还是异常，始终恢复受保护数据
                 # 保证 sync 失败时 kb_compiled 等增量数据不丢失
                 for p_item, p_text in preserved:
                     try:
-                        chunk_count += self.add_item(p_item, p_text)
+                        added = self.add_item(p_item, p_text)
+                        if added > 0:
+                            chunk_count += added
                     except Exception as e:
                         print(f"[KnowledgeHybridIndex] 恢复受保护条目失败 {p_item.get('content_id')}: {e}")
 
-            return chunk_count
+            # Flush ChromaDB in background — SQLite already committed and readable
+            _col = self.collection
+            _q = _chroma_queue
+            def _chroma_flush(q=_q, col=_col):
+                for ids, docs, metas in q:
+                    try:
+                        col.add(ids=ids, documents=docs, metadatas=metas)
+                    except Exception as e:
+                        print(f"[rebuild] chroma flush: {e}")
+            threading.Thread(target=_chroma_flush, daemon=True).start()
+
+            if skipped_unchanged:
+                print(f"[KnowledgeHybridIndex] rebuild: 跳过未变化 {skipped_unchanged} 条（mtime 相同）")
+            return {"chunk_count": chunk_count, "skipped_unchanged": skipped_unchanged}
 
     def _dump_preserved_kinds(self) -> list[tuple[dict[str, Any], str]]:
         """导出所有受保护 source_kind 的文档（含完整 chunk 文本），用于 rebuild 前暂存。"""
@@ -297,13 +344,26 @@ class KnowledgeHybridIndex:
             self.conn.commit()
             return True
 
-    def add_item(self, item: dict[str, Any], text: str) -> int:
-        """增量插入单条文档（支持 upsert：content_id 冲突时先删旧数据再插入）。"""
+    def add_item(self, item: dict[str, Any], text: str, source_mtime: str | None = None) -> int:
+        """增量插入单条文档（支持 upsert：content_id 冲突时先删旧数据再插入）。
+
+        source_mtime: 文件修改时间字符串（ISO 8601 / stat mtime）。
+            若提供且与已存 mtime 相同，则跳过本次写入（返回 -1 表示 skipped）。
+            为 None 时行为与旧版一致（不跳过）。
+        """
         text = text.strip()
         if not text:
             return 0
         content_id = item["content_id"]
         with self._lock:
+            # 若提供 mtime，检查是否已有相同记录且 mtime 未变
+            if source_mtime is not None:
+                existing_row = self.conn.execute(
+                    "SELECT source_mtime FROM documents WHERE content_id = ?", (content_id,)
+                ).fetchone()
+                if existing_row is not None and existing_row["source_mtime"] == source_mtime:
+                    return -1  # skipped — content unchanged
+
             # upsert: 先删除已有记录
             existing = self.conn.execute(
                 "SELECT 1 FROM documents WHERE content_id = ?", (content_id,)
@@ -325,15 +385,17 @@ class KnowledgeHybridIndex:
                 self.conn.execute("DELETE FROM documents WHERE content_id = ?", (content_id,))
 
             _pk = item.get("project_key", "_global") or "_global"
-            # 插入 documents
+            # 插入 documents（含 source_mtime）
             self.conn.execute(
                 """INSERT INTO documents (content_id, source_kind, name, summary,
-                   source_rel_path, citation_label, l1_module, l2_module, doc_type, project_key)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   source_rel_path, citation_label, l1_module, l2_module, doc_type, project_key,
+                   source_mtime)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (content_id, item["source_kind"], item.get("name", ""),
                  item.get("summary", ""), item.get("source_rel_path", ""),
                  item.get("citation_label", ""), item.get("l1_module", ""),
-                 item.get("l2_module", ""), item.get("doc_type", ""), _pk),
+                 item.get("l2_module", ""), item.get("doc_type", ""), _pk,
+                 source_mtime),
             )
 
             # 分块 → 插入 chunks + fts + chroma
@@ -456,7 +518,8 @@ class KnowledgeHybridIndex:
                     l1_module TEXT,
                     l2_module TEXT,
                     doc_type TEXT,
-                    project_key TEXT DEFAULT '_global'
+                    project_key TEXT DEFAULT '_global',
+                    source_mtime TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS chunks (
@@ -511,6 +574,12 @@ class KnowledgeHybridIndex:
                     self.conn.commit()
                 except Exception:
                     pass  # column already exists
+            # Migration: add source_mtime column to documents (Layer2-1)
+            try:
+                self.conn.execute("ALTER TABLE documents ADD COLUMN source_mtime TEXT")
+                self.conn.commit()
+            except Exception:
+                pass  # column already exists
 
     def _reset(self) -> None:
         with self._lock:
