@@ -86,7 +86,7 @@
       "重启后端，日志含 [KB] incremental sync 字样",
       "在 KB/OUTPUT/converted/ 下临时建一个空 test_warn_domain/ 目录，重启后日志出现 WARN: domain 'test_warn_domain' not compiled，清理后恢复"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",

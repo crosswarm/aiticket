@@ -5401,9 +5401,48 @@ def _reap_zombie_running_tasks():
         print(f"[startup-reap] 清理失败（不影响启动）: {e}")
 
 
+def _kb_startup_sync_and_warn():
+    """Lifespan startup: incremental KB sync + warn for domains present on disk but not compiled."""
+    try:
+        logger.info("[KB] lifespan startup: incremental sync starting")
+        kb_runtime_service.sync(force_refresh=False)
+        logger.info("[KB] lifespan startup: incremental sync done")
+    except Exception as e:
+        logger.warning("[KB] lifespan startup: incremental sync failed (non-fatal): %s", e)
+
+    # Compare converted/ directories vs compiled entries in documents table
+    try:
+        import os as _os
+        converted_root = Path(__file__).parent.parent.parent / "KB" / "OUTPUT" / "converted"
+        if converted_root.exists():
+            disk_domains = {
+                d for d in _os.listdir(str(converted_root))
+                if (converted_root / d).is_dir() and not d.startswith("__") and not d.startswith(".")
+            }
+            # Fetch compiled names from documents table, strip "综合解析：" prefix
+            compiled_names: set[str] = set()
+            try:
+                rows = kb_runtime_service.hybrid_index.conn.execute(
+                    "SELECT name FROM documents WHERE source_kind = 'kb_compiled'"
+                ).fetchall()
+                for row in rows:
+                    name = row[0] if isinstance(row, (list, tuple)) else row["name"]
+                    stripped = name.replace("综合解析：", "").strip()
+                    compiled_names.add(stripped)
+            except Exception as db_e:
+                logger.warning("[KB] startup domain-check: DB query failed: %s", db_e)
+
+            for domain in sorted(disk_domains):
+                if domain not in compiled_names:
+                    logger.warning("[KB] domain '%s' not compiled, trigger refresh", domain)
+    except Exception as e:
+        logger.warning("[KB] startup domain-check failed (non-fatal): %s", e)
+
+
 @app.on_event("startup")
 def startup_event():
     _reap_zombie_running_tasks()
+    _kb_startup_sync_and_warn()
 
 
 @app.on_event("shutdown")
