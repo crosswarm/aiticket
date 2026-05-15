@@ -37,7 +37,7 @@
       "sqlite3 data/sqlite/kb_chunks.db SELECT source_kind,COUNT(*) FROM chunks GROUP BY source_kind 显示 kb_local > 0",
       "跑域分布 SQL，17 个域每个 chunks > 0"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "integration",
