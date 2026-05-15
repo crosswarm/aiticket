@@ -17,7 +17,7 @@
       "python -c 调用 compile_service 内部方法，打印候选 topics 列表",
       "断言列表含 公式/规则/元数据/组织/权限/云平台/业务流/消息 共 >= 17 个域名"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
