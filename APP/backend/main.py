@@ -5441,8 +5441,9 @@ def _kb_startup_sync_and_warn():
 
 @app.on_event("startup")
 def startup_event():
+    import threading as _threading
     _reap_zombie_running_tasks()
-    _kb_startup_sync_and_warn()
+    _threading.Thread(target=_kb_startup_sync_and_warn, daemon=True).start()
 
 
 @app.on_event("shutdown")
