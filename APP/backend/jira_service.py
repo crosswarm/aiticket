@@ -67,6 +67,8 @@ class JiraService:
         # 当提供时，所有请求使用 cookies 认证而非 Basic Auth
         self._session_cookies = dict(session_cookies) if session_cookies else None
         self.reload_config()
+        # strict 模式标记：无显式 session_cookies 且无显式 username，意味着使用默认凭据（qiangxiao）
+        self._no_default_creds = not bool(username or session_cookies)
 
     def _build_basic_auth_header(self, username: str, password: str) -> Optional[str]:
         if not username or not password:
@@ -201,6 +203,12 @@ class JiraService:
         """
         Wrapper for making HTTP requests with proxy support and error handling.
         """
+        from role_guard import is_strict_role, NoUserContextError
+        if is_strict_role() and getattr(self, '_no_default_creds', False):
+            raise NoUserContextError(
+                "JiraService._make_request",
+                "default credentials (qiangxiao) blocked in strict mode",
+            )
         # Add proxies if configured
         if self.proxies:
             kwargs['proxies'] = self.proxies

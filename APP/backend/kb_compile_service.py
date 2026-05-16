@@ -63,6 +63,10 @@ class KBCompileService:
 参考资料：
 {context}"""
 
+    _CONVERTED_ROOT = os.path.normpath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'KB', 'OUTPUT', 'converted')
+    )
+
     def __init__(self, kb_hybrid_index, kb_runtime_service, llm_service):
         self.index = kb_hybrid_index
         self.kb = kb_runtime_service
@@ -76,6 +80,19 @@ class KBCompileService:
         "平台公共", "架构优化", "应用与需求使用手册",
         "产品白皮书", "技术规范", "培训材料", "操作手册",
     })
+
+    def _default_priority_topics(self) -> list:
+        """从 KB/OUTPUT/converted/ 目录扫描域名，数据驱动替代硬编码列表。"""
+        topics = []
+        if not os.path.isdir(self._CONVERTED_ROOT):
+            return topics
+        for name in sorted(os.listdir(self._CONVERTED_ROOT)):
+            if not os.path.isdir(os.path.join(self._CONVERTED_ROOT, name)):
+                continue
+            if name in self._TOPIC_BLACKLIST:
+                continue
+            topics.append(name)
+        return topics
 
     def _validate_topic_is_bip_entity(self, topic: str) -> tuple:
         """
@@ -264,11 +281,7 @@ class KBCompileService:
         返回成功编译的结果列表。
         """
         if not priority_topics:
-            priority_topics = [
-                "连岗审批", "代理审批", "审批节点配置", "分支合并条件",
-                "公式选人", "流程中心查询", "配置迁移操作",
-                "费控审批", "采购审批", "客开申请流程",
-            ]
+            priority_topics = self._default_priority_topics()
 
         # 话题搜索 query 覆盖：某些话题作为单一词条向量命中率低，需用扩展 query 检索原材料
         _search_overrides = {
@@ -296,10 +309,7 @@ class KBCompileService:
         - 长期未更新的编译页
         返回 issues 列表。
         """
-        default_topics = [
-            "连岗审批", "代理审批", "审批节点配置", "分支合并条件",
-            "公式选人", "流程中心查询", "配置迁移操作",
-        ]
+        default_topics = self._default_priority_topics()
         issues = []
         missing = []
 

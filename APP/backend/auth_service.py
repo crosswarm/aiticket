@@ -171,16 +171,46 @@ class AuthService:
                 )"""
             )
 
-            # Skill Bearer token 表（供 Claude Code Skill 客户端使用）
+            # Skill 设备令牌表（机器绑定，不可跨机迁移）
             conn.execute(
-                """CREATE TABLE IF NOT EXISTS skill_tokens (
-                  token_hash  TEXT PRIMARY KEY,
-                  user_id     TEXT NOT NULL,
-                  label       TEXT NOT NULL DEFAULT 'skill',
-                  created_at  TEXT NOT NULL,
-                  expires_at  TEXT,
-                  last_used_at TEXT,
-                  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                """CREATE TABLE IF NOT EXISTS device_tokens (
+                  id                 TEXT PRIMARY KEY,
+                  user_id            TEXT NOT NULL,
+                  client_fingerprint TEXT NOT NULL,
+                  token_hash         TEXT NOT NULL UNIQUE,
+                  label              TEXT NOT NULL DEFAULT '',
+                  created_at         TEXT NOT NULL,
+                  last_used_at       TEXT NOT NULL,
+                  revoked            INTEGER NOT NULL DEFAULT 0,
+                  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                  UNIQUE (user_id, client_fingerprint)
+                )"""
+            )
+
+            # 匿名配额表（每日限制，按 client_id 和 IP 双重计数）
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS anon_quota (
+                  dim_key  TEXT NOT NULL,
+                  day_key  TEXT NOT NULL,
+                  count    INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY (dim_key, day_key)
+                )"""
+            )
+
+            # API 请求日志表（智能回复类接口）
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS request_logs (
+                  id           TEXT PRIMARY KEY,
+                  ts           TEXT NOT NULL,
+                  interface    TEXT NOT NULL,
+                  user_id      TEXT NOT NULL DEFAULT '',
+                  display_name TEXT NOT NULL DEFAULT '',
+                  is_anon      INTEGER NOT NULL DEFAULT 1,
+                  client_id    TEXT NOT NULL DEFAULT '',
+                  client_ip    TEXT NOT NULL DEFAULT '',
+                  project      TEXT NOT NULL DEFAULT '',
+                  issue_key    TEXT NOT NULL DEFAULT '',
+                  query_text   TEXT NOT NULL DEFAULT ''
                 )"""
             )
 
@@ -777,6 +807,110 @@ class AuthService:
                 (user_id, label),
             )
         return cur.rowcount > 0
+
+
+    # ── Device Token 方法 ──────────────────────────────────────────────────────
+
+    def issue_device_token(self, username: str, password: str, client_fingerprint: str, label: str = "") -> str:
+        """校验密码后签发与机器指纹绑定的 device token，DB 只存 sha256 摘要。"""
+        user = self.authenticate(username, password)
+        if user is None:
+            raise ValueError("Invalid credentials")
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        now = _isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO device_tokens (id, user_id, client_fingerprint, token_hash, label, created_at, last_used_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, client_fingerprint) DO UPDATE SET
+                     token_hash=excluded.token_hash, label=excluded.label,
+                     last_used_at=excluded.last_used_at, revoked=0""",
+                (secrets.token_hex(16), user["id"], client_fingerprint, token_hash, label or "", now, now),
+            )
+        return token
+
+    def verify_device_token(self, token: str, client_fingerprint: str) -> Optional[dict[str, Any]]:
+        """token + client_fingerprint 双匹配且未 revoked 时返回 User 字典，否则 None。"""
+        if not token or not client_fingerprint:
+            return None
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        now = _isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT users.* FROM device_tokens
+                   JOIN users ON users.id = device_tokens.user_id
+                   WHERE device_tokens.token_hash = ?
+                     AND device_tokens.client_fingerprint = ?
+                     AND device_tokens.revoked = 0
+                     AND users.is_active = 1""",
+                (token_hash, client_fingerprint),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE device_tokens SET last_used_at=? WHERE token_hash=?",
+                    (now, token_hash),
+                )
+        return self._sanitize_user_row(row)
+
+    def revoke_device_token(self, token: str, client_fingerprint: str) -> bool:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        with self._connect() as conn:
+            result = conn.execute(
+                "UPDATE device_tokens SET revoked=1 WHERE token_hash=? AND client_fingerprint=?",
+                (token_hash, client_fingerprint),
+            )
+        return result.rowcount > 0
+
+    # ── 匿名配额方法 ──────────────────────────────────────────────────────────
+
+    def check_and_increment_anon_quota(self, client_id: str, client_ip: str, limit: int) -> bool:
+        """检查并递增匿名配额。返回 True=允许，False=超限。任一维度超限即拒绝。"""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        with self._connect() as conn:
+            for dim_key in (f"cid:{client_id}", f"ip:{client_ip}"):
+                row = conn.execute(
+                    "SELECT count FROM anon_quota WHERE dim_key=? AND day_key=?",
+                    (dim_key, today),
+                ).fetchone()
+                if row and row["count"] >= limit:
+                    return False
+            for dim_key in (f"cid:{client_id}", f"ip:{client_ip}"):
+                conn.execute(
+                    """INSERT INTO anon_quota (dim_key, day_key, count) VALUES (?, ?, 1)
+                       ON CONFLICT(dim_key, day_key) DO UPDATE SET count=count+1""",
+                    (dim_key, today),
+                )
+        return True
+
+    def log_request(
+        self,
+        interface: str,
+        user_id: str = "",
+        display_name: str = "",
+        is_anon: bool = True,
+        client_id: str = "",
+        client_ip: str = "",
+        project: str = "",
+        issue_key: str = "",
+        query_text: str = "",
+    ) -> str:
+        """写入 API 请求日志，返回 log id。失败时静默，不抛异常。"""
+        try:
+            log_id = secrets.token_hex(16)
+            ts = datetime.now(timezone.utc).isoformat()
+            with self._connect() as conn:
+                conn.execute(
+                    """INSERT INTO request_logs
+                       (id, ts, interface, user_id, display_name, is_anon,
+                        client_id, client_ip, project, issue_key, query_text)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (log_id, ts, interface, user_id, display_name, int(is_anon),
+                     client_id, client_ip, project, issue_key, query_text[:500]),
+                )
+            return log_id
+        except Exception:
+            return ""
 
 
 def get_auth_service() -> AuthService:

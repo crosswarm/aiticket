@@ -394,7 +394,12 @@ class KnowledgeRuntimeService:
         kb_full_items = self._load_kb_items()
         apcom_full_items = self._load_apcom_items()
         full_items = kb_full_items + apcom_full_items
-        chunk_count = self.hybrid_index.rebuild(full_items, self._load_item_text)
+        rebuild_result = self.hybrid_index.rebuild(full_items, self._load_item_text)
+        # rebuild 返回 dict（Layer2-1），向后兼容：若旧版返回 int 则包装
+        if isinstance(rebuild_result, int):
+            rebuild_result = {"chunk_count": rebuild_result, "skipped_unchanged": 0}
+        chunk_count = rebuild_result.get("chunk_count", 0)
+        skipped_unchanged = rebuild_result.get("skipped_unchanged", 0)
 
         # 验证受保护数据是否仍在（rebuild 内部的 _dump_preserved_kinds 可能丢失部分条目）
         post_compiled = self.hybrid_index.count_by_source_kind('kb_compiled')
@@ -413,6 +418,7 @@ class KnowledgeRuntimeService:
             "converted_files": local_build["converted_files"],
             "apcom_manifest_count": len(apcom_items),
             "chunk_count": chunk_count,
+            "skipped_unchanged": skipped_unchanged,
             "preserved_count": preserved_count,
         }
 
@@ -567,6 +573,7 @@ class KnowledgeRuntimeService:
                 "used_llm": False,
                 "fallback_used": True,
                 "sources": [],
+                "references": [],
                 "source_groups": search_bundle["source_groups"],
                 "source_counts": search_bundle["sources"],
                 "query_profile": search_bundle["query_profile"],
@@ -609,6 +616,8 @@ class KnowledgeRuntimeService:
         if not answer_text:
             fallback_used = True
             answer_text = self._build_fallback_short_answer(query, results) if mode == "short" else self._build_fallback_long_answer(query, results)
+            if not answer_text:
+                answer_text = "未能生成直接答案，以下为相关资料"
 
         topics: list[str] = []
         for result in results[:5]:
@@ -616,12 +625,22 @@ class KnowledgeRuntimeService:
                 if topic_name not in topics:
                     topics.append(topic_name)
 
+        top_refs = [
+            {
+                "name": item.get("name", ""),
+                "source_rel_path": item.get("source_rel_path", item.get("source", "")),
+                "citation_label": item.get("citation_label", item.get("name", "")),
+            }
+            for item in results[:3]
+        ]
+
         return {
             "answer_text": answer_text,
             "answer_html": self._render_answer_html(answer_text),
             "used_llm": used_llm,
             "fallback_used": fallback_used or not used_llm,
             "sources": results[:8],
+            "references": top_refs,
             "source_groups": search_bundle["source_groups"],
             "source_counts": search_bundle["sources"],
             "query_profile": search_bundle["query_profile"],
@@ -860,19 +879,32 @@ class KnowledgeRuntimeService:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         items = []
         for content_id, raw in payload.get("contents", {}).items():
+            _src_rel = raw.get("source_rel_path", "")
+            # Use source_path (KB/公式/...) so domain SQL LIKE '%/公式/%' matches correctly
+            _src_path = raw.get("source_path", _src_rel)
+            _converted_path = raw.get("converted_path", "")
+            # Layer2-1: 读取 converted_path 的 mtime 用于增量去重
+            _mtime: str | None = None
+            if _converted_path:
+                try:
+                    import os as _os
+                    _mtime = str(int(_os.path.getmtime(_converted_path)))
+                except Exception:
+                    pass
             item = {
                 "content_id": content_id,
                 "source_kind": "kb_local",
                 "name": raw.get("name", content_id),
                 "summary": raw.get("summary", ""),
-                "source_rel_path": raw.get("source_rel_path", ""),
+                "source_rel_path": _src_path,
                 # 保留完整路径供 _load_item_text() 使用（不能通过 _MANIFEST_ITEM_KEYS slim 掉）
-                "source_path": raw.get("source_path", ""),
-                "converted_path": raw.get("converted_path", ""),
+                "source_path": _src_path,
+                "converted_path": _converted_path,
                 "l1_module": raw.get("top_category", ""),
                 "l2_module": raw.get("second_category", ""),
-                "citation_label": f"[KB] {raw.get('source_rel_path', content_id)}",
+                "citation_label": f"[KB] {_src_rel or content_id}",
                 "project_key": "_global",
+                "source_mtime": _mtime,
             }
             items.append(item)
         return items
@@ -1513,7 +1545,7 @@ class KnowledgeRuntimeService:
         for term in informative_terms:
             if term.lower() in lowered:
                 hits += 1
-                if hits >= 2:
+                if hits >= 1:
                     return True
         return False
 

@@ -125,6 +125,9 @@ class AIAnalysisWorker:
 
         # 任务计数器，用于确保PriorityQueue元素可比较
         self._task_counter = 0
+
+        # 待处理 key 集合，防止同一工单重复入队
+        self._pending_keys: set = set()
     
     def start(self):
         """启动后台工作线程"""
@@ -152,6 +155,10 @@ class AIAnalysisWorker:
         Args:
             skip_reuse: 是否跳过复用逻辑（强制重新分析时使用）
         """
+        # 去重保护：已在队列中的工单不重复入队
+        if issue.key in self._pending_keys:
+            return False  # 已在队列中
+
         # 检查是否已有有效缓存（仅当不跳过复用时）
         if not skip_reuse:
             cached = self.vector_store.get_cached_analysis(issue.key)
@@ -169,6 +176,7 @@ class AIAnalysisWorker:
 
         # 使用计数器确保队列元素可比较 (priority, counter, issue, skip_reuse)
         self._task_counter += 1
+        self._pending_keys.add(issue.key)
         self.task_queue.put((priority, self._task_counter, issue, skip_reuse))
         print(f"[AIWorker] 任务已提交: {issue.key} (优先级: {priority}, 跳过复用: {skip_reuse})")
         return True  # 已成功入队
@@ -219,6 +227,9 @@ class AIAnalysisWorker:
         """
         issues = [issue for issue, _ in items]
         print(f"[AIWorker] 处理批次: {[i.key for i in issues]}")
+        # 从 pending_keys 中移除已出队的工单，允许后续重新入队
+        for _issue in issues:
+            self._pending_keys.discard(_issue.key)
 
         # 阶段1: 尝试复用已有分析（基于语义相似度）
         to_analyze = []
@@ -299,10 +310,134 @@ class AIAnalysisWorker:
         
         return None
     
+    def _resolve_routed_llm_config(self, feature_key: str) -> dict:
+        """按功能路由解析 LLM 配置，resolve 失败时回退到 self.llm_config"""
+        try:
+            from main import resolve_feature_llm_runtime
+            cfg = resolve_feature_llm_runtime(feature_key)
+            if cfg and cfg.get("api_key"):
+                return cfg
+        except Exception as e:
+            print(f"[AIWorker] 功能路由解析失败 {feature_key}: {e}")
+        return self.llm_config
+
+    def _call_llm_with_feature(self, feature_key: str, prompt: str) -> str:
+        """按功能路由调用 LLM，返回响应文本；LLM 返回错误时抛出 RuntimeError"""
+        cfg = self._resolve_routed_llm_config(feature_key)
+        response = self.llm_service.call_llm(
+            prompt,
+            api_key=cfg.get("api_key", ""),
+            provider=cfg.get("provider", "zhipu"),
+            model_name=cfg.get("model_name", "glm-5"),
+            base_url=cfg.get("base_url", ""),
+        )
+        if response.startswith("Error:"):
+            raise RuntimeError(response)
+        return response
+
     def _batch_llm_analyze(self, issues: List[JiraIssue]):
-        """批量调用LLM进行分析"""
-        # 检查API Key配置
-        api_key = self.llm_config.get("api_key", "")
+        """多字段并发生成：5 字段各自走功能路由，失败 >= 3 个时降级到原单 prompt 实现"""
+        import concurrent.futures
+
+        def _gen_field(feature_key: str, prompt: str):
+            """单字段调用，返回 (feature_key, result_or_None)"""
+            try:
+                result = self._call_llm_with_feature(feature_key, prompt)
+                return feature_key, result
+            except Exception as e:
+                print(f"[AIWorker] 字段 {feature_key} 生成失败: {e}")
+                return feature_key, None
+
+        for issue in issues:
+            summary = issue.summary or ""
+            description = (issue.description or "")[:500]
+
+            field_tasks = [
+                ("classification_analysis",
+                 f"对工单进行分类分析，输出推荐团队和角色:\n{summary}\n{description}"),
+                ("confidence_scoring",
+                 f"评估分类置信度，输出0到1之间的数字:\n{summary}"),
+                ("solution_recommendation",
+                 f"推荐解决方案（80字内）:\n{summary}\n{description}"),
+                ("reply_style_router",
+                 f"判断适合的回复方式（formal/friendly/technical），只输出一个词:\n{summary}"),
+                ("domain_module_router",
+                 f"判断所属领域模块（财务/人力/流程/基础架构等），只输出模块名:\n{summary}"),
+            ]
+
+            # 并发发起 5 个字段请求
+            field_results: dict = {}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {
+                    executor.submit(_gen_field, fk, prompt): fk
+                    for fk, prompt in field_tasks
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    fk, val = future.result()
+                    field_results[fk] = val
+
+            failed_count = sum(1 for v in field_results.values() if v is None)
+
+            # 失败字段 >= 3 时整体降级到原单 prompt 路径
+            if failed_count >= 3:
+                print(f"[AIWorker] {issue.key} 多字段生成失败数 {failed_count}/5，降级到单 prompt 分析")
+                self._batch_llm_analyze_fallback([issue])
+                continue
+
+            # 用原有批量提示词补全 recommended_team/role/confidence 等核心字段
+            batch_prompt = self._build_batch_prompt([issue])
+            try:
+                # 限流
+                elapsed = time.time() - self.last_api_call
+                if elapsed < self.min_interval:
+                    time.sleep(self.min_interval - elapsed)
+                self.last_api_call = time.time()
+
+                batch_response = self._call_llm_with_feature("classification_analysis", batch_prompt)
+                model_name = self._resolve_routed_llm_config("classification_analysis").get("model_name", "glm-5")
+                base_results = self._parse_batch_response(batch_response, [issue.key], model_name)
+                analysis = base_results.get(issue.key) or self._rule_based_analysis(issue)
+            except Exception as e:
+                print(f"[AIWorker] {issue.key} 批量提示词分析失败: {e}，使用规则引擎")
+                analysis = self._rule_based_analysis(issue)
+
+            # 将并发字段结果合并进 analysis
+            if field_results.get("solution_recommendation"):
+                analysis["solution_recommendation"] = field_results["solution_recommendation"]
+            if field_results.get("reply_style_router"):
+                analysis["reply_style"] = field_results["reply_style_router"].strip()
+            if field_results.get("domain_module_router"):
+                analysis["domain_module"] = field_results["domain_module_router"].strip()
+            analysis["_feature_routing"] = {
+                "classification": "classification_analysis",
+                "confidence":     "confidence_scoring",
+                "solution":       "solution_recommendation",
+                "reply_style":    "reply_style_router",
+                "domain_module":  "domain_module_router",
+            }
+
+            # 相似工单
+            try:
+                similar = self.vector_store.search_similar_issues(
+                    query=f"{issue.summary} {issue.description}",
+                    top_k=3,
+                    min_score=0.6,
+                )
+                analysis["similar_issues"] = [s["issue_key"] for s in similar]
+            except Exception as e:
+                print(f"[AIWorker] 搜索相似工单失败 {issue.key}: {e}")
+                analysis["similar_issues"] = []
+
+            self._save_and_notify(
+                issue.key, analysis,
+                issue_title=issue.summary,
+                issue_description=(issue.description or "")[:1000],
+            )
+
+    def _batch_llm_analyze_fallback(self, issues: List[JiraIssue]):
+        """原单 prompt 批量分析（降级路径，保留原有逻辑；优先走功能路由，其次回退 self.llm_config）"""
+        cfg = self._resolve_routed_llm_config("classification_analysis")
+        api_key = cfg.get("api_key", "")
         if not api_key:
             print("[LLM Warning] 未配置API Key，使用规则引擎降级")
             for issue in issues:
@@ -323,9 +458,9 @@ class AIAnalysisWorker:
             response = self.llm_service.call_llm(
                 prompt,
                 api_key=api_key,
-                provider=self.llm_config.get("provider", "zhipu"),
-                model_name=self.llm_config.get("model_name", "glm-5"),
-                base_url=self.llm_config.get("base_url", "")
+                provider=cfg.get("provider", "zhipu"),
+                model_name=cfg.get("model_name", "glm-5"),
+                base_url=cfg.get("base_url", "")
             )
 
             # 检查响应是否为错误消息
@@ -337,7 +472,7 @@ class AIAnalysisWorker:
                 return
 
             # 解析结果，传递实际使用的模型名称
-            model_name = self.llm_config.get("model_name", "glm-5")
+            model_name = cfg.get("model_name", "glm-5")
             results = self._parse_batch_response(response, [i.key for i in issues], model_name)
 
             # 保存并通知
@@ -2064,7 +2199,8 @@ class BoardService:
 
     def generate_reply_content(self, issue_key: str, force: bool = False,
                                user_id: str = "", project_key: str = "",
-                               force_pass_gate1: bool = False) -> Dict:
+                               force_pass_gate1: bool = False,
+                               force_pass_gate2: bool = False) -> Dict:
         """
         基于AI分析结果生成智能回复内容
 
@@ -2094,9 +2230,10 @@ class BoardService:
         # ─────────────────────────────────────────────────────────────────────
 
         # ── Gate 2: 分类正确性检查 ─────────────────────────────────────────────
-        gate2_result = self._run_gate2_classification(issue_key)
-        if gate2_result is not None:
-            return gate2_result
+        if not force_pass_gate2:
+            gate2_result = self._run_gate2_classification(issue_key)
+            if gate2_result is not None:
+                return gate2_result
         # ─────────────────────────────────────────────────────────────────────
 
         # Gate 4 具体度等级 —— 在 KB 证据填充后更新，这里先初始化默认值
@@ -2493,13 +2630,8 @@ class BoardService:
         # tier == "llm_blend": 继续现有流程，不做修改
         # ─────────────────────────────────────────────────────────────────────
 
-        # 7. 生成解决方案内容
-        if reply_examples or kb_evidence:
-            # 有范例或KB证据时：用 LLM 生成回复（KB证据+范例风格）
-            solution_content = self._generate_styled_reply(ai_analysis, similar_issues, reply_examples, kb_evidence, module_category=module_category, user_id=user_id, specificity_level=_specificity_level)
-        else:
-            # 无范例无KB时（冷启动）：回退到模板拼接
-            solution_content = self._build_detailed_solution(ai_analysis, similar_issues)
+        # 7. 生成解决方案内容（始终用 LLM，即使无 KB 证据/范例也可基于 ai_analysis + product_facts 生成）
+        solution_content = self._generate_styled_reply(ai_analysis, similar_issues, reply_examples, kb_evidence, module_category=module_category, user_id=user_id, specificity_level=_specificity_level)
 
         # ── Gate 5: 独立监督审计 + 多维加权 Auto-Reply 决策 ──────────────────
         _supervisor_result = None
@@ -2687,7 +2819,7 @@ class BoardService:
             "cached": False,
             "suggested_reply_method": suggested_fields.get('reply_method'),
             "suggested_issue_type": suggested_fields.get('issue_type'),
-            "generation_method": "llm" if (reply_examples or kb_evidence) else "template",
+            "generation_method": "llm",
             "specificity_level": _specificity_level,
             "kb_sources": [item.get('name', '') for item in kb_evidence[:4]] if kb_evidence else [],
             "kb_evidence_count": len(kb_evidence) if kb_evidence else 0,
@@ -3227,7 +3359,8 @@ class BoardService:
 
         # 拦截 — 自动退回支持（填解决方案 + 退回支持 transition）
         _g1_ok, _g1_steps = self._gate1_auto_return_to_support(
-            issue_key, result.missing_fields, result.inquiry_draft
+            issue_key, result.missing_fields, result.inquiry_draft,
+            insufficient_type=result.insufficient_type,
         )
         try:
             from services import gate_decision_log as _gdl1
@@ -3253,6 +3386,7 @@ class BoardService:
             "rule_matched": result.rule_matched,
             "auto_returned": _g1_ok,
             "operation_steps": _g1_steps,
+            "insufficient_type": result.insufficient_type,
             "gate_decisions": {"completeness": {
                 "passed": False,
                 "missing_fields": result.missing_fields,
@@ -3260,7 +3394,7 @@ class BoardService:
             }},
         }
 
-    def _gate1_auto_return_to_support(self, issue_key: str, missing_fields: list, inquiry_draft: str) -> tuple:
+    def _gate1_auto_return_to_support(self, issue_key: str, missing_fields: list, inquiry_draft: str, insufficient_type: str = "") -> tuple:
         """
         Gate 1 自动退回：填解决方案 + 选「退回支持」+ 触发 Jira transition。
         上限 2 次/ticket（防误判反复退回）。计数记录在 data/gate1_inquiry_log.json。
@@ -3287,13 +3421,16 @@ class BoardService:
         ]
         try:
             from datetime import datetime as _dt
+            _custom_fields = {
+                "solution": inquiry_draft,
+                "reply_method": "退回支持",
+            }
+            if insufficient_type == "invalid_description":
+                _custom_fields["issue_type_confirmed"] = "无效问题"
             result = jira_service.reply_and_close_via_transition(
                 issue_id=issue_key,
                 comment=inquiry_draft,
-                custom_fields={
-                    "solution": inquiry_draft,
-                    "reply_method": "退回支持",
-                },
+                custom_fields=_custom_fields,
                 ai_fields=None,
             )
             ok = result.get("success", False)
@@ -3829,8 +3966,10 @@ class BoardService:
         jql = " AND ".join(jql_parts) + " ORDER BY created DESC"
 
         try:
-            from jira_service import JiraService
-            jira = JiraService()
+            from services.user_session_pool import pick_jira_service_for_bg
+            jira = pick_jira_service_for_bg("automation_rule")
+            if jira is None:
+                return {"success": False, "error": "strict 模式：无活跃用户会话，跳过自动化规则执行"}
             result_data = jira.search_issues(jql, max_results=200)
             if "error" in result_data:
                 err_msg = str(result_data['error'])
@@ -3904,8 +4043,12 @@ class BoardService:
         # 3. 正式执行
         executed = 0
         errors = 0
-        from jira_service import JiraService
-        jira = JiraService()
+        from services.user_session_pool import pick_jira_service_for_bg
+        jira = pick_jira_service_for_bg("automation_rule_execute")
+        if jira is None:
+            result["success"] = False
+            result["error"] = "strict 模式：无活跃用户会话，跳过执行步骤"
+            return result
 
         _comment_text = action.get("comment_text", "").strip()
         for item in matched:

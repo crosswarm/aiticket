@@ -1,0 +1,24 @@
+#!/bin/bash
+# aiticket pre-commit hook: 检查 schedule 注册一致性
+# 安装: git config core.hooksPath .githooks && chmod +x .githooks/pre-commit
+
+CHANGED=$(git diff --cached --name-only 2>/dev/null)
+
+if echo "$CHANGED" | grep -qE "(APP/backend/data/schedules/.*\.json|scheduler_service\.py|task_bridge\.py)"; then
+    echo "🔍 Schedule registry audit (schedule JSON 或 scheduler 代码有改动)..."
+    PYTHON="/Volumes/MacMini/opt/miniconda3/envs/antigravity/bin/python3.12"
+    if [[ ! -x "$PYTHON" ]]; then
+        PYTHON="python3"
+    fi
+    "$PYTHON" APP/backend/scripts/audit_schedule_registry.py
+    EXIT=$?
+    if [[ $EXIT -eq 2 ]]; then
+        echo ""
+        echo "❌ Schedule audit 失败。修复后重新 git add 再 commit。"
+        echo "   如需跳过（不推荐）: git commit --no-verify"
+        exit 1
+    fi
+    echo "✅ Schedule audit 通过"
+fi
+
+exit 0

@@ -19,7 +19,7 @@ for _host in (
         _existing_no_proxy = _bootstrap_os.environ["no_proxy"]
 _bootstrap_os.environ["NO_PROXY"] = _bootstrap_os.environ["no_proxy"]
 
-from fastapi import FastAPI, BackgroundTasks, Body, HTTPException, Query, Request, UploadFile, File, Form
+from fastapi import Depends, FastAPI, BackgroundTasks, Body, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 
 # HTTPException已在上方导入，此处删除重复导入
@@ -51,6 +51,7 @@ from requirements_pool_service import RequirementsPoolService, register_req_pool
 from spec_generation import SpecGenerator
 from crew_service import crew_service
 from auth_service import get_auth_service
+from auth_deps import require_reply_quota, log_api_request
 
 # 网络缓存和监控服务 (三节点架构)
 from jira_cache_service import get_jira_cache_service, JiraCacheService
@@ -161,6 +162,15 @@ async def validation_exception_handler(request, exc):
             "detail": "请求参数验证失败",
             "errors": exc.errors()
         }
+    )
+
+from role_guard import NoUserContextError, is_strict_role
+
+@app.exception_handler(NoUserContextError)
+async def _no_user_ctx_handler(request: Request, exc: NoUserContextError):
+    return JSONResponse(
+        {"detail": str(exc), "code": "NO_USER_CONTEXT", "where": exc.where},
+        status_code=401,
     )
 
 # Enable CORS for Frontend
@@ -342,6 +352,9 @@ def build_request_jira_client(request: Request, require_binding: bool = True) ->
 
     # demo 用户：无需个人 Jira 绑定，使用服务器默认凭据（只读）
     if user and user.get("is_demo"):
+        if is_strict_role():
+            request.state.jira_client = None
+            return None
         jira_client = JiraService(base_url=_resolve_jira_base_url())
         request.state.jira_client = jira_client
         return jira_client
@@ -351,7 +364,10 @@ def build_request_jira_client(request: Request, require_binding: bool = True) ->
         request.state.jira_client = None
         return None
 
-    # 未登录（公开 API 等场景）：回退到默认 Jira 配置
+    # 未登录（公开 API 等场景）：strict 模式拒绝匿名访问
+    if is_strict_role():
+        request.state.jira_client = None
+        return None
     jira_client = JiraService(base_url=_resolve_jira_base_url())
     request.state.jira_client = jira_client
     return jira_client
@@ -872,8 +888,9 @@ class AnalyzeStreamRequest(BaseModel):
 
 class GenerateReplyRequest(BaseModel):
     issue_key: str
-    force: bool = False  # 是否强制重新生成
-    force_pass_gate1: bool = False  # 是否跳过 Gate 1 信息完整性检查
+    force: bool = False
+    force_pass_gate1: bool = False
+    force_pass_gate2: bool = False
 
 
 class BootstrapRequest(BaseModel):
@@ -893,6 +910,8 @@ class CreateUserRequest(BaseModel):
     password: str
     display_name: str
     role: str = "member"
+    current_project: Optional[str] = None
+    project_modules: Optional[dict] = None
 
 
 class JiraBindingUpdateRequest(BaseModel):
@@ -1094,6 +1113,50 @@ def get_current_session_user(request: Request):
     return {"user": user}
 
 
+# ── Skill Device Token 端点（/api/auth 前缀已在 PUBLIC_PREFIXES 内，无需额外白名单）────
+
+class DeviceTokenRequest(BaseModel):
+    username: str
+    password: str
+    client_fingerprint: str
+    label: str = ""
+
+class DeviceVerifyRequest(BaseModel):
+    token: str
+    client_fingerprint: str
+
+class DeviceRevokeRequest(BaseModel):
+    token: str
+    client_fingerprint: str
+
+@app.post("/api/auth/device-token")
+def issue_device_token(req: DeviceTokenRequest):
+    try:
+        token = auth_service.issue_device_token(req.username, req.password, req.client_fingerprint, req.label)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="用户名或密码不正确")
+    with auth_service._connect() as conn:
+        row = conn.execute(
+            """SELECT users.id, users.display_name FROM device_tokens
+               JOIN users ON users.id = device_tokens.user_id
+               WHERE device_tokens.client_fingerprint = ? AND device_tokens.revoked = 0""",
+            (req.client_fingerprint,),
+        ).fetchone()
+    return {"token": token, "user_id": row["id"] if row else "", "display_name": row["display_name"] if row else ""}
+
+@app.post("/api/auth/device-verify")
+def verify_device_token(req: DeviceVerifyRequest):
+    user = auth_service.verify_device_token(req.token, req.client_fingerprint)
+    if not user:
+        return {"ok": False, "user_id": "", "display_name": ""}
+    return {"ok": True, "user_id": user["id"], "display_name": user["display_name"]}
+
+@app.post("/api/auth/device-revoke")
+def revoke_device_token(req: DeviceRevokeRequest):
+    ok = auth_service.revoke_device_token(req.token, req.client_fingerprint)
+    return {"ok": ok}
+
+
 @app.patch("/api/user/settings")
 def update_user_settings(request: Request, payload: dict):
     user = require_authenticated_user(request)
@@ -1130,9 +1193,23 @@ def create_admin_user(payload: CreateUserRequest, request: Request):
         payload.display_name,
         role=payload.role,
         created_by=admin["id"],
+        project_modules=payload.project_modules,
     )
+    if payload.current_project:
+        auth_service.update_current_project(user["id"], payload.current_project.strip().upper())
+        user["current_project"] = payload.current_project.strip().upper()
     auth_service.log_audit(admin["id"], "create_user", "user", user["id"], {"role": user["role"]})
     return {"status": "success", "user": user}
+
+
+@app.patch("/api/admin/users/{user_id}")
+def update_admin_user(user_id: str, payload: dict, request: Request):
+    require_admin_user(request)
+    if "project_modules" in payload and isinstance(payload["project_modules"], dict):
+        auth_service.update_user_modules(user_id, payload["project_modules"])
+    if "current_project" in payload and payload["current_project"]:
+        auth_service.update_current_project(user_id, str(payload["current_project"]).strip().upper())
+    return {"status": "ok"}
 
 
 @app.post("/api/admin/reset-demo")
@@ -2236,6 +2313,67 @@ def sync_kb():
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"KB sync failed: {exc}")
 
+
+# ── KB Refresh (build+sync+compile cascade) ───────────────────────────────────
+import uuid as _uuid
+_kb_refresh_tasks: dict[str, dict] = {}
+
+
+def _run_kb_refresh(task_id: str, force: bool) -> None:
+    """Background thread: build → sync → compile-all cascade."""
+    _kb_refresh_tasks[task_id]["status"] = "running"
+    try:
+        # 1. Build (scan orphans, update manifest)
+        try:
+            from kb_local_builder import KBLocalBuilder
+            KBLocalBuilder().build()
+            _kb_refresh_tasks[task_id]["step"] = "build_done"
+        except Exception as e:
+            logger.warning("[kb/refresh] build step failed (non-fatal): %s", e)
+
+        # 2. Sync (rebuild SQLite index from manifest)
+        sync_result = kb_runtime_service.sync(force_refresh=True)
+        _kb_refresh_tasks[task_id]["step"] = "sync_done"
+        _kb_refresh_tasks[task_id]["sync"] = sync_result if isinstance(sync_result, dict) else {}
+
+        # 3. Compile-all (LLM synthesis, incremental or force)
+        try:
+            from kb_compile_service import get_or_create_compile_service
+            svc = get_or_create_compile_service()
+            compiled = svc.compile_all()
+            _kb_refresh_tasks[task_id]["step"] = "compile_done"
+            _kb_refresh_tasks[task_id]["compiled"] = compiled if isinstance(compiled, dict) else {}
+        except Exception as e:
+            logger.warning("[kb/refresh] compile step failed (non-fatal): %s", e)
+            _kb_refresh_tasks[task_id]["step"] = "compile_skipped"
+
+        _kb_refresh_tasks[task_id]["status"] = "done"
+    except Exception as e:
+        logger.exception("[kb/refresh] task %s failed", task_id)
+        _kb_refresh_tasks[task_id]["status"] = "error"
+        _kb_refresh_tasks[task_id]["error"] = str(e)
+
+
+@app.post("/api/kb/refresh", status_code=202)
+def kb_refresh(body: dict = Body({})):
+    """统一 ingestion 入口：build + sync + compile 级联，异步执行。"""
+    import threading
+    force = body.get("force", False)
+    task_id = f"kbr-{_uuid.uuid4().hex[:12]}"
+    _kb_refresh_tasks[task_id] = {"task_id": task_id, "status": "pending", "step": ""}
+    t = threading.Thread(target=_run_kb_refresh, args=(task_id, force), daemon=True)
+    t.start()
+    return {"task_id": task_id, "status": "pending"}
+
+
+@app.get("/api/kb/refresh/status/{task_id}")
+def kb_refresh_status(task_id: str):
+    """查询 kb/refresh 任务进度。"""
+    task = _kb_refresh_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"task not found: {task_id}")
+    return task
+
 class KBAnalyzeRequest(BaseModel):
     summary: str
     module_hint: str = ""
@@ -2337,8 +2475,9 @@ def search_kb(request: Request, q: str, top_k: int = Query(20, description="返�
     return kb_runtime_service.search_bundle(q, top_k=top_k, source_kind=source_kind or None, module_boost=getattr(request.state, "current_modules", []))
 
 @app.post("/api/kb/qa")
-def ask_kb_question(request: KBQuestionRequest):
+def ask_kb_question(request: KBQuestionRequest, raw_request: Request, _quota=Depends(require_reply_quota)):
     """Answer user question from knowledge base"""
+    log_api_request(raw_request, _quota, query_text=request.query)
     llm_runtime = resolve_effective_llm_runtime(
         provider=request.provider,
         api_key=request.api_key or "",
@@ -2869,17 +3008,21 @@ def run_automation_rule(rule_id: str, dry_run: bool = Query(True, description="�
 
 @app.get("/api/board/search")
 def search_similar_issues(
+    background_tasks: BackgroundTasks,
     q: str = Query(..., description="搜索查询"),
     top_k: int = Query(5, description="返回数量"),
     min_score: float = Query(0.6, description="最小相似度")
 ):
     """
     语义搜索相似工单（Chroma优化版）
-    
+
     相比原有/search端点，使用语义向量搜索，结果更准确
     """
     try:
         results = search_engine.search(q, top_k=top_k, min_score=min_score)
+        # 后台入队：对搜索结果工单触发 AI 分析（不阻塞响应）
+        if results:
+            background_tasks.add_task(board_service._auto_submit_analysis, list(results))
         return {
             "status": "success",
             "query": q,
@@ -3025,8 +3168,8 @@ def get_board_meta(request: Request):
                 pass
         projects = fallback_projects
         print(f"[board/meta] Jira不可达，使用回退项目列表: {[p['key'] for p in projects]}")
-    if not current_user:
-        current_user = {"name": "qiangxiao", "displayName": "强骁"}
+    if not current_user and not is_strict_role():
+        current_user = {"name": "admin", "displayName": "管理员"}
     return {"projects": projects, "current_user": current_user}
 
 
@@ -3050,13 +3193,13 @@ def get_board_assignees(request: Request, project_key: str = Query("MYPROJECT"))
 # --- 工单详情 / Jira移动 / 附件代理 端点 ---
 
 @app.get("/api/board/issue-detail/{issue_key}")
-def get_issue_detail(issue_key: str, request: Request):
+def get_issue_detail(issue_key: str, request: Request, background_tasks: BackgroundTasks):
     """获取工单详情: 附件 + 活动日志(changelog + comments)
 
     会话隔离：必须使用 build_request_jira_client(request) 得到当前用户的
     JiraService（base_url = mini_proxy on QCL, 带用户自己的 JSESSIONID）。
     不再走老的 /proxy/jira/issue/{key}（那条路径 mini_proxy 用的是自己的
-    session，会让所有用户看到 qiangxiao 的视角）。
+    session，会让所有用户看到 admin 的视角）。
     透明代理 /rest/* 会读 request.cookies 转发用户 session 到真实 Jira。
     """
     try:
@@ -3108,6 +3251,18 @@ def get_issue_detail(issue_key: str, request: Request):
                 })
 
         labels = data.get("fields", {}).get("labels", []) or []
+        # 后台入队：对当前工单触发 AI 分析（不阻塞响应）
+        _fields = data.get("fields", {})
+        _ticket_dict = {
+            "key": issue_key,
+            "summary": (_fields.get("summary") or "")[:200],
+            "description": (_fields.get("description") or "")[:2000],
+            "status": (_fields.get("status") or {}).get("name", ""),
+            "priority": (_fields.get("priority") or {}).get("name", ""),
+            "assignee": ((_fields.get("assignee") or {}).get("displayName") or ""),
+            "reporter": ((_fields.get("reporter") or {}).get("displayName") or ""),
+        }
+        background_tasks.add_task(board_service._auto_submit_analysis, [_ticket_dict])
         return {
             "status": "success",
             "attachments": attachments,
@@ -3388,7 +3543,7 @@ def proxy_attachment(attachment_id: str, request: Request):
 
     会话隔离：必须用当前用户的 JiraService（带自己的 JSESSIONID），
     不再走老的 /proxy/jira/attachment/{id} 端点（那条路径用的是 mini_proxy
-    自己的 qiangxiao session，会暴露错人的附件权限）。
+    自己的 admin session，会暴露错人的附件权限）。
     QCL 上 jira_client.base_url 已自动指向 mini_proxy (frp 5001)，
     transparent_proxy 会透传用户 cookies 到真实 Jira。
     """
@@ -3417,7 +3572,7 @@ def proxy_attachment(attachment_id: str, request: Request):
         # 优先使用 jira_client.cookies (已是当前用户的 session)
         import json as _json
         download_cookies = dict(getattr(jira_client, 'cookies', {}) or {})
-        # per-user session 文件 → 全局兜底（避免让 lihum 看到 qiangxiao 附件）
+        # per-user session 文件 → 全局兜底（避免让 user2 看到 admin 附件）
         cur_user = get_current_user(request)
         session_candidates = []
         if cur_user:
@@ -3951,8 +4106,9 @@ def trainer_daily_report():
 # --- Smart Reply Endpoints ---
 
 @app.post("/api/board/generate-reply")
-def generate_reply(request: GenerateReplyRequest, raw_request: Request):
+def generate_reply(request: GenerateReplyRequest, raw_request: Request, _quota=Depends(require_reply_quota)):
     """基于AI分析生成智能回复内容"""
+    log_api_request(raw_request, _quota, issue_key=request.issue_key)
     try:
         _cu = get_current_user(raw_request)
         result = board_service.generate_reply_content(
@@ -3961,10 +4117,13 @@ def generate_reply(request: GenerateReplyRequest, raw_request: Request):
             user_id=_cu["id"] if _cu else "",
             project_key=getattr(raw_request.state, "project_key", "") or "",
             force_pass_gate1=request.force_pass_gate1,
+            force_pass_gate2=request.force_pass_gate2,
         )
         if result.get("gate") == "completeness":
+            _insuf_type = result.get("insufficient_type", "missing_fields")
             return {
                 "status": "gate_blocked",
+                "issue_key": request.issue_key,
                 "gate": "completeness",
                 "missing_fields": result.get("missing_fields", []),
                 "inquiry_draft": result.get("inquiry_draft", ""),
@@ -3972,10 +4131,17 @@ def generate_reply(request: GenerateReplyRequest, raw_request: Request):
                 "solution_content": "",
                 "ai_analysis": None,
                 "gate_decisions": result.get("gate_decisions", {}),
+                "info_insufficient": True,
+                "insufficient_type": _insuf_type,
+                "suggested_reply_method": {"id": "15702", "value": "退回支持"},
+                "suggested_issue_type": {"id": "15321", "value": "无效问题"} if _insuf_type == "invalid_description" else None,
+                "auto_returned": result.get("auto_returned", False),
+                "operation_steps": result.get("operation_steps", []),
             }
         if result.get("gate") == "classification":
             return {
                 "status": "gate_blocked",
+                "issue_key": request.issue_key,
                 "gate": "classification",
                 "transfer_to": result.get("transfer_to"),
                 "auto_moved": result.get("auto_moved", False),
@@ -3987,6 +4153,7 @@ def generate_reply(request: GenerateReplyRequest, raw_request: Request):
         if result.get("error"):
             return {
                 "status": "warning",
+                "issue_key": request.issue_key,
                 "message": result["error"],
                 "reply_content": "",
                 "solution_content": "",
@@ -3994,6 +4161,7 @@ def generate_reply(request: GenerateReplyRequest, raw_request: Request):
             }
         return {
             "status": "success",
+            "issue_key": request.issue_key,
             "reply_content": result["reply_content"],
             "solution_content": result.get("solution_content", ""),
             "ai_analysis": result["ai_analysis"],
@@ -4142,7 +4310,7 @@ def _classify_recommendation_type(issue: dict) -> str:
 
 
 @app.get("/api/board/gate-view-tickets")
-def get_gate_view_tickets(request: Request, hours: int = Query(720, ge=1), include_unscored: bool = True, project_key: str = Query("MYPROJECT"), domain_modules: Optional[str] = Query(None)):
+def get_gate_view_tickets(request: Request, background_tasks: BackgroundTasks, hours: int = Query(720, ge=1), include_unscored: bool = True, project_key: str = Query("MYPROJECT"), domain_modules: Optional[str] = Query(None)):
     """
     闸门看板数据源：将当前可见的 Jira 工单与历史闸门决策缓存融合。
     无决策记录的工单默认归入 manual 列并标记 unscored=True。
@@ -4208,6 +4376,24 @@ def get_gate_view_tickets(request: Request, hours: int = Query(720, ge=1), inclu
     except Exception:
         _ai_cache = {}
 
+    # 3c. Reply cache — 供看板列表展示预计算回复内容
+    _reply_cache: dict = {}
+    try:
+        from reply_cache_service import CACHE_FILE as _rc_file
+        from datetime import datetime as _dt_rc, timedelta as _td
+        if _os2.path.exists(_rc_file):
+            with open(_rc_file, "r", encoding="utf-8") as _rcf:
+                _rc_raw = json.load(_rcf)
+            _now = _dt_rc.now()
+            for _rk, _rv in _rc_raw.items():
+                try:
+                    if _now - _dt_rc.fromisoformat(_rv["timestamp"]) <= _td(days=7):
+                        _reply_cache[_rk] = _rv
+                except Exception:
+                    pass
+    except Exception:
+        _reply_cache = {}
+
     # 4. 融合：以当前工单池为主，补充历史决策记录
     _ACTIVE_STATUS = {"待分析"}
     grouped: dict = {a: [] for a in _ALL_ACTIONS}
@@ -4227,6 +4413,9 @@ def get_gate_view_tickets(request: Request, hours: int = Query(720, ge=1), inclu
         _ai_a = _ai_cache.get(k) or {}
         _ai_conf = _ai_a.get("confidence")
         _priority = issue.get("priority", "")
+        _rc_entry = _reply_cache.get(k, {})
+        _reply_content = _rc_entry.get("reply_content", "")
+        _reply_status = "cached" if _reply_content else "unavailable"
         if dec:
             action = dec.get("action", "manual")
             desc = issue.get("description", "") or ""
@@ -4241,6 +4430,9 @@ def get_gate_view_tickets(request: Request, hours: int = Query(720, ge=1), inclu
                 "description_length": len(desc),
                 "attachment_count": attachments,
                 "recommendation": _classify_recommendation_type(issue),
+                "reply_content": _reply_content,
+                "reply_cached_at": _rc_entry.get("timestamp", ""),
+                "reply_status": _reply_status,
             }
             if action in grouped:
                 grouped[action].append(k)
@@ -4262,25 +4454,153 @@ def get_gate_view_tickets(request: Request, hours: int = Query(720, ge=1), inclu
                 "description_length": len(desc),
                 "attachment_count": attachments,
                 "recommendation": _classify_recommendation_type(issue),
+                "reply_content": _reply_content,
+                "reply_cached_at": _rc_entry.get("timestamp", ""),
+                "reply_status": _reply_status,
             }
             grouped["manual"].append(k)
 
     # 历史决策中已不在当前工单池（含跨项目、非待分析）的条目不在看板中展示
     by_key = {k: v for k, v in by_key.items() if k in seen_keys}
 
+    _cached_count = sum(1 for k in seen_keys if _reply_cache.get(k, {}).get("reply_content"))
+    grouped["precompute_progress"] = {
+        "total": len(seen_keys),
+        "cached": _cached_count,
+        "missing": len(seen_keys) - _cached_count,
+    }
     grouped["by_key"] = by_key
+    # 后台入队：对本次可见工单触发 AI 分析（不阻塞响应）
+    background_tasks.add_task(board_service._auto_submit_analysis, list(all_issues))
     return grouped
+
+
+class PrecomputeRepliesRequest(BaseModel):
+    project_key: str = "MYPROJECT"
+    modules: list = []
+
+
+_precompute_running: dict = {}  # lock_key → start_timestamp (float)
+
+
+@app.post("/api/board/precompute-replies")
+async def precompute_replies(
+    request_data: PrecomputeRepliesRequest,
+    raw_request: Request,
+):
+    """Fire-and-forget：批量预生成看板工单的智能回复并写入 reply_cache.json。
+    幂等：同一 project+modules 组合同时只允许一个任务在跑。"""
+    lock_key = f"{request_data.project_key}:{','.join(sorted(str(m) for m in request_data.modules))}"
+    import time as _time_pc
+    _lock_started = _precompute_running.get(lock_key)
+    if _lock_started and (_time_pc.time() - _lock_started) < 1800:  # 30 分钟 max-age
+        return {"status": "running", "message": "预计算任务已在运行中"}
+
+    _reply_cache_keys: set = set()
+    try:
+        from reply_cache_service import CACHE_FILE as _rc_file2
+        from datetime import datetime as _dt_pc, timedelta as _td2
+        if os.path.exists(_rc_file2):
+            with open(_rc_file2, "r", encoding="utf-8") as _rcf2:
+                _rc_raw2 = json.load(_rcf2)
+            _now2 = _dt_pc.now()
+            for _rk2, _rv2 in _rc_raw2.items():
+                try:
+                    if _now2 - _dt_pc.fromisoformat(_rv2["timestamp"]) <= _td2(days=7):
+                        if _rv2.get("reply_content"):
+                            _reply_cache_keys.add(_rk2)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    issue_keys: list = []
+    try:
+        jira_client = build_request_jira_client(raw_request, require_binding=False)
+        _gv_mods = list(request_data.modules)
+        board_data = board_service.get_board_data(
+            jira_client=jira_client,
+            project_key=request_data.project_key,
+            domain_modules=_gv_mods,
+        )
+        _ACTIVE_ST = {"待分析"}
+        for col_issues in board_data.values():
+            for iss in col_issues:
+                if not isinstance(iss, dict):
+                    continue
+                k = iss.get("key", "")
+                if not k:
+                    continue
+                if request_data.project_key and not k.startswith(f"{request_data.project_key}-"):
+                    continue
+                cur_st = (iss.get("status") or "").strip()
+                if cur_st and cur_st not in _ACTIVE_ST:
+                    continue
+                if k not in _reply_cache_keys:
+                    issue_keys.append(k)
+    except Exception as _e:
+        print(f"[Precompute] 获取工单列表失败: {_e}")
+
+    already_cached = len(_reply_cache_keys)
+    if not issue_keys:
+        return {"status": "done", "queued": 0, "already_cached": already_cached}
+
+    import time as _time_pc2
+    _precompute_running[lock_key] = _time_pc2.time()
+
+    def _run_precompute(keys: list, proj_key: str, lk: str):
+        import threading as _th2
+        success = 0
+        failed = 0
+        try:
+            for k in keys[:200]:
+                _result: dict = {}
+                def _worker(_k=k):
+                    try:
+                        _result['data'] = board_service.generate_reply_content(
+                            _k, force=False, user_id="precompute",
+                            project_key=proj_key, force_pass_gate1=True,
+                        )
+                    except Exception as _e:
+                        _result['error'] = str(_e)
+                _t = _th2.Thread(target=_worker, daemon=True)
+                _t.start()
+                _t.join(timeout=150)
+                if _t.is_alive():
+                    print(f"[Precompute] {k}: timeout 150s, skipping")
+                    failed += 1
+                elif 'error' in _result:
+                    print(f"[Precompute] {k}: {_result['error']}")
+                    failed += 1
+                else:
+                    success += 1
+        finally:
+            _precompute_running.pop(lk, None)
+            print(f"[Precompute] done lock={lk} success={success} failed={failed}")
+
+    import threading as _threading
+    _threading.Thread(target=_run_precompute, args=(issue_keys, request_data.project_key, lock_key), daemon=True).start()
+
+    from datetime import datetime as _dt_pc2
+    return {
+        "status": "started",
+        "queued": len(issue_keys),
+        "already_cached": already_cached,
+        "started_at": _dt_pc2.now().isoformat(),
+    }
 
 
 @app.get("/api/board/pending-approvals")
 def list_pending_approvals(
+    request: Request,
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
-    """列出 staging 中待批准的自动回复草稿。"""
+    """列出 staging 中待批准的自动回复草稿。实时查 Jira 状态过滤掉已完成工单。"""
     try:
         from services.pending_approval_store import list_pending as _list_pending
-        return {"items": _list_pending(limit=limit, offset=offset)}
+        jira_client = build_request_jira_client(request, require_binding=False)
+        return {"items": _list_pending(limit=limit, offset=offset, jira_client=jira_client)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -5073,6 +5393,44 @@ def get_field_options_admin(request: Request):
         raise HTTPException(status_code=500, detail=f"获取缓存失败: {str(e)}")
 
 
+@app.post("/api/jira/session-established")
+async def jira_session_established(
+    background_tasks: BackgroundTasks,
+    project_key: str = Query(default="MYPROJECT"),
+    scope_modules: list[str] = Query(default=[])
+):
+    """Jira 会话建立后触发全量基线扫描（异步，不阻塞响应）"""
+    def _baseline_scan():
+        try:
+            tickets = jira_svc.load_board_cache()
+            ticket_dicts = [
+                {
+                    "key": t.key,
+                    "summary": t.summary or "",
+                    "description": t.description or "",
+                    "status": t.status or "",
+                    "priority": t.priority or "",
+                    "due_date": t.due_date or "",
+                    "domain_module": getattr(t, "domain_module", None),
+                }
+                for t in tickets
+            ]
+            if scope_modules:
+                ticket_dicts = [t for t in ticket_dicts if t.get("domain_module") in scope_modules]
+            # 按 due_date 升序，前30张高优先级
+            ticket_dicts.sort(key=lambda x: x.get("due_date") or "9999-99-99")
+            high_prio = ticket_dicts[:30]
+            rest = ticket_dicts[30:]
+            board_service._auto_submit_analysis(high_prio)
+            board_service._auto_submit_analysis(rest)
+            print(f"[SessionEstablished] 基线扫描: 共 {len(ticket_dicts)} 张工单入队, 高优先级 {len(high_prio)} 张")
+        except Exception as e:
+            print(f"[SessionEstablished] 基线扫描失败: {e}")
+
+    background_tasks.add_task(_baseline_scan)
+    return {"baseline_started": True, "message": "基线扫描已在后台启动"}
+
+
 # --- Reply Training Endpoints (回复训练器) ---
 
 @app.get("/api/training/stats")
@@ -5304,9 +5662,49 @@ def _reap_zombie_running_tasks():
         print(f"[startup-reap] 清理失败（不影响启动）: {e}")
 
 
+def _kb_startup_sync_and_warn():
+    """Lifespan startup: incremental KB sync + warn for domains present on disk but not compiled."""
+    try:
+        logger.info("[KB] lifespan startup: incremental sync starting")
+        kb_runtime_service.sync(force_refresh=False)
+        logger.info("[KB] lifespan startup: incremental sync done")
+    except Exception as e:
+        logger.warning("[KB] lifespan startup: incremental sync failed (non-fatal): %s", e)
+
+    # Compare converted/ directories vs compiled entries in documents table
+    try:
+        import os as _os
+        converted_root = Path(__file__).parent.parent.parent / "KB" / "OUTPUT" / "converted"
+        if converted_root.exists():
+            disk_domains = {
+                d for d in _os.listdir(str(converted_root))
+                if (converted_root / d).is_dir() and not d.startswith("__") and not d.startswith(".")
+            }
+            # Fetch compiled names from documents table, strip "综合解析：" prefix
+            compiled_names: set[str] = set()
+            try:
+                rows = kb_runtime_service.hybrid_index.conn.execute(
+                    "SELECT name FROM documents WHERE source_kind = 'kb_compiled'"
+                ).fetchall()
+                for row in rows:
+                    name = row[0] if isinstance(row, (list, tuple)) else row["name"]
+                    stripped = name.replace("综合解析：", "").strip()
+                    compiled_names.add(stripped)
+            except Exception as db_e:
+                logger.warning("[KB] startup domain-check: DB query failed: %s", db_e)
+
+            for domain in sorted(disk_domains):
+                if domain not in compiled_names:
+                    logger.warning("[KB] domain '%s' not compiled, trigger refresh", domain)
+    except Exception as e:
+        logger.warning("[KB] startup domain-check failed (non-fatal): %s", e)
+
+
 @app.on_event("startup")
 def startup_event():
+    import threading as _threading
     _reap_zombie_running_tasks()
+    _threading.Thread(target=_kb_startup_sync_and_warn, daemon=True).start()
 
 
 @app.on_event("shutdown")
@@ -7289,6 +7687,73 @@ if _RUN_BG and ENABLE_SCHEDULER:
                 pass
 
         register_task_handler("vacation_schedule_cleanup", _task_vacation_schedule_cleanup)
+
+        # 注册任务处理器：KB 增量 sync（每 30 分钟）
+        def _task_kb_refresh_incremental(**kwargs):
+            """每 30 分钟：增量 sync KB（build + sync），仅处理变更文件"""
+            from services.feishu_notifier import get_notifier
+            notifier = get_notifier()
+            try:
+                result = kb_runtime_service.sync()
+                logger.info(
+                    f"[Scheduler] KB incremental sync done: chunks={result.get('chunk_count')}, "
+                    f"local_manifest={result.get('local_manifest_count')}"
+                )
+            except Exception as e:
+                logger.error(f"[Scheduler] KB incremental sync failed: {e}")
+                try:
+                    notifier.send_message(
+                        f"⚠️ KB 增量 sync 失败\n"
+                        f"原因：{str(e)[:300]}\n"
+                        f"任务：kb_refresh_incremental"
+                    )
+                except Exception:
+                    pass
+
+        register_task_handler("kb_refresh_incremental", _task_kb_refresh_incremental)
+
+        # 注册任务处理器：KB 全量 sync + compile（每日凌晨 2:00）
+        def _task_kb_refresh_full(**kwargs):
+            """每日凌晨 2:00：全量 force_refresh sync + compile_all，防 KB 漂移"""
+            from services.feishu_notifier import get_notifier
+            notifier = get_notifier()
+            try:
+                sync_result = kb_runtime_service.sync(force_refresh=True)
+                logger.info(
+                    f"[Scheduler] KB full sync done: chunks={sync_result.get('chunk_count')}, "
+                    f"local_manifest={sync_result.get('local_manifest_count')}"
+                )
+            except Exception as e:
+                logger.error(f"[Scheduler] KB full sync failed: {e}")
+                try:
+                    notifier.send_message(
+                        f"⚠️ KB 全量 sync 失败\n"
+                        f"原因：{str(e)[:300]}\n"
+                        f"任务：kb_refresh_full"
+                    )
+                except Exception:
+                    pass
+                return  # sync 失败不继续 compile
+            try:
+                from kb_compile_service import get_compile_service
+                compile_svc = get_compile_service()
+                if compile_svc is not None:
+                    compiled = compile_svc.compile_all()
+                    logger.info(f"[Scheduler] KB full compile done: {len(compiled)} topics compiled")
+                else:
+                    logger.warning("[Scheduler] KB full compile skipped: compile_service not initialized")
+            except Exception as e:
+                logger.error(f"[Scheduler] KB full compile failed: {e}")
+                try:
+                    notifier.send_message(
+                        f"⚠️ KB 全量 compile 失败\n"
+                        f"原因：{str(e)[:300]}\n"
+                        f"任务：kb_refresh_full"
+                    )
+                except Exception:
+                    pass
+
+        register_task_handler("kb_refresh_full", _task_kb_refresh_full)
 
         start_scheduler()
         print("[Scheduler] v4.0 定时调度服务已启动")

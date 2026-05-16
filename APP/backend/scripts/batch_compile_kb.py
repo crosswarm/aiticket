@@ -5,9 +5,11 @@ KB 知识库批量编译器 — 分批编译 + 飞书进度汇报
 全量完成后推送最终汇报。
 
 用法：
-  python batch_compile_kb.py                # 编译全部未编译话题
-  python batch_compile_kb.py --batch 5      # 每批 5 个
-  python batch_compile_kb.py --dry-run      # 只列出待编译话题，不执行
+  python batch_compile_kb.py                  # 编译全部未编译话题
+  python batch_compile_kb.py --batch 5        # 每批 5 个
+  python batch_compile_kb.py --dry-run        # 只列出待编译话题，不执行
+  python batch_compile_kb.py --force          # 强制重编译全部话题（忽略已编译记录）
+  python batch_compile_kb.py --changed-only   # 仅编译有变更的话题（比对 manifest mtime）
 """
 import sys, os, json, time, argparse, requests
 
@@ -52,14 +54,30 @@ def get_compiled_names():
 
 
 def compile_batch(topics):
-    """编译一批话题，返回结果"""
-    r = requests.post(
-        f"{API_BASE}/api/kb/compile-all",
-        json={"topics": topics},
-        timeout=600,
-    )
-    r.raise_for_status()
-    return r.json()
+    """编译一批话题，直接调用编译服务（绕过异步 job 队列），返回结果"""
+    from kb_compile_service import get_or_create_compile_service
+    svc = get_or_create_compile_service()
+
+    compiled = 0
+    for topic in topics:
+        try:
+            result = svc.compile_topic(topic, skip_bip_validation=True)
+            if result and result.get("content_id"):
+                compiled += 1
+                print(f"  ✓ {topic}")
+            elif result and result.get("bip_judgment_status") == "pending_user":
+                print(f"  ~ {topic}: pending BIP review")
+            else:
+                print(f"  . {topic}: no chunks found")
+        except ValueError as ve:
+            if "TOPIC_REJECTED" in str(ve):
+                print(f"  ✗ {topic}: rejected")
+            else:
+                print(f"  ! {topic}: {ve}")
+        except Exception as e:
+            print(f"  ! {topic}: {e}")
+
+    return {"compiled": compiled}
 
 
 def push_feishu(message):
@@ -83,16 +101,87 @@ def push_feishu(message):
             print(f"[飞书] 备用推送也失败，仅控制台输出")
 
 
+def get_compiled_timestamps():
+    """返回 {话题名: created_at_isostring} 的已编译话题时间戳映射（直连 DB）。"""
+    import sqlite3
+    db_candidates = [
+        os.path.join(SCRIPT_DIR, '..', '..', '..', 'data', 'sqlite', 'kb_chunks.db'),
+        os.path.join(SCRIPT_DIR, '..', 'data', 'sqlite', 'kb_chunks.db'),
+    ]
+    for db_path in db_candidates:
+        db_path = os.path.normpath(db_path)
+        if os.path.exists(db_path) and os.path.getsize(db_path) > 0:
+            conn = sqlite3.connect(db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT name, created_at FROM documents WHERE source_kind='kb_compiled'"
+                ).fetchall()
+                return {
+                    row[0].replace("综合解析：", "").replace("综合解析:", ""): row[1]
+                    for row in rows if row[0]
+                }
+            except Exception:
+                pass
+            finally:
+                conn.close()
+    return {}
+
+
+def get_manifest_mtimes():
+    """返回 {top_category: max_mtime_isostring}，从 manifest.json 计算各域最新源文件时间。"""
+    import datetime
+    manifest_candidates = [
+        os.path.join(SCRIPT_DIR, '..', '..', '..', 'KB', 'INDEX', 'manifest.json'),
+    ]
+    for path in manifest_candidates:
+        path = os.path.normpath(path)
+        if os.path.exists(path):
+            with open(path, encoding='utf-8') as f:
+                manifest = json.load(f)
+            domain_mtimes = {}
+            for item in manifest.get('contents', {}).values():
+                domain = item.get('top_category', '')
+                src = item.get('source_path', '')
+                if not domain or not src:
+                    continue
+                abs_src = os.path.normpath(os.path.join(SCRIPT_DIR, '..', '..', '..', src))
+                if os.path.exists(abs_src):
+                    mtime = datetime.datetime.fromtimestamp(os.path.getmtime(abs_src)).isoformat()
+                    if domain not in domain_mtimes or mtime > domain_mtimes[domain]:
+                        domain_mtimes[domain] = mtime
+            return domain_mtimes
+    return {}
+
+
 def main():
     parser = argparse.ArgumentParser(description="KB 批量编译")
     parser.add_argument("--batch", type=int, default=10, help="每批编译数量")
-    parser.add_argument("--dry-run", action="store_true", help="只列出待编译话题")
+    parser.add_argument("--dry-run", action="store_true", help="只列出待编译话题，不执行")
+    parser.add_argument("--force", action="store_true", help="强制重编译全部话题（忽略已编译记录）")
+    parser.add_argument("--changed-only", action="store_true", dest="changed_only",
+                        help="仅编译有变更的话题（源文件 mtime 晚于已编译时间戳）")
     args = parser.parse_args()
 
     print(f"[KB编译] 加载话题列表...")
     all_topics = get_all_topics()
     compiled = get_compiled_names()
-    remaining = [t for t in all_topics if t not in compiled]
+
+    if args.force:
+        remaining = list(all_topics)
+        print(f"[KB编译] --force 模式：全量重编译 {len(remaining)} 个话题")
+    elif args.changed_only:
+        ts_map = get_compiled_timestamps()
+        mtime_map = get_manifest_mtimes()
+        remaining = []
+        for t in all_topics:
+            compiled_at = ts_map.get(t)
+            if compiled_at is None:
+                remaining.append(t)  # 未编译过
+            elif mtime_map.get(t, "") > compiled_at:
+                remaining.append(t)  # 源文件更新
+        print(f"[KB编译] --changed-only 模式：{len(remaining)} 个话题有变更")
+    else:
+        remaining = [t for t in all_topics if t not in compiled]
 
     print(f"[KB编译] 总话题: {len(all_topics)}, 已编译: {len(compiled)}, 待编译: {len(remaining)}")
 

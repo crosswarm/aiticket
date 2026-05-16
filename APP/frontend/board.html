@@ -335,6 +335,23 @@
                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
             </button>
             <div id="stats-badge" class="text-xs" style="color:var(--ds-text-muted)">正在加载看板数据...</div>
+            <!-- 闸门模式工具栏（仅 gate 模式显示，位于会话指示灯左侧） -->
+            <div id="gate-view-toolbar" style="display:none;align-items:center;gap:4px;margin-left:4px">
+                <div style="display:inline-flex;border:1px solid var(--ds-border,#e2e8f0);border-radius:8px;overflow:hidden;margin-right:4px">
+                    <button onclick="setViewMode('date')" title="切换到按到期日看板" style="padding:3px 10px;font-size:12px;font-weight:500;border:none;cursor:pointer;background:var(--ds-bg-surface,#fff);color:var(--ds-text-secondary,#475569);border-radius:6px 0 0 6px;line-height:1.4">按到期日</button>
+                    <button style="padding:3px 10px;font-size:12px;font-weight:500;border:none;cursor:default;background:var(--ds-accent,#4f46e5);color:#fff;border-radius:0 6px 6px 0;line-height:1.4">智能决策</button>
+                </div>
+                <button onclick="openBoardSettings()" title="闸门设置" class="ds-btn ds-btn-ghost ds-btn-icon ds-btn-sm">
+                    <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+                </button>
+                <button onclick="showProcessingLog()" title="处理日志（7天）" class="ds-btn ds-btn-ghost ds-btn-icon ds-btn-sm">
+                    <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
+                </button>
+                <button onclick="loadGateView()" title="刷新闸门数据" class="ds-btn ds-btn-ghost ds-btn-icon ds-btn-sm">
+                    <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                </button>
+                <span id="gate-precompute-chip" style="display:none;font-size:10px;padding:2px 8px;border-radius:12px;background:#fef3c7;color:#a16207;font-weight:500;align-items:center;gap:3px"></span>
+            </div>
         </div>
     </div>
 
@@ -434,12 +451,6 @@
                 class="px-4 py-2 sm:py-1.5 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 transition min-h-[44px] sm:min-h-0">
                 筛选
             </button>
-            <!-- 用户模块归属 badge（有配置模块时自动显示） -->
-            <div id="module-scope-badge" class="hidden flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 border border-indigo-200 rounded-lg text-sm text-indigo-700 min-h-[44px] sm:min-h-0">
-                <svg class="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M3 3a1 1 0 000 2v8a2 2 0 002 2h2.586l-1.293 1.293a1 1 0 101.414 1.414L10 15.414l2.293 2.293a1 1 0 001.414-1.414L12.414 15H15a2 2 0 002-2V5a1 1 0 100-2H3zm11.707 4.707a1 1 0 00-1.414-1.414L10 9.586 8.707 8.293a1 1 0 00-1.414 0l-2 2a1 1 0 101.414 1.414L8 10.414l1.293 1.293a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
-                <span id="module-scope-label" class="text-xs font-medium whitespace-nowrap">本人模块</span>
-                <button onclick="setIgnoreModuleScope(true)" class="text-indigo-400 hover:text-indigo-700 transition text-xs font-medium ml-0.5 hover:underline whitespace-nowrap" title="取消模块过滤，查看全部工单">查看全部</button>
-            </div>
             <button onclick="batchReanalyzeAll()"
                 class="px-4 py-2 sm:py-1.5 bg-amber-50 border border-amber-200 text-amber-700 rounded-lg text-sm hover:bg-amber-100 transition flex items-center gap-2 min-h-[44px] sm:min-h-0"
                 title="批量重新分析所有无AI分析的工单">
@@ -479,7 +490,7 @@
         </div>
 
         <!-- Gate Kanban View (4-column) -->
-        <div id="kanban-grid-gate" role="region" aria-label="智能回复闸门看板" style="display:none;overflow-x:auto;background:var(--ds-bg-page,#f8fafc)" class="flex gap-4 p-4 items-start min-h-[calc(100vh-52px)]">
+        <div id="kanban-grid-gate" role="region" aria-label="智能回复闸门看板" style="display:none;overflow-x:auto;background:var(--ds-bg-page,#f8fafc)" class="flex gap-4 p-4 items-start min-h-[400px]">
             <!-- Columns injected by renderGateBoard() -->
         </div>
 
@@ -1420,6 +1431,14 @@
                             <div class="text-xs font-medium mb-1" style="color:var(--ds-text-secondary,#475569);">回复策略</div>
                             <div id="re-basis-strategy" class="text-xs leading-relaxed" style="color:var(--ds-text-secondary,#475569);white-space:pre-wrap;"></div>
                         </div>
+                        <!-- 信息不足标签 -->
+                        <div id="re-basis-info-insufficient" class="hidden flex items-center gap-2 p-2 rounded-lg" style="background:#fef3c7;border:1px solid #fcd34d;">
+                            <span style="font-size:14px;">⚠️</span>
+                            <div>
+                                <span class="text-xs font-semibold" style="color:#92400e;">信息不足</span>
+                                <span class="text-xs ml-1" style="color:#a16207;">工单描述不满足最低信息要求，已自动退回支持</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -1433,6 +1452,7 @@
                             <span id="re-ai-badge" class="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full hidden">AI生成</span>
                             <span id="re-word-count" class="text-xs text-gray-500">0字</span>
                             <button id="re-regenerate-btn" onclick="regenerateReply()" class="text-xs text-indigo-600 hover:text-indigo-800 transition-colors">重新生成</button>
+                            <button id="re-expand-btn" type="button" onclick="expandSolution()" class="text-xs px-2 py-0.5 rounded border border-indigo-300 text-indigo-600 hover:bg-indigo-50 transition-colors" title="按您当前编辑的方案内容重跑搜索，给出精准补充">智能扩展</button>
                         </div>
                     </div>
                     <textarea
@@ -2270,15 +2290,22 @@
             }
         }
 
+        // 分析队列入队时间戳（用于超时托底）
+        const _analyzingKeyTimestamps = new Map();
+
         // 添加key到分析队列
         function addAnalyzingKey(key) {
             analyzingKeys.add(key);
+            if (!_analyzingKeyTimestamps.has(key)) {
+                _analyzingKeyTimestamps.set(key, Date.now());
+            }
             saveAnalyzingKeysToStorage();
         }
 
         // 从分析队列移除key
         function removeAnalyzingKey(key) {
             analyzingKeys.delete(key);
+            _analyzingKeyTimestamps.delete(key);
             saveAnalyzingKeysToStorage();
         }
 
@@ -2320,33 +2347,32 @@
         // Column definitions
         let columns = [];
 
-        // 用户模块归属（从 /api/auth/me 读取）
-        var _userModulesCache = {};   // { "YYZJ": ["用户权限"], ... }
-        var _ignoreModuleScope = false;
-
         // Initialize
         document.addEventListener('DOMContentLoaded', async () => {
-            // 恢复分析队列状态
             loadAnalyzingKeysFromStorage();
             await loadBoardConfig();
-            await loadBoardMeta();  // 加载Jira项目列表和当前用户
-            _refreshModuleScopeBadge();
-            // 检查 Jira 绑定状态，未绑定显示提示（不阻塞看板加载）
+            await loadBoardMeta();
             await checkJiraBinding();
-            loadBoardData();
-            // 设置全局触摸事件处理器（用于平板/移动端拖拽）
             setupGlobalTouchHandlers();
-            // Start polling for analysis updates
             startPolling();
-            // restore view mode
-            const savedMode = localStorage.getItem('board_view_mode') || 'date';
-            if (savedMode === 'gate') setViewMode('gate');
+            // 触发全量基线扫描（fire-and-forget，不阻塞启动）
+            fetch(API_BASE + '/api/jira/session-established', {
+                method: 'POST', credentials: 'include',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            }).catch(() => {});
+            let savedMode = localStorage.getItem('board_view_mode');
+            if (!['date', 'gate'].includes(savedMode)) {
+                savedMode = 'date';
+                localStorage.setItem('board_view_mode', 'date');
+            }
+            setViewMode(savedMode);
         });
 
         async function checkJiraBinding() {
             try {
                 var me = await fetch(API_BASE+'/api/auth/me',{credentials:'include'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;});
-                if (me && me.user && me.user.project_modules) { _userModulesCache = me.user.project_modules; _refreshModuleScopeBadge(); }
+                if (me && me.user && me.user.project_modules) { /* project_modules available via ScopeSwitcher */ }
                 if (me && me.is_demo) return true;
                 var resp = await fetch(API_BASE+'/api/settings/jira-binding');
                 if (!resp.ok) return true;
@@ -2538,7 +2564,7 @@
             opt.text = label;
             sel.value = value;
             cbClose(name);
-            if (name === 'project') { _ignoreModuleScope = false; loadBoardAssignees(value); _refreshModuleScopeBadge(); }
+            if (name === 'project') { loadBoardAssignees(value); }
 
             // 持久化到 localStorage
             const store = _cbLoadStore();
@@ -2641,25 +2667,6 @@
             }
         }
 
-        function _refreshModuleScopeBadge() {
-            const mods = getScopeFromStore().domain_modules || [];
-            const badge = document.getElementById('module-scope-badge');
-            const label = document.getElementById('module-scope-label');
-            if (!badge) return;
-            if (mods.length > 0 && !_ignoreModuleScope) {
-                badge.classList.remove('hidden');
-                if (label) label.textContent = '模块: ' + mods.join('、');
-            } else {
-                badge.classList.add('hidden');
-            }
-        }
-
-        function setIgnoreModuleScope(ignore) {
-            _ignoreModuleScope = ignore;
-            _refreshModuleScopeBadge();
-            loadBoardData();
-        }
-
         // ========== 作用域 Popup (已迁移至 scope-switcher.js) ==========
         let _acctProject = null;
         let _acctModules = [];
@@ -2687,8 +2694,6 @@
                 if (!opt) { opt = document.createElement('option'); opt.value = projKey; sel.appendChild(opt); }
                 sel.value = projKey;
             }
-            _ignoreModuleScope = false;
-            _refreshModuleScopeBadge();
             loadBoardData(true);
         });
 
@@ -2866,9 +2871,9 @@
             loading.classList.remove('hidden');
 
             try {
-                const _scopeMods = _ignoreModuleScope ? [] : (getScopeFromStore().domain_modules || []);
+                const _scopeMods = getScopeFromStore().domain_modules || [];
                 const _domainParam = _scopeMods.length > 0 ? `&domain_modules=${encodeURIComponent(_scopeMods.join(','))}` : '';
-                const url = `${API_BASE}/api/board?project_key=${project}&assignee=${encodeURIComponent(assignee)}${force ? '&force=true' : ''}${_ignoreModuleScope ? '&ignore_module=true' : ''}${_domainParam}`;
+                const url = `${API_BASE}/api/board?project_key=${project}&assignee=${encodeURIComponent(assignee)}${force ? '&force=true' : ''}${_domainParam}`;
                 const res = await fetch(url);
                 const result = await res.json();
 
@@ -2938,7 +2943,7 @@
                 try {
                     const r = await fetch(`${API_BASE}/api/board/generate-reply`, {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ issue_key: issue.key, force: false })
+                        body: JSON.stringify({ issue_key: issue.key, force: false, force_pass_gate1: true })
                     });
                     const d = await r.json();
                     if (d.status === 'success' && d.solution_content) {
@@ -3964,6 +3969,19 @@
             // 每5秒轮询一次分析状态
             pollingInterval = setInterval(() => {
                 pollAnalysisUpdates();
+                // 超时托底：chip 显示 >90s 仍未完成则触发强制重分析
+                const now = Date.now();
+                _analyzingKeyTimestamps.forEach((ts, key) => {
+                    if (now - ts > 90000) {
+                        console.warn('[Board] chip timeout, force reanalyze:', key);
+                        _analyzingKeyTimestamps.delete(key);
+                        fetch(API_BASE + `/api/board/${encodeURIComponent(key)}/reanalyze`, {
+                            method: 'POST', credentials: 'include',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ force: true })
+                        }).catch(() => {});
+                    }
+                });
             }, 5000);
         }
 
@@ -4513,15 +4531,23 @@
 
         // ── 视图模式切换 ──────────────────────────────────────────
         function setViewMode(mode) {
+            if (!['date', 'gate'].includes(mode)) mode = 'date';
             localStorage.setItem('board_view_mode', mode);
-            document.getElementById('vm-gate').style.background = mode === 'gate' ? 'var(--ds-accent,#4f46e5)' : 'var(--ds-bg-surface,#fff)';
-            document.getElementById('vm-gate').style.color = mode === 'gate' ? '#fff' : 'var(--ds-text-secondary,#475569)';
-            document.getElementById('vm-date').style.background = mode === 'date' ? 'var(--ds-accent,#4f46e5)' : 'var(--ds-bg-surface,#fff)';
-            document.getElementById('vm-date').style.color = mode === 'date' ? '#fff' : 'var(--ds-text-secondary,#475569)';
+            document.body.classList.toggle('gate-mode', mode === 'gate');
+            // 按钮样式
+            document.querySelectorAll('.vm-btn').forEach(b => {
+                const isActive = b.id === `vm-${mode}`;
+                b.style.background = isActive ? 'var(--ds-accent,#4f46e5)' : 'var(--ds-bg-surface,#fff)';
+                b.style.color = isActive ? '#fff' : 'var(--ds-text-secondary,#475569)';
+                b.classList.toggle('vm-active', isActive);
+            });
             const gateBoard = document.getElementById('kanban-grid-gate');
             const dateBoard = document.getElementById('kanban-grid') || document.getElementById('board-container');
             if (gateBoard) gateBoard.style.display = mode === 'gate' ? '' : 'none';
             if (dateBoard) dateBoard.style.display = mode === 'date' ? '' : 'none';
+            // 闸门模式：隐藏与看板筛选无关的过滤栏，避免顶部大片空白
+            const filterBar = document.querySelector('.filter-bar');
+            if (filterBar) filterBar.style.display = mode === 'gate' ? 'none' : '';
             if (mode === 'gate') loadGateView();
         }
 
@@ -4529,6 +4555,8 @@
         let _gateViewData = null;
         let _pendingSelected = new Set();      // staging items: approval_id
         let _pendingCandidateSelected = new Set(); // candidate items: issue_key
+
+        let _gatePrecomputeTimer = null;
 
         async function loadGateView() {
             try {
@@ -4542,11 +4570,20 @@
                 _gateViewData = gateData;
                 window.gateStatusByKey = gateData.by_key || {};
                 window._pendingItems = pendingData.items || [];
+                // 把已预算的回复灌进 replyCache，让回复按钮秒回
+                Object.keys(window.gateStatusByKey).forEach(k => _seedReplyCacheFromGate(k, window.gateStatusByKey[k]));
                 _pendingSelected.clear();
                 _pendingCandidateSelected.clear();
                 renderGateBoard();
-                // Show diagnostic if all columns empty
                 _checkGateBoardEmpty(gateData);
+                // 触发后台预计算（fire-and-forget）
+                fetch(API_BASE+'/api/board/precompute-replies', {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({project_key: _gvProjKey, modules: _gvMods}),
+                }).catch(()=>{});
+                // 启动轮询，每 30s 刷新进度（直到全部预算完成）
+                _startGatePrecomputePoll(_gvProjKey, _gvMods, _gvDomainParam);
             } catch(e) {
                 document.getElementById('kanban-grid-gate').innerHTML =
                     `<div style="padding:24px;color:var(--ds-danger,#dc2626);font-size:13px">
@@ -4556,17 +4593,58 @@
             }
         }
 
+        function _startGatePrecomputePoll(projKey, mods, domainParam) {
+            if (_gatePrecomputeTimer) clearInterval(_gatePrecomputeTimer);
+            _gatePrecomputeTimer = setInterval(async () => {
+                try {
+                    const d = await fetch(
+                        API_BASE+'/api/board/gate-view-tickets?hours=720&include_unscored=true&project_key='+encodeURIComponent(projKey)+domainParam
+                    ).then(r=>r.json());
+                    const prog = d.precompute_progress || {};
+                    // 更新 gateStatusByKey（增量）
+                    const newByKey = d.by_key || {};
+                    Object.assign(window.gateStatusByKey, newByKey);
+                    // 更新 toolbar 进度 chip
+                    const chip = document.getElementById('gate-precompute-chip');
+                    if (chip) {
+                        if (prog.missing === 0) {
+                            chip.textContent = `已预算 ${prog.cached}/${prog.total}`;
+                            chip.style.background = '#dcfce7';
+                            chip.style.color = '#15803d';
+                        } else {
+                            chip.textContent = `预算中 ${prog.cached}/${prog.total}`;
+                            chip.style.background = '#fef3c7';
+                            chip.style.color = '#a16207';
+                        }
+                    }
+                    // 全部完成时停止轮询并重渲染
+                    if (prog.missing === 0) {
+                        clearInterval(_gatePrecomputeTimer);
+                        _gatePrecomputeTimer = null;
+                        _gateViewData = d;
+                        window.gateStatusByKey = newByKey;
+                        renderGateBoard();
+                        _checkGateBoardEmpty(d);
+                    }
+                } catch(e) { /* ignore poll errors */ }
+            }, 30000);
+        }
+
         function _checkGateBoardEmpty(data) {
+            const container = document.getElementById('kanban-grid-gate');
+            // 先清理上次可能残留的 diag 和 position 副作用
+            container.querySelectorAll('[data-gate-empty-diag]').forEach(el => el.remove());
+            container.style.position = '';
             const total = Object.entries(data)
-                .filter(([k]) => k !== 'by_key')
+                .filter(([k]) => k !== 'by_key' && k !== 'precompute_progress')
                 .reduce((sum, [, arr]) => sum + (Array.isArray(arr) ? arr.length : 0), 0);
             if (total > 0) return;
-            const container = document.getElementById('kanban-grid-gate');
             const diag = document.createElement('div');
+            diag.setAttribute('data-gate-empty-diag', '1');
             diag.style.cssText = 'position:absolute;top:12px;left:50%;transform:translateX(-50%);background:var(--ds-bg-surface,#fff);border:1px solid var(--ds-border,#e2e8f0);border-radius:8px;padding:16px 20px;font-size:12px;color:var(--ds-text-secondary,#475569);z-index:10;max-width:400px;box-shadow:0 2px 8px rgba(0,0,0,.08)';
             diag.innerHTML = `<div style="font-weight:600;margin-bottom:6px;color:var(--ds-text-primary,#0f172a)">&#9888; 看板暂无工单数据</div>
                 <div>可能原因：Jira 拉取失败，或当前筛选器无命中工单</div>
-                <button onclick="this.parentNode.remove()" style="margin-top:8px;font-size:11px;color:var(--ds-text-muted,#94a3b8);background:none;border:none;cursor:pointer;text-decoration:underline">关闭提示</button>`;
+                <button onclick="this.closest('[data-gate-empty-diag]').remove()" style="margin-top:8px;font-size:11px;color:var(--ds-text-muted,#94a3b8);background:none;border:none;cursor:pointer;text-decoration:underline">关闭提示</button>`;
             container.style.position = 'relative';
             container.appendChild(diag);
         }
@@ -4602,17 +4680,39 @@
             const gateContainer = document.getElementById('kanban-grid-gate');
             gateContainer.style.flexWrap = 'wrap';
             gateContainer.innerHTML = `
-<div style="width:100%;display:flex;justify-content:flex-end;gap:8px;padding:0 0 4px;flex-shrink:0;align-items:center">
-    <button onclick="showProcessingLog()" style="font-size:11px;padding:4px 12px;border-radius:6px;border:1px solid var(--ds-border,#e2e8f0);background:var(--ds-bg-surface,#fff);color:var(--ds-text-secondary,#475569);cursor:pointer;display:flex;align-items:center;gap:4px">
-        📋 处理日志（7天）
-    </button>
-    <button onclick="loadGateView()" style="font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--ds-border,#e2e8f0);background:var(--ds-bg-surface,#fff);color:var(--ds-text-secondary,#475569);cursor:pointer">↻ 刷新</button>
+<div style="width:100%;display:flex;justify-content:space-between;gap:8px;padding:0 0 8px;flex-shrink:0;align-items:center">
+    <div style="display:inline-flex;border:1px solid var(--ds-border,#e2e8f0);border-radius:8px;overflow:hidden">
+        <button onclick="setViewMode('date')" style="padding:4px 12px;font-size:12px;font-weight:500;border:none;cursor:pointer;background:var(--ds-bg-surface,#fff);color:var(--ds-text-secondary,#475569);border-radius:6px 0 0 6px">按到期日</button>
+        <button style="padding:4px 12px;font-size:12px;font-weight:500;border:none;cursor:default;background:var(--ds-accent,#4f46e5);color:#fff;border-radius:0 6px 6px 0">智能决策</button>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+        <button onclick="openBoardSettings()" style="font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--ds-border,#e2e8f0);background:var(--ds-bg-surface,#fff);color:var(--ds-text-secondary,#475569);cursor:pointer;display:flex;align-items:center;gap:4px">⚙️ 闸门设置</button>
+        <button onclick="showProcessingLog()" style="font-size:11px;padding:4px 12px;border-radius:6px;border:1px solid var(--ds-border,#e2e8f0);background:var(--ds-bg-surface,#fff);color:var(--ds-text-secondary,#475569);cursor:pointer;display:flex;align-items:center;gap:4px">
+            📋 处理日志（7天）
+        </button>
+        <button onclick="loadGateView()" style="font-size:11px;padding:4px 10px;border-radius:6px;border:1px solid var(--ds-border,#e2e8f0);background:var(--ds-bg-surface,#fff);color:var(--ds-text-secondary,#475569);cursor:pointer">↻ 刷新</button>
+    </div>
 </div>
 ${_colVip([], byKey)}
 ${_colPending(pending, pendingCandidates, byKey)}
 ${_colAuto(d, autoCounts, autoTotal)}
 ${_colDecision(byKey)}
             `;
+            // 初始化预计算进度 chip
+            const _prog = d.precompute_progress || {};
+            const _chip = document.getElementById('gate-precompute-chip');
+            if (_chip && _prog.total > 0) {
+                _chip.style.display = 'inline-flex';
+                if (_prog.missing === 0) {
+                    _chip.textContent = `已预算 ${_prog.cached}/${_prog.total}`;
+                    _chip.style.background = '#dcfce7';
+                    _chip.style.color = '#15803d';
+                } else {
+                    _chip.textContent = `预算中 ${_prog.cached}/${_prog.total}`;
+                    _chip.style.background = '#fef3c7';
+                    _chip.style.color = '#a16207';
+                }
+            }
         }
 
         const _GATE_BADGE = {
@@ -4729,63 +4829,141 @@ ${_colDecision(byKey)}
         function openGateCardDetail(key) {
             let issue = findIssueByKey(key);
             if (!issue) {
-                const gateInfo = (window.gateStatusByKey || {})[key];
-                if (gateInfo) {
-                    issue = {
-                        key: key,
-                        summary: gateInfo.summary || '',
-                        status: '',
-                        priority: gateInfo.priority || '',
-                        due_date: gateInfo.due_date || '',
-                        ai_analysis: gateInfo.ai_confidence != null ? { confidence: gateInfo.ai_confidence } : null,
-                        _from_gate_view: true,
-                    };
-                    if (!window.allIssues) window.allIssues = [];
-                    if (!findIssueByKey(key)) window.allIssues.push(issue);
-                }
+                const gateInfo = (window.gateStatusByKey || {})[key] || {};
+                issue = {
+                    key: key,
+                    summary: gateInfo.summary || '',
+                    status: gateInfo.status || '',
+                    priority: gateInfo.priority || '',
+                    due_date: gateInfo.due_date || '',
+                    ai_analysis: gateInfo.ai_confidence != null ? { confidence: gateInfo.ai_confidence } : null,
+                    _from_gate_view: true,
+                };
+                if (!window.allIssues) window.allIssues = [];
+                if (!findIssueByKey(key)) window.allIssues.push(issue);
             }
-            if (issue) {
-                showIssueDetail(key);
-            } else {
-                const base = (window.JIRA_BASE_URL || 'https://jira.yonyoucloud.com');
-                if (typeof showToast === 'function') showToast(`工单 ${key} 不在当前看板，正在 Jira 中打开`, 'info');
-                window.open(`${base}/browse/${key}`, '_blank');
+            showIssueDetail(key);
+            // 注入智能回复草稿区块（staging 审批 / 预计算缓存）
+            requestAnimationFrame(() => _injectGateReplySection(key));
+        }
+
+        function _injectGateReplySection(key) {
+            // 清理上次注入
+            document.querySelectorAll('[data-gate-reply-section]').forEach(el => el.remove());
+
+            const gateInfo = (window.gateStatusByKey || {})[key] || {};
+            const pendingItem = (window._pendingItems || []).find(p => p.issue_key === key);
+            const replyContent = pendingItem?.reply_content || gateInfo.reply_content || '';
+            const approvalId = pendingItem?.approval_id;
+            const cs = gateInfo.composite_score ?? pendingItem?.decision?.composite_score;
+            const pct = cs != null ? Math.round(cs * 100) + '%' : null;
+            const replyStatus = gateInfo.reply_status;
+
+            const drawerContent = document.getElementById('drawer-content');
+            if (!drawerContent) return;
+
+            const section = document.createElement('div');
+            section.setAttribute('data-gate-reply-section', '1');
+            section.style.cssText = 'margin:0 0 12px 0;padding:12px 14px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;font-size:12px';
+
+            const statusLine = pendingItem
+                ? `<span style="background:#eef2ff;color:#4338ca;border-radius:4px;padding:1px 6px;font-weight:600;font-size:10px">待审批</span>`
+                : replyStatus === 'cached'
+                    ? `<span style="background:#dcfce7;color:#15803d;border-radius:4px;padding:1px 6px;font-size:10px">已预算</span>`
+                    : `<span style="background:#f1f5f9;color:#94a3b8;border-radius:4px;padding:1px 6px;font-size:10px">预计算中</span>`;
+            const scoreHtml = pct ? `<span style="font-size:10px;color:#64748b;margin-left:6px">综合 ${pct}</span>` : '';
+            const previewHtml = replyContent
+                ? `<div style="margin:8px 0;color:#334155;line-height:1.6;max-height:100px;overflow-y:auto;white-space:pre-wrap;word-break:break-all">${escapeHtml(replyContent)}</div>`
+                : `<div data-gate-reply-preview style="margin:8px 0;color:#94a3b8">（${replyStatus === 'unavailable' || !replyStatus ? '预计算中，请稍候' : '内容加载中'}）</div>`;
+            const actionsHtml = approvalId ? `
+                <div style="display:flex;gap:8px;margin-top:8px">
+                    <button onclick="approveSingle('${approvalId}')" class="ds-btn ds-btn-primary ds-btn-xs">通过</button>
+                    <button onclick="rejectSingleApproval('${approvalId}')" class="ds-btn ds-btn-ghost ds-btn-xs">打回</button>
+                </div>` : '';
+
+            section.innerHTML = `
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+                    <span style="font-weight:600;color:#0369a1;font-size:12px">🤖 智能回复</span>
+                    ${statusLine}${scoreHtml}
+                </div>
+                ${previewHtml}${actionsHtml}`;
+
+            drawerContent.prepend(section);
+
+            // 没有预计算内容时：懒加载兜底（恢复按需生成体验）
+            if (!replyContent && replyStatus !== 'cached' && !pendingItem) {
+                const previewEl = section.querySelector('[data-gate-reply-preview]');
+                if (previewEl) previewEl.innerHTML = '<span style="color:#64748b">⏳ 正在生成（约 2 分钟）…</span>';
+                currentReplyIssue = key;
+                currentReplyData = null;
+                (async () => {
+                    try {
+                        await generateSmartReply(key, false);
+                        // 生成完成后从 replyCache 取内容写回 gateStatusByKey，然后重渲染
+                        const cached = replyCache.get(key);
+                        if (cached && currentReplyIssue === key) {
+                            window.gateStatusByKey = window.gateStatusByKey || {};
+                            window.gateStatusByKey[key] = {
+                                ...(window.gateStatusByKey[key] || {}),
+                                reply_content: cached.content,
+                                reply_status: 'cached',
+                                composite_score: cached.data?.grounded_confidence?.score ?? window.gateStatusByKey[key]?.composite_score,
+                            };
+                            _injectGateReplySection(key);
+                        }
+                    } catch(e) { /* generateSmartReply 内部已记录日志 */ }
+                })();
             }
+            // 已有有效缓存，不重复请求
+            const existing = replyCache.get(key);
+            if (existing && Date.now() - existing.timestamp < 600000) return;
+            // 发起静默后台请求，不占用 currentReplyIssue / _replyRequestSeq
+            (async () => {
+                try {
+                    const r = await fetch(`${API_BASE}/api/board/generate-reply`, {
+                        method: 'POST',
+                        headers: {'Content-Type':'application/json'},
+                        body: JSON.stringify({issue_key: key, force: false}),
+                    });
+                    const data = await r.json();
+                    const content = data.reply_content || '';
+                    if (!content) return;
+                    // 仅写入，不覆盖用户正在编辑中的条目（用户手动 force regenerate 留下的较新条目优先）
+                    const cur = replyCache.get(key);
+                    if (!cur || Date.now() - cur.timestamp >= 600000) {
+                        replyCache.set(key, { content, data, timestamp: Date.now() });
+                    }
+                } catch(e) {}
+            })();
+        }
+
+        async function rejectSingleApproval(approvalId) {
+            const reason = prompt('打回原因（可选）：') || '';
+            try {
+                await fetch(API_BASE + '/api/board/batch-reject-replies', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ approval_ids: [approvalId], reason, approver: window.currentUser || 'operator' }),
+                });
+                loadGateView();
+            } catch(e) { alert('打回失败: ' + e.message); }
         }
         function _confidenceChip(info) {
             if (!info) return '';
-            let label = '', value = null, suffix = '';
-            const g = info.grounded_confidence;
-            if (g && g.score != null) {
-                value = g.score; label = '综合';
-                if (g.evidence_status === 'no_evidence') suffix = ' ⚠';
-            } else if (info.grounded_confidence_score != null) { value = info.grounded_confidence_score; label = '综合'; }
-            else if (info.composite_score != null) { value = info.composite_score; label = '综合'; }
-            else if (info.supervisor_score != null) { value = info.supervisor_score; label = '监督'; }
-            else if (info.reuse_score != null) { value = info.reuse_score; label = '复用'; }
-            else if (info.specificity_level) {
-                const map = { high: '高', medium: '中', low: '低' };
-                const bg = info.specificity_level === 'high' ? '#dcfce7' : info.specificity_level === 'medium' ? '#fef3c7' : '#fee2e2';
-                return `<span style="font-size:10px;background:${bg};color:#0f172a;border-radius:4px;padding:1px 5px">具体度 ${map[info.specificity_level]||info.specificity_level}</span>`;
-            } else if (info.ai_confidence != null) { value = info.ai_confidence; label = 'AI分类'; }
-            else return '';
-            const pct = Math.round((value || 0) * 100);
-            const bg = pct >= 85 ? '#dcfce7' : pct >= 65 ? '#fef3c7' : '#fee2e2';
-            const fg = pct >= 85 ? '#15803d' : pct >= 65 ? '#a16207' : '#b91c1c';
-            return `<span title="${label} 置信度 ${pct}%${suffix}" style="font-size:10px;background:${bg};color:${fg};border-radius:4px;padding:1px 5px;font-weight:600">${label} ${pct}%${suffix}</span>`;
+            const score = info.composite_score;
+            if (score == null) {
+                return `<span title="智能回复综合置信度：预计算中" style="font-size:10px;background:#f1f5f9;color:#94a3b8;border-radius:4px;padding:1px 5px">综合 · 预计算中</span>`;
+            }
+            const pct = Math.round(score * 100);
+            const bg = pct >= 70 ? '#dcfce7' : pct >= 40 ? '#fef3c7' : '#fee2e2';
+            const fg = pct >= 70 ? '#15803d' : pct >= 40 ? '#a16207' : '#b91c1c';
+            return `<span title="智能回复综合置信度 ${pct}%" style="font-size:10px;background:${bg};color:${fg};border-radius:4px;padding:1px 5px;font-weight:600">综合 ${pct}%</span>`;
         }
         function _riskFlagChip(info) {
             if (!info || !info.risk_flags || !info.risk_flags.length) return '';
             return `<span title="${info.risk_flags.join(', ')}" style="font-size:10px;background:#fee2e2;color:#b91c1c;border-radius:4px;padding:1px 5px">⚠ ${info.risk_flags.length}</span>`;
         }
         function _confidenceTier(info) {
-            // grounded > gate scores > ai_confidence
-            const g = info.grounded_confidence;
-            const v = (g && g.score != null) ? g.score
-                     : info.composite_score != null ? info.composite_score
-                     : info.supervisor_score != null ? info.supervisor_score
-                     : info.ai_confidence != null ? info.ai_confidence
-                     : null;
+            const v = info ? info.composite_score : null;
             if (v == null) return 'medium';
             if (v >= 0.85) return 'low';
             if (v >= 0.60) return 'medium';
@@ -4927,20 +5105,24 @@ ${_colDecision(byKey)}
             </div>`;
             const stagingCards = items.map(item => {
                 const score = item.decision?.composite_score != null ? Math.round(item.decision.composite_score*100)+'%' : '';
+                const scoreChip = score ? `<span style="font-size:10px;padding:1px 5px;border-radius:4px;background:var(--ds-warning-subtle,#fefce8);color:var(--ds-warning-text,#a16207);font-weight:600">${score}</span>` : '';
+                const preview = item.reply_content ? `<div style="font-size:11px;color:var(--ds-text-secondary,#475569);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(item.reply_content.slice(0,60))}…</div>` : '';
+                const summary = item.issue_summary ? `<div style="font-size:11px;color:var(--ds-text-secondary,#475569);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(item.issue_summary)}</div>` : '';
                 return `<div class="gate-card pending-card" role="listitem">
                     <div style="display:flex;align-items:flex-start;gap:8px">
-                        <input type="checkbox" class="pending-checkbox" data-approval-id="${item.approval_id}" onchange="updatePendingCount()" aria-label="选中 ${item.issue_key||''} 用于批量通过" style="width:14px;height:14px;cursor:pointer;margin-top:2px">
+                        <input type="checkbox" class="pending-checkbox" data-approval-id="${item.approval_id}" onchange="updatePendingCount()" aria-label="选中 ${item.issue_key||''} 用于批量通过" style="width:14px;height:14px;cursor:pointer;margin-top:2px;flex-shrink:0">
                         <div style="flex:1;min-width:0">
-                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                            <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:2px">
+                                <span style="font-size:10px;background:#eef2ff;color:#4338ca;border-radius:4px;padding:1px 5px;font-weight:600;flex-shrink:0">待审批</span>
                                 <span style="font-size:11px;font-family:var(--ds-font-mono,monospace);color:var(--ds-text-muted,#94a3b8)">${item.issue_key||''}</span>
-                                ${score?`<span style="font-size:10px;padding:2px 6px;border-radius:9999px;background:var(--ds-warning-subtle,#fefce8);color:var(--ds-warning-text,#a16207);font-weight:600">置信度 ${score}</span>`:''}
+                                ${scoreChip}
                             </div>
-                            <div style="font-size:13px;font-weight:500;color:var(--ds-text-primary,#0f172a);margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${item.issue_summary||item.issue_key||''}</div>
-                            <div style="font-size:11px;color:var(--ds-text-secondary,#475569);background:var(--ds-bg-muted,#f1f5f9);border-radius:var(--ds-radius-sm,6px);padding:6px 8px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${item.reply_content?item.reply_content.slice(0,80)+'…':''}</div>
-                            <div style="display:flex;gap:8px;margin-top:6px">
+                            ${summary}${preview}
+                            <div style="display:flex;gap:6px;margin-top:5px">
                                 <button onclick="approveSingle('${item.approval_id}')" class="ds-btn ds-btn-primary ds-btn-xs">单条通过</button>
                                 <button onclick="viewReplyDraft('${item.approval_id}')" class="ds-btn ds-btn-ghost ds-btn-xs">查看草稿</button>
                             </div>
+                            ${summary}${preview}
                         </div>
                     </div>
                 </div>`;
@@ -4951,6 +5133,9 @@ ${_colDecision(byKey)}
                 const confChip = _confidenceChip(info);
                 const dueDateChip = _dueDateChip(info);
                 const summary = info.summary ? `<div style="font-size:11px;color:var(--ds-text-secondary,#475569);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(info.summary)}</div>` : '';
+                const replyPreview = info.reply_status === 'cached' && info.reply_content
+                    ? `<div style="font-size:11px;color:#0369a1;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-style:italic" title="已预算回复">💬 ${escapeHtml(info.reply_content.slice(0,60))}…</div>`
+                    : '';
                 return `<div class="gate-card pending-card gate-card-clickable" role="listitem" onclick="openGateCardDetail('${k}')">
                     <div style="display:flex;align-items:flex-start;gap:8px">
                         <input type="checkbox" class="pending-checkbox" data-issue-key="${k}" onchange="updatePendingCount()" onclick="event.stopPropagation()" aria-label="选中 ${k} 用于批量通过" style="width:14px;height:14px;cursor:pointer;margin-top:2px;flex-shrink:0">
@@ -4958,7 +5143,7 @@ ${_colDecision(byKey)}
                             <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:2px">
                                 ${_gateBadge(k)}<span style="font-size:11px;font-family:var(--ds-font-mono,monospace);color:var(--ds-text-muted,#94a3b8)">${k}</span>${confChip}${dueDateChip}
                             </div>
-                            ${summary}
+                            ${summary}${replyPreview}
                         </div>
                     </div>
                 </div>`;
@@ -5375,9 +5560,11 @@ ${_colDecision(byKey)}
         }
 
         async function _openGateDrawer(node, cfg) {
-            if (!window._gateDrawer) {
+            // 必须挂到 body，避免被 board-settings-inner(overflow:hidden) 裁剪
+            if (!window._gateDrawer || !document.body.contains(window._gateDrawer._el)) {
+                if (window._gateDrawer) { try { window._gateDrawer._el.remove(); } catch(e) {} }
                 const m = await import('/assets/components/pipeline/pipeline-drawer.js');
-                window._gateDrawer = new m.PipelineDrawer({container: '#reply-gates-outer'});
+                window._gateDrawer = new m.PipelineDrawer({container: document.body});
             }
             const gateKey = node.id.startsWith('gate') ? ['completeness','classification','reuse','specificity','supervisor'][parseInt(node.id.replace('gate',''))-1] : null;
             if (!gateKey) return;
@@ -6533,6 +6720,11 @@ ${_colDecision(byKey)}
             }
             document.getElementById('board-settings-modal').classList.add('hidden');
             closeRuleEditor();
+            // 清理闸门 drawer，下次从 body 重新挂载（避免 orphaned element）
+            if (window._gateDrawer) {
+                try { window._gateDrawer._el.remove(); } catch(e) {}
+                window._gateDrawer = null;
+            }
         }
 
         function renderColumnSettings() {
@@ -6949,10 +7141,35 @@ ${_colDecision(byKey)}
         let pendingSuggestions = null;  // 待应用的AI推荐字段值（等字段选项加载完再设）
         const replyCache = new Map();   // issueKey → {content, data, timestamp}
         const gate1BlockedKeys = new Set(); // issues currently blocked by Gate 1
+        let _replyAbort = null;         // AbortController for in-flight generate-reply request
+        let _replyRequestSeq = 0;       // monotonic counter — stale responses are dropped
+
+        // 把预计算结果从 gateStatusByKey 灌进 replyCache，让回复按钮零等待命中本地缓存
+        function _seedReplyCacheFromGate(key, gateInfo) {
+            if (!gateInfo || !gateInfo.reply_content) return;
+            const existing = replyCache.get(key);
+            if (existing && Date.now() - existing.timestamp < 600000) return;
+            replyCache.set(key, {
+                content: gateInfo.reply_content,
+                data: {
+                    reply_content: gateInfo.reply_content,
+                    word_count: (gateInfo.reply_content || '').length,
+                    ai_analysis: gateInfo.ai_analysis || null,
+                    suggested_reply_method: gateInfo.suggested_reply_method || null,
+                    suggested_issue_type: gateInfo.suggested_issue_type || null,
+                    grounded_confidence: { score: gateInfo.composite_score },
+                },
+                timestamp: Date.now(),
+            });
+        }
+        let _replyAbort = null;         // AbortController for in-flight generate-reply request
+        let _replyRequestSeq = 0;       // monotonic counter — stale responses are dropped
 
         // 打开回复编辑器
         async function openReplyEditor(issueKey, issueData) {
             console.log('[ReplyEditor] 打开回复编辑器:', issueKey, issueData);
+            // 取消上一个 in-flight 请求，防止张冠李戴
+            if (_replyAbort) { _replyAbort.abort(); _replyAbort = null; }
             currentReplyIssue = issueKey;
             currentReplyData = issueData;
 
@@ -6977,10 +7194,12 @@ ${_colDecision(byKey)}
 
             // 加载领域模块选项（按工单所属项目）
             (async () => {
+                const expectedKey = issueKey;
                 const projKey = issueKey.split('-')[0];
                 const domainSel = document.getElementById('re-domain-module');
                 try {
                     const r = await fetch(`${API_BASE}/api/board/move-field-options/${projKey}`, { headers: getJiraHeaders() });
+                    if (currentReplyIssue !== expectedKey) return;
                     const data = await r.json();
                     const opts = data.options || [];
                     domainSel.innerHTML = opts.map(o =>
@@ -6994,6 +7213,7 @@ ${_colDecision(byKey)}
                     // 若未命中，保持第一项（已自动选中）
                     document.getElementById('re-domain-required').classList.toggle('hidden', opts.length === 0);
                 } catch(e) {
+                    if (currentReplyIssue !== expectedKey) return;
                     domainSel.innerHTML = '<option value="">（加载失败，可留空）</option>';
                 }
             })();
@@ -7012,8 +7232,15 @@ ${_colDecision(byKey)}
                 document.getElementById('re-ref-confidence').textContent = '-';
             }
 
-            // 优先使用前端缓存，避免每次打开都请求API
-            const cached = replyCache.get(issueKey);
+            // 优先使用前端缓存；cache miss 时尝试从预计算结果即时灌入，避免任何网络等待
+            let cached = replyCache.get(issueKey);
+            if (!cached || Date.now() - cached.timestamp >= 600000) {
+                const gateInfo = (window.gateStatusByKey || {})[issueKey];
+                if (gateInfo?.reply_content) {
+                    _seedReplyCacheFromGate(issueKey, gateInfo);
+                    cached = replyCache.get(issueKey);
+                }
+            }
             if (cached && (Date.now() - cached.timestamp < 600000)) {
                 // 缓存有效（10分钟内）
                 originalReplyContent = cached.content;
@@ -7041,13 +7268,37 @@ ${_colDecision(byKey)}
 
         // 生成智能回复
         async function generateSmartReply(issueKey, force = false) {
+            // ── 竞态防护 ─────────────────────────────────────────────
+            if (_replyAbort) _replyAbort.abort();
+            _replyAbort = new AbortController();
+            const mySeq = ++_replyRequestSeq;
+            const myKey = issueKey;
+
+            // 用于在回调内校验是否仍为"当前"请求
+            const _stale = () => mySeq !== _replyRequestSeq || myKey !== currentReplyIssue;
+
             try {
+                const _timeoutSig = AbortSignal.timeout ? AbortSignal.timeout(180000) : null;
+                const _fetchSig = (_timeoutSig && AbortSignal.any)
+                    ? AbortSignal.any([_replyAbort.signal, _timeoutSig])
+                    : _replyAbort.signal;
                 const response = await fetch(`${API_BASE}/api/board/generate-reply`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ issue_key: issueKey, force: force })
+                    body: JSON.stringify({ issue_key: issueKey, force: force }),
+                    signal: _fetchSig,
                 });
                 const data = await response.json();
+
+                // 后端回声校验（后端已在所有响应路径加 issue_key）
+                if (data.issue_key && data.issue_key !== myKey) {
+                    console.warn(`[reply-guard] 后端 issue_key 不匹配 (${data.issue_key} vs ${myKey})，丢弃`);
+                    return;
+                }
+                if (_stale()) {
+                    console.warn(`[reply-guard] dropped stale response for ${myKey}`);
+                    return;
+                }
 
                 // Gate 1 blocked
                 if (data.status === 'gate_blocked') {
@@ -7058,56 +7309,41 @@ ${_colDecision(byKey)}
                             .map(f => `<li>${f}</li>`).join('');
                         banner.classList.remove('hidden');
                     }
-                    // Store issue key so card can show badge
                     if (issueKey) gate1BlockedKeys.add(issueKey);
                     document.getElementById('re-solution').placeholder = '补充信息后可重新生成解决方案...';
                     document.getElementById('re-solution').value = '';
                     document.getElementById('re-gen-details')?.classList.add('hidden');
                     document.getElementById('re-reply-basis')?.classList.add('hidden');
-                    return; // don't throw, modal stays open
+                    return;
                 }
 
                 const replyText = data.solution_content || data.reply_content || '';
                 if (data.status === 'success' && replyText) {
-                    // hide gate1 banner if previously shown
                     document.getElementById('re-gate1-banner')?.classList.add('hidden');
                     originalReplyContent = replyText;
                     document.getElementById('re-solution').value = originalReplyContent;
                     updateWordCount(data.word_count || 0);
                     document.getElementById('re-ai-badge').classList.remove('hidden');
 
-                    // 显示是否使用了缓存
-                    if (data.cached) {
-                        console.log('[Reply] 使用缓存的回复内容');
-                    } else {
-                        console.log('[Reply] 新生成的回复内容（基于Chroma相似工单参考）');
-                    }
+                    console.log(data.cached ? '[Reply] 使用缓存的回复内容' : '[Reply] 新生成的回复内容（基于Chroma相似工单参考）');
 
-                    // 更新AI分析参考数据（从API返回的ai_analysis）
                     if (data.ai_analysis) {
                         const ai = data.ai_analysis;
                         document.getElementById('re-ref-team').textContent = ai.recommended_team || '-';
                         document.getElementById('re-ref-role').textContent = ai.recommended_role || '-';
                         const confidence = ai.confidence;
                         document.getElementById('re-ref-confidence').textContent = confidence ? `${(confidence * 100).toFixed(0)}%` : '-';
-
-                        // 更新currentReplyData以便后续使用
                         currentReplyData = currentReplyData || {};
                         currentReplyData.ai_analysis = ai;
                     }
 
-                    // 保存AI推荐字段值（等 loadFieldOptions 完成后统一应用）
                     pendingSuggestions = {
                         reply_method: data.suggested_reply_method,
                         issue_type: data.suggested_issue_type
                     };
-                    // 尝试立即应用（如果字段选项已加载）
                     applyPendingSuggestions();
-
-                    // 填充生成详情面板
                     updateGenDetails(data);
-
-                    // 缓存到前端（10分钟有效）
+                    // guard 通过后才写缓存
                     replyCache.set(issueKey, { content: replyText, data, timestamp: Date.now() });
                 } else if (data.status === 'warning') {
                     const msg = data.message || '无法生成解决方案';
@@ -7118,6 +7354,7 @@ ${_colDecision(byKey)}
                     throw new Error(msg);
                 }
             } catch (error) {
+                if (error.name === 'AbortError') return; // 正常中断，不展示错误
                 console.error('[Reply] 生成回复失败:', error);
                 document.getElementById('re-solution').placeholder = '请输入详细解决方案...';
                 document.getElementById('re-gen-details')?.classList.add('hidden');
@@ -7129,6 +7366,8 @@ ${_colDecision(byKey)}
             const basis = document.getElementById('re-reply-basis');
             if (!basis) return;
             basis.classList.remove('hidden');
+            // 正常回复路径：隐藏信息不足标签
+            document.getElementById('re-basis-info-insufficient')?.classList.add('hidden');
 
             // 综合置信度 breakdown
             const g = data.grounded_confidence;
@@ -7328,6 +7567,52 @@ ${_colDecision(byKey)}
             } finally {
                 btn.disabled = false;
                 btn.innerHTML = origHtml;
+                btn.classList.remove('opacity-60', 'pointer-events-none');
+            }
+        }
+
+        // 智能扩展：基于用户当前编辑内容重跑搜索，精准完善方案
+        async function expandSolution() {
+            if (!currentReplyIssue) return;
+            const draft = (document.getElementById('re-solution').value || '').trim();
+            if (!draft) {
+                showToast('请先在方案文本框里写入需要完善的内容或关键词', 'warning');
+                return;
+            }
+            const btn = document.getElementById('re-expand-btn');
+            const origText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = '完善中...';
+            btn.classList.add('opacity-60', 'pointer-events-none');
+            try {
+                const keywords = draft.split(/[\s,，、。；;]+/).filter(s => s.length >= 2).slice(0, 8);
+                const r = await fetch(`${API_BASE}/api/reply/refine`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...getJiraHeaders() },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        issue_key: currentReplyIssue,
+                        user_draft: draft,
+                        focus_keywords: keywords,
+                    }),
+                });
+                if (r.status === 429) {
+                    showToast('今日免费额度已用完，请登录 QCL 账号后继续使用', 'warning');
+                    return;
+                }
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                const data = await r.json();
+                const refined = data.refined_solution || draft;
+                document.getElementById('re-solution').value = refined;
+                // 保留 originalReplyContent 不变，确保「直接采纳/加工处理」判定准确
+                if (typeof handleReplyInput === 'function') handleReplyInput(refined);
+                showToast('方案已扩展完善', 'success');
+            } catch (e) {
+                console.error('[expandSolution]', e);
+                showToast('完善失败：' + (e.message || '未知错误'), 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = origText;
                 btn.classList.remove('opacity-60', 'pointer-events-none');
             }
         }

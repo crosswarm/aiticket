@@ -180,9 +180,13 @@ class ReqIngestAgent(BaseAgent):
     def _fetch_all_issues(self, jql: str, task: AgentTask, store) -> list:
         """分页拉取全部工单（最多 500 条）"""
         try:
-            from jira_service import jira_service as jira_svc
+            from services.user_session_pool import pick_jira_service_for_bg
+            jira_svc = pick_jira_service_for_bg("req_ingest")
+            if jira_svc is None:
+                self.append_log(task.id, "[WARN] strict 模式：无活跃用户会话，跳过工单拉取")
+                return []
         except Exception as e:
-            self.append_log(task.id, f"[WARN] jira_service import failed: {e}")
+            self.append_log(task.id, f"[WARN] jira_service init failed: {e}")
             return []
 
         all_issues = []

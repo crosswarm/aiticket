@@ -1,0 +1,22 @@
+{
+  "id": "kb-refresh-full",
+  "name": "KB 全量 sync + compile（每日凌晨 2:00）",
+  "task_type": "kb_refresh_full",
+  "trigger_type": "cron",
+  "cron": "0 2 * * *",
+  "enabled": true,
+  "catchup_window_hours": 2,
+  "cooldown_hours": 20,
+  "description": "每日凌晨 2:00：全量 force_refresh sync，然后触发 compile_all，兜底防止 KB 漂移",
+  "last_run": null,
+  "created_at": "2026-05-16T00:00:00",
+  "host_constraint": null,
+  "preflight_local_llm": false,
+  "llm_strategy": "none",
+  "run_count": 0,
+  "last_status": "unknown",
+  "created_by": "claude",
+  "created_by_uuid": "aaac6ff8-d4a6-ce54-1d0b-0538426b0028",
+  "schema_version": "1.0",
+  "agent_hint": "kb_fact"
+}

@@ -81,6 +81,10 @@ def get_effective_cookies(username: str | None) -> dict[str, str]:
             }
             cookies.update(user_data.get('extra_cookies', {}))
             return cookies
+    # strict 模式：禁止降级到管理员 token（deployable 无 DEFAULT_TOKEN_PATH，always strict）
+    from role_guard import is_strict_role, PMNotBoundError
+    if is_strict_role():
+        raise PMNotBoundError(username or "")
     return {}
 
 

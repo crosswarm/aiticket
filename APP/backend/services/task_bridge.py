@@ -15,8 +15,8 @@ _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-# ── schedule_id → agent_name 映射 ─────────────────────────────────
-SCHEDULE_AGENT_MAP: dict = {
+# ── schedule_id → agent_name 映射（从 schedule JSON agent_hint 自动派生 + 硬编码兜底）──
+_SCHEDULE_AGENT_MAP_FALLBACK: dict = {
     "nightly-exploration":    "competitor",
     "darwin-reqpool-eval":    "darwin",
     "nightly-training":       "reply",
@@ -31,6 +31,29 @@ SCHEDULE_AGENT_MAP: dict = {
     "daily-reqpool-ingest":   "req_analyst",
     "weekly-req-cluster":     "req_cluster",
 }
+
+
+def _build_schedule_agent_map() -> dict:
+    """从 data/schedules/*.json 的 agent_hint 字段自动派生，缺失时用硬编码兜底。"""
+    import json as _json
+    out = dict(_SCHEDULE_AGENT_MAP_FALLBACK)
+    sched_dir = _BACKEND / "data" / "schedules"
+    if sched_dir.is_dir():
+        for f in sched_dir.glob("*.json"):
+            if f.name.startswith("deferred-") or f.name.startswith("__"):
+                continue
+            try:
+                d = _json.loads(f.read_text(encoding="utf-8"))
+                hint = d.get("agent_hint") or d.get("agent_name")
+                if hint:
+                    sid = d.get("id") or f.stem
+                    out.setdefault(sid, hint)  # JSON 优先，不覆盖硬编码兜底
+            except Exception:
+                pass
+    return out
+
+
+SCHEDULE_AGENT_MAP: dict = _build_schedule_agent_map()
 
 
 def _store():

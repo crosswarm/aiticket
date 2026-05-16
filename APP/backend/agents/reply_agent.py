@@ -2,12 +2,14 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING, List
 from agents.base import BaseAgent
+from agents.self_monitor_mixin import AgentSelfMonitorMixin
 
 if TYPE_CHECKING:
     from board_service_chroma import BoardService
 
 
-class ReplyAgent(BaseAgent):
+class ReplyAgent(AgentSelfMonitorMixin, BaseAgent):
+    expected_run_interval_hours: float = 24
     name         = "reply"
     display_name = "智能回复 Agent"
     description  = "KB检索+事实注入+样式风格+生成回复；负责回复质量持续提升与采纳率监控"

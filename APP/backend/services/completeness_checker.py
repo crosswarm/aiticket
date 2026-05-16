@@ -22,6 +22,7 @@ class CompletenessResult:
     inquiry_draft: str = ""
     rule_matched: str = ""
     gate_enabled: bool = True
+    insufficient_type: str = ""  # "missing_fields" | "invalid_description"
 
 
 def check(
@@ -61,7 +62,21 @@ def check(
     content = (description + "\n" + "\n".join(attachment_texts))[:2000]
     provider = with_fallback_chain("completeness_check", daytime_chain("completeness_check"))
 
+    # 描述过短（< 30 字）→ 直接标记为 invalid_description，无需 LLM
+    _desc_stripped = (description or "").strip()
+    if len(_desc_stripped) < 30:
+        return CompletenessResult(
+            passed=False,
+            missing_fields=["清晰的问题描述"],
+            inquiry_draft="您好，当前工单描述过于简短，无法识别具体问题。请补充说明遇到了什么现象或错误，以便快速跟进处理。",
+            rule_matched="pre_check:short_description",
+            gate_enabled=True,
+            insufficient_type="invalid_description",
+        )
+
     missing: list[str] = []
+    # default_fallback 检查不通过 → 描述不清晰，属 invalid_description；其他规则属 missing_fields
+    _insufficient_type = "missing_fields"
     try:
         from llm_service import LLMService
         llm = LLMService()
@@ -76,6 +91,8 @@ def check(
                 answer = llm.call_llm(prompt, api_key=_pcfg["api_key"], provider=provider, model_name=_pcfg["model_name"], base_url=_pcfg["base_url"], max_tokens=512, temperature=0.0)
                 if _extract_yes_no(answer) == "NO":
                     missing.append(f)
+                    if rule_key == "default_fallback":
+                        _insufficient_type = "invalid_description"
             except Exception:
                 logger.warning("[completeness] LLM call failed for field '%s', treating as present", f)
     finally:
@@ -94,6 +111,7 @@ def check(
         inquiry_draft=draft,
         rule_matched=rule_key,
         gate_enabled=True,
+        insufficient_type=_insufficient_type,
     )
 
 

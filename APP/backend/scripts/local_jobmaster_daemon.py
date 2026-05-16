@@ -443,6 +443,108 @@ def _task_run_script(_schedule_id: str = "", _schedule_command: list = None, **k
                 logger.warning("[task:script:%s] shutdown failed: %s", _schedule_id, _exc)
 
 
+def _task_jobmaster_agent_audit(**kwargs):
+    """审计所有有 agent_hint 的 schedule，检查 agent_tasks 近期是否有成功执行记录。
+
+    逻辑：
+    - 扫描 data/schedules/*.json，取 enabled=True 且含 agent_hint 的条目
+    - 按 cron 表达式估算执行周期
+    - 若 2×周期内无 succeeded 行，则视为 overdue
+    - overdue 列表非空时发飞书告警
+    """
+    import json as _json
+    import sqlite3 as _sqlite3
+    from datetime import datetime as _dt, timedelta as _td
+
+    sched_dir = _BACKEND / "data" / "schedules"
+    db_path = _BACKEND / "data" / "sqlite" / "agent_tasks.db"
+
+    if not db_path.exists():
+        logger.warning("[task:agent_audit] agent_tasks.db not found at %s", db_path)
+        return {"checked": 0, "overdue": []}
+
+    overdue = []
+    checked = 0
+    now_utc = _dt.utcnow()
+
+    try:
+        conn = _sqlite3.connect(str(db_path))
+        conn.row_factory = _sqlite3.Row
+    except Exception as exc:
+        logger.error("[task:agent_audit] db connect failed: %s", exc)
+        return {"checked": 0, "overdue": []}
+
+    with conn:
+        for f in sorted(sched_dir.glob("*.json")):
+            if f.name.startswith("deferred-") or f.name.startswith("__"):
+                continue
+            try:
+                sched = _json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+
+            if not sched.get("enabled", True):
+                continue
+            agent_hint = sched.get("agent_hint")
+            if not agent_hint:
+                continue
+
+            cron = sched.get("cron", "")
+            parts = cron.split()
+            if len(parts) < 5:
+                continue
+
+            minute_p, hour_p, dom_p, _, dow_p = parts[:5]
+            if dow_p != "*" and dom_p == "*":
+                cadence_h = 7 * 24      # weekly
+            elif dom_p != "*" and dow_p == "*":
+                cadence_h = 30 * 24     # monthly
+            elif hour_p == "*":
+                cadence_h = 2           # sub-hourly / hourly
+            else:
+                cadence_h = 24          # daily
+
+            max_age_h = cadence_h * 2
+            since = (now_utc - _td(hours=max_age_h)).isoformat()
+            sid = sched.get("id", f.stem)
+
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n FROM agent_tasks "
+                    "WHERE schedule_id = ? AND status = 'succeeded' AND created_at >= ?",
+                    (sid, since),
+                ).fetchone()
+                n_recent = row["n"] if row else 0
+            except Exception as exc:
+                logger.warning("[task:agent_audit] query failed for %s: %s", sid, exc)
+                continue
+
+            checked += 1
+            if n_recent == 0:
+                overdue.append({
+                    "schedule_id": sid,
+                    "agent": agent_hint,
+                    "cadence_hours": cadence_h,
+                    "max_age_hours": max_age_h,
+                    "msg": f"{sid} ({agent_hint}) {int(max_age_h)}h 内无成功执行记录",
+                })
+
+    logger.info("[task:agent_audit] checked=%d overdue=%d", checked, len(overdue))
+
+    if overdue:
+        try:
+            notifier = _notifier()
+            lines = "\n".join(f"  - {o['msg']}" for o in overdue[:10])
+            suffix = f"\n  ... 共 {len(overdue)} 个" if len(overdue) > 10 else ""
+            notifier.send_message(
+                f"⚠️ Agent 自监督告警：{len(overdue)} 个 schedule 过期未跑\n{lines}{suffix}"
+            )
+        except Exception as exc:
+            logger.warning("[task:agent_audit] feishu notify failed: %s", exc)
+
+    return {"checked": checked, "overdue_count": len(overdue), "overdue": overdue}
+
+
 def _task_jobmaster_backfill_sparse(**kwargs):
     """JobMaster backfill_sparse 模式：扫描 0/1 次运行的 schedule，自主决策补跑。"""
     _run_jobmaster("backfill_sparse")
@@ -684,7 +786,7 @@ def main():
         logger.debug("[task:agent_trigger] noop — handled by main backend")
 
     register_task_handler("agent_trigger", _task_agent_trigger)
-    register_task_handler("jobmaster_agent_audit", _task_agent_trigger)
+    register_task_handler("jobmaster_agent_audit", _task_jobmaster_agent_audit)
     register_task_handler("jobmaster_backfill_sparse", _task_jobmaster_backfill_sparse)
 
     # Scheduler cron

@@ -14,5 +14,6 @@
   "created_at": "2026-05-12T00:00:00",
   "host_constraint": "mini",
   "run_count": 0,
-  "schema_version": "1.0"
+  "schema_version": "1.0",
+  "agent_hint": "req_analyst"
 }

@@ -10,10 +10,10 @@
   "params": {},
   "created_by": "claude",
   "created_at": "2026-04-30T00:00:00",
-  "last_run": "2026-05-11T09:33:14.011503",
+  "last_run": "2026-05-15T07:25:26.101327",
   "next_run": null,
   "host_constraint": "mini",
-  "run_count": 3,
+  "run_count": 7,
   "last_status": "success",
   "recent_runs": [
     {
@@ -25,8 +25,29 @@
       "ts": "2026-05-11T09:33:14.011503",
       "status": "success",
       "duration_s": 86.3
+    },
+    {
+      "ts": "2026-05-12T09:50:51.301974",
+      "status": "success",
+      "duration_s": 71.5
+    },
+    {
+      "ts": "2026-05-13T08:20:05.520090",
+      "status": "success",
+      "duration_s": 85.4
+    },
+    {
+      "ts": "2026-05-14T09:03:47.875907",
+      "status": "success",
+      "duration_s": 63.6
+    },
+    {
+      "ts": "2026-05-15T07:25:26.101327",
+      "status": "success",
+      "duration_s": 62.8
     }
   ],
   "created_by_uuid": "aaac6ff8-d4a6-ce54-1d0b-0538426b0028",
-  "schema_version": "1.0"
+  "schema_version": "1.0",
+  "agent_hint": "req_analyst"
 }

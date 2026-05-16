@@ -9,62 +9,63 @@
   "params": {},
   "created_by": "system",
   "created_at": "2026-04-22T00:00:00",
-  "last_run": "2026-05-11T23:00:06.691763",
+  "last_run": "2026-05-15T15:00:12.099103",
   "host_constraint": "mini",
-  "run_count": 45,
+  "run_count": 73,
   "last_status": "success",
   "recent_runs": [
     {
-      "ts": "2026-05-09T17:00:22.229874",
+      "ts": "2026-05-14T13:18:07.933356",
       "status": "success",
-      "duration_s": 15.8
+      "duration_s": 10.8
     },
     {
-      "ts": "2026-05-09T19:00:57.186796",
+      "ts": "2026-05-14T15:00:11.572255",
       "status": "success",
-      "duration_s": 15.0
+      "duration_s": 9.9
     },
     {
-      "ts": "2026-05-09T21:00:50.226878",
+      "ts": "2026-05-14T17:00:23.871573",
       "status": "success",
-      "duration_s": 20.6
+      "duration_s": 9.7
     },
     {
-      "ts": "2026-05-09T23:00:57.817933",
+      "ts": "2026-05-14T19:00:19.330518",
       "status": "success",
-      "duration_s": 15.9
+      "duration_s": 12.2
     },
     {
-      "ts": "2026-05-11T09:33:14.011503",
+      "ts": "2026-05-14T21:00:23.712490",
       "status": "success",
-      "duration_s": 12.7
+      "duration_s": 11.5
     },
     {
-      "ts": "2026-05-11T15:10:49.193485",
+      "ts": "2026-05-14T23:00:56.220976",
       "status": "success",
-      "duration_s": 16.2
+      "duration_s": 14.4
     },
     {
-      "ts": "2026-05-11T17:00:07.919018",
+      "ts": "2026-05-15T09:00:27.582670",
       "status": "success",
-      "duration_s": 13.0
+      "duration_s": 9.9
     },
     {
-      "ts": "2026-05-11T19:00:49.602260",
+      "ts": "2026-05-15T11:00:10.182214",
       "status": "success",
-      "duration_s": 17.9
+      "duration_s": 9.3
     },
     {
-      "ts": "2026-05-11T21:00:00.074567",
+      "ts": "2026-05-15T13:00:36.745933",
       "status": "success",
-      "duration_s": 12.9
+      "duration_s": 18.3
     },
     {
-      "ts": "2026-05-11T23:00:06.691763",
+      "ts": "2026-05-15T15:00:12.099103",
       "status": "success",
-      "duration_s": 13.2
+      "duration_s": 14.9
     }
   ],
   "created_by_uuid": "aaac6ff8-d4a6-ce54-1d0b-0538426b0028",
-  "schema_version": "1.0"
+  "schema_version": "1.0",
+  "agent_hint": "darwin"
 }

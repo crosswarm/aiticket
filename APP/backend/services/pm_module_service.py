@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 _BASE_DIR = Path(__file__).parent.parent
 _CONFIG_PATH = _BASE_DIR / "config" / "pm_config.yaml"
 
+# 线程本地存储：current_pm_user 按请求线程隔离，防止高并发下串用户
+_pm_user_local = threading.local()
+
 
 def _load_config() -> Dict[str, Any]:
     try:
@@ -78,6 +81,14 @@ class PMModuleService:
     # ------------------------------------------------------------------
     # 内部工具
     # ------------------------------------------------------------------
+
+    @property
+    def current_pm_user(self) -> "str | None":
+        return getattr(_pm_user_local, "pm_user", None)
+
+    @current_pm_user.setter
+    def current_pm_user(self, value: "str | None") -> None:
+        _pm_user_local.pm_user = value
 
     def _get_token(self) -> Dict[str, str]:
         """读取 pm_token.json，若不存在则回退到 env var。支持 per-user override。"""

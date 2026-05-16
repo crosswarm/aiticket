@@ -14,12 +14,12 @@
   "description": "每小时：将 adopted_facts_pending.json 中待审核规则写入 product_facts.md 并触发重索引，防止死池积压",
   "last_run": null,
   "created_at": "2026-05-12T09:00:00",
-  "host_constraint": "mini",
   "preflight_local_llm": false,
   "llm_strategy": "none",
   "run_count": 0,
   "last_status": "unknown",
   "created_by": "claude",
   "created_by_uuid": "aaac6ff8-d4a6-ce54-1d0b-0538426b0028",
-  "schema_version": "1.0"
+  "schema_version": "1.0",
+  "agent_hint": "adopted"
 }

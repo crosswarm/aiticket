@@ -118,6 +118,8 @@ class KBLocalBuilder:
             contents[content_id] = item
             self._write_index_file(content_id, item)
 
+        contents, next_counter = self._scan_orphans_in_converted(contents, next_counter)
+
         manifest = {
             "generated_at": generated_at,
             "source_files": len(source_files),
@@ -232,6 +234,70 @@ class KBLocalBuilder:
             + "\n",
             encoding="utf-8",
         )
+
+    def _scan_orphans_in_converted(self, contents: dict[str, Any], next_counter: int) -> tuple[dict[str, Any], int]:
+        """Register .md files in converted/ that have no manifest entry (orphans without source files)."""
+        registered_converted = {
+            item.get("converted_path", "")
+            for item in contents.values()
+            if item.get("converted_path")
+        }
+
+        if not self.converted_root.exists():
+            return contents, next_counter
+
+        for md_path in sorted(self.converted_root.rglob("*.md")):
+            converted_path_str = (Path("KB") / md_path.relative_to(self.project_root / "KB")).as_posix()
+            if converted_path_str in registered_converted:
+                continue
+
+            parts = md_path.relative_to(self.converted_root).parts
+            top_category = parts[0] if parts else "unknown"
+            second_category = parts[1] if len(parts) > 2 else ""
+            name = md_path.stem
+            source_rel_path = (Path("OUTPUT") / "converted" / md_path.relative_to(self.converted_root)).as_posix()
+
+            text = md_path.read_text(encoding="utf-8", errors="ignore")
+            summary = self._build_summary(text, "parsed", "", source_rel_path)
+            keywords = self._extract_keywords(f"{name} {text}")
+
+            content_id = f"CNT-{next_counter:04d}"
+            next_counter += 1
+            l1_index_id = self._make_topic_id("IDX-L1", top_category or "ROOT")
+            l2_seed = "/".join(p for p in [top_category, second_category] if p) or top_category or "ROOT"
+            l2_index_id = self._make_topic_id("IDX-L2", l2_seed)
+            index_id = f"IDX-F-{content_id}"
+
+            item = {
+                "content_id": content_id,
+                "source_path": converted_path_str,
+                "source_rel_path": source_rel_path,
+                "ext": ".md",
+                "name": name,
+                "top_category": top_category,
+                "second_category": second_category,
+                "converted_path": converted_path_str,
+                "text_chars": len(text),
+                "summary": summary,
+                "keywords": keywords,
+                "index_id": index_id,
+                "l1_index_id": l1_index_id,
+                "l2_index_id": l2_index_id,
+                "l1_name": top_category,
+                "l2_name": "/".join(p for p in [top_category, second_category] if p),
+                "backlink_index_ids": ["IDX-L0-ROOT", l1_index_id, l2_index_id, index_id],
+                "related_content_ids": [],
+                "related_links": [],
+                "parse_status": "parsed",
+                "parse_error": "",
+                "parser": "orphan-md",
+                "metadata_only": False,
+            }
+            contents[content_id] = item
+            self._write_index_file(content_id, item)
+            registered_converted.add(converted_path_str)
+
+        return contents, next_counter
 
     def _build_summary(self, text: str, parse_status: str, parse_error: str, source_rel_path: str) -> str:
         stripped = re.sub(r"\s+", " ", (text or "").strip())

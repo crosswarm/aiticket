@@ -46,6 +46,9 @@ class UpdateChannelRequest(BaseModel):
 
 def _get_user_id(x_user_id: Optional[str]) -> str:
     """从请求头获取 user_id，未提供则用默认值"""
+    from role_guard import is_strict_role, NoUserContextError
+    if not x_user_id and is_strict_role():
+        raise NoUserContextError("channel_router", "X-User-ID header required in strict mode")
     return (x_user_id or "qiangxiao").strip()
 
 

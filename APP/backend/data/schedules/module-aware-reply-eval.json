@@ -30,5 +30,6 @@
     }
   ],
   "created_by_uuid": "aaac6ff8-d4a6-ce54-1d0b-0538426b0028",
-  "schema_version": "1.0"
+  "schema_version": "1.0",
+  "agent_hint": "reply"
 }

@@ -147,6 +147,14 @@
   min-height: 32px;
 }
 
+/* Extra small */
+.ds-btn-xs {
+  padding: 2px 8px;
+  font-size: 11px;
+  min-height: 22px;
+  line-height: 1.4;
+}
+
 /* Icon button */
 .ds-btn-icon {
   padding: var(--ds-space-2);

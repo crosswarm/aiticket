@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import List
 
 from agents.base import AgentTask, AgentStatus, BaseAgent
+from agents.self_monitor_mixin import AgentSelfMonitorMixin
 
 
 _PHASES = [
@@ -43,7 +44,8 @@ _PHASE_DETAILS = [
 ]
 
 
-class DarwinAgent(BaseAgent):
+class DarwinAgent(AgentSelfMonitorMixin, BaseAgent):
+    expected_run_interval_hours: float = 24
     name         = "darwin"
     display_name = "Darwin 进化 Agent"
     description  = "评估题生成→prompt进化→GLM评分→回归门禁；双品牌LLM隔离评估"
