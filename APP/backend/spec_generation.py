@@ -299,7 +299,7 @@ MVP建议: {req.get('ai_analysis', {}).get('mvp_suggestion', '')}
             "draft_type": draft_type,
             "spec_file": filename,
             "spec_path": spec_path,
-            "source": "req_pool",
+            "source": "spec",
             "title": inputs["req"].get("title", ""),
             "module_hint": ai_analysis.get("module_hint") or ai_analysis.get("module", ""),
             "topic_names": ai_analysis.get("topic_names", []),

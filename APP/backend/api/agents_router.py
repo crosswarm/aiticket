@@ -179,38 +179,7 @@ def _build_action_required() -> list:
     """聚合多源待确认事项，返回 action_required 列表。"""
     items: list = []
 
-    # 1. 需求池流水线 waiting_theme_confirm
-    try:
-        from services.requirements_pool_aggregate_service import RequirementsPoolAggregateService
-        svc = RequirementsPoolAggregateService.get_instance()
-        pipeline_state = svc.get_pipeline_state() if hasattr(svc, "get_pipeline_state") else {}
-        ps = pipeline_state if isinstance(pipeline_state, dict) else {}
-        if ps.get("status") == "waiting_theme_confirm":
-            items.append({
-                "kind": "theme_confirm",
-                "title": "需求池流水线等待主题确认",
-                "description": f"已聚 {ps.get('theme_count', '?')} 个主题，请确认后进入加工流程",
-                "parent_id": ps.get("pipeline_id"),
-                "since": ps.get("updated_at"),
-                "actions": [
-                    {
-                        "id": "confirm",
-                        "label": "确认主题",
-                        "method": "POST",
-                        "path": "/api/requirements_pool/themes/confirm",
-                    },
-                    {
-                        "id": "drop",
-                        "label": "全部丢弃",
-                        "method": "POST",
-                        "path": "/api/requirements_pool/themes/drop",
-                    },
-                ],
-            })
-    except Exception:
-        pass
-
-    # 2. agent_tasks 中状态为 awaiting_human_review 的任务
+    # 1. agent_tasks 中状态为 awaiting_human_review 的任务
     try:
         from services.agent_task_store import AgentTaskStore
         from agents.base import AgentStatus

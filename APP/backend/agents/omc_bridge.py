@@ -6,8 +6,7 @@ omc_bridge — OMC subagent 注册桥接器
 
 父 agent 映射规则（可在 identity yaml 内手动覆盖）：
   designer, design-consultation → ux_master
-  planner, analyst, critic, verifier → prd_master
-  其他 14 个 → claude（ClaudeAgent）
+  其他 → claude（ClaudeAgent）
 """
 from __future__ import annotations
 
@@ -29,10 +28,6 @@ logger = logging.getLogger(__name__)
 _PARENT_MAP: Dict[str, str] = {
     "designer": "ux_master",
     "design": "ux_master",
-    "planner": "prd_master",
-    "analyst": "prd_master",
-    "critic": "prd_master",
-    "verifier": "prd_master",
 }
 _DEFAULT_PARENT = "claude"
 
@@ -180,7 +175,7 @@ def register_all(registry: "AgentRegistry") -> int:
             description = fm.get("description", f"OMC subagent: {omc_name}")
             parent = _map_parent(omc_name, description)
 
-            # 检查父 agent 是否已注册；若无 prd_master 则降到 claude
+            # 检查父 agent 是否已注册；若未注册则降到 claude
             if registry.get(parent) is None:
                 logger.warning(f"[omc_bridge] parent '{parent}' not found for '{omc_name}', fallback to 'claude'")
                 parent = _DEFAULT_PARENT

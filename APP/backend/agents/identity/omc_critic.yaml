@@ -13,7 +13,7 @@ memory_write_template: null
 id: 3918941d-edb1-450d-beef-1c8bbbea1aab
 version: '1.0'
 hidden: true
-parent_agent: prd_master
+parent_agent: claude
 kind: omc_subagent
 triggerable_via: parent_only
 source_md: /Volumes/MacMini/Users/cfone/.claude/plugins/cache/omc/oh-my-claudecode/4.11.2/agents/critic.md

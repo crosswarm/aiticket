@@ -1,11 +1,9 @@
 """
 reply_method_detector.py — 统一"纳入需求库"回复方式检测
 
-合并 4 处散落的检测逻辑：
-  - requirements_pool_service.py:77
-  - report_requirement_insights.py:20
-  - monthly_analysis.py:803
-  - weekly_analysis.py:481
+合并散落的检测逻辑：
+  - monthly_analysis.py
+  - weekly_analysis.py
 """
 from __future__ import annotations
 
@@ -26,7 +24,7 @@ REPLY_METHOD_JQL_FIELD = "cf[10410]"
 
 def is_ingest_candidate(ticket: Dict[str, Any]) -> bool:
     """
-    判断工单是否应纳入需求池。
+    判断工单是否标记为「纳入需求库」回复方式。
 
     兼容多种数据来源（Jira API 原始 fields、CSV 导出、本地缓存 dict）。
     """

@@ -44,7 +44,7 @@ class TestKeywordSearch:
                 vs.issues_collection = mock_collection
                 vs.analysis_collection = mock_collection
                 vs.similarity_collection = mock_collection
-                vs.req_pool_collection = mock_collection
+
                 vs.query_cache = None
                 return vs
 
@@ -142,7 +142,7 @@ class TestSearchFallback:
                 vs.issues_collection = mock_collection
                 vs.analysis_collection = mock_collection
                 vs.similarity_collection = mock_collection
-                vs.req_pool_collection = mock_collection
+
                 vs.query_cache = None
                 return vs
 

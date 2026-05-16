@@ -43,13 +43,8 @@ _CATALOG_CACHE_TTL = 30.0                  # catalog 缓存 TTL（秒）
 # category: domain（主题专属）/ functional（公共职能）/ system（系统级）
 DOMAIN_MAPPING: Dict[str, Tuple[str, str, List[str]]] = {
     "ReplyAgent":           ("reply",     "domain",     ["smart_reply", "style_learning", "feedback_ingest", "kb_search"]),
-    "ReqAnalystAgent":      ("req_pool",  "domain",     ["req_analysis", "req_classification", "req_clustering"]),
-    "ReqClusterAgent":      ("req_pool",  "domain",     ["req_clustering", "similarity_detection"]),
-    "ReqEnricherAgent":     ("req_pool",  "domain",     ["req_enrichment", "req_detail_fill"]),
-    "ReqIngestAgent":       ("req_pool",  "domain",     ["req_ingestion", "data_import"]),
-    "ReqSolutionAgent":     ("req_pool",  "domain",     ["solution_generation", "prd_generation", "problem_analysis"]),
     "KbFactAgent":          ("kb",        "domain",     ["kb_search", "kb_ingest", "fact_extraction"]),
-    "AdoptedAgent":         ("req_pool",  "functional", ["adoption_tracking", "req_status_update"]),
+    "AdoptedAgent":         ("kb",        "functional", ["adoption_tracking", "fact_status_update"]),
     "DarwinAgent":          ("evolution", "system",     ["evolution_eval", "strategy_optimization", "ratchet"]),
     "CompetitorAgent":      ("research",  "functional", ["competitor_research", "product_analysis", "screenshot"]),
     "HandoverSuggestAgent": ("reply",     "functional", ["handover", "routing", "assignment"]),
@@ -678,7 +673,6 @@ class JobMasterLifecycle:
             # 简单关键词推断 domain
             domain_hints = {
                 "reply": ["回复", "reply", "smart_reply", "reply_agent"],
-                "req_pool": ["需求", "requirement", "req_pool", "req_analyst"],
                 "kb": ["知识库", "kb", "knowledge"],
                 "research": ["竞品", "competitor", "research"],
                 "evolution": ["进化", "evolution", "darwin"],

@@ -8,7 +8,7 @@ TeamDispatcher — 跨 agent 分发父-子任务。
         parent_title="Hook Bridge 团队交付",
         dispatch_key="hook-bridge-v1",
         children=[
-            ChildSpec(agent_name="prd_master", title="【需求】…", description="…"),
+            ChildSpec(agent_name="claude", title="【分析】…", description="…"),
             ChildSpec(agent_name="ux_master",  title="【UX】…",  description="…"),
         ],
     )

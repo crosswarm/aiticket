@@ -204,7 +204,7 @@ class FeishuInteractionService:
         summary = (analysis.get("summary", "") or "")[:200]
         suggestion = (analysis.get("suggestion", "") or "")[:300]
         refs = analysis.get("references", "") or ""
-        detail_url = ""  # req_pool UI removed in deployable build
+        detail_url = ""
 
         return f"""📋 **新需求待确认** {round_label}
 ━━━━━━━━━━━━━━━━━━━━
@@ -286,7 +286,7 @@ class FeishuInteractionService:
             f"需求 **{session['req_title']}** 已确认（PRD 生成在 deployable 版本中不可用）。\n"
             f"会话 `{session['session_id']}`"
         )
-        # PRD draft generation removed in deployable build (req_pool_draft_service deleted)
+        # PRD draft generation not available in this build
         logger.info(f"[Feishu] direction confirmed for req={req_id}; PRD pipeline disabled")
 
     def _notify_revision_received(self, session: dict) -> None:
@@ -341,7 +341,7 @@ class FeishuInteractionService:
             return True
 
         req_id = session['req_id']
-        detail_url = ""  # req_pool UI removed in deployable build
+        detail_url = ""
         criteria_count = len((session['analysis'].get('acceptance_criteria') or []))
 
         msg = f"""🎉 **PRD生成完成**

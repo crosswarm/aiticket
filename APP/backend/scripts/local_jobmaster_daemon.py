@@ -79,7 +79,6 @@ def _load_playbook() -> str | None:
 def _recover_orphaned_tasks() -> None:
     """daemon 启动时扫描 running 超时任务，强制置 FAILED（防永久 stuck）。"""
     _THRESHOLDS = {
-        "req_analyst": 30, "req_enricher": 30, "req_solution": 30,
         "daily_summary": 15, "nightly_exploration": 240,
     }
     _DEFAULT_MINUTES = 120
@@ -128,62 +127,6 @@ def _llm():
 
 
 # ─── Task Handlers ────────────────────────────────────────────────────────────
-
-def _task_requirement_pool_analysis(project: str = "MYPROJECT", min_new_count: int = 3, **kwargs):
-    try:
-        _notifier().send_message(
-            f"🤖 **定时需求池分析** 已触发\n"
-            f"项目: {project} | 最少新需求: {min_new_count}\n"
-            "分析正在后台执行，完成后将推送分析卡片。"
-        )
-    except Exception as e:
-        logger.error(f"[task:req_pool_analysis] {e}")
-
-
-def _task_requirement_aggregate_pipeline(scope: str = "all_new", min_eligible: int = 3,
-                                          auto_accept_themes: bool = False, **kwargs):
-    notifier = _notifier()
-    try:
-        from requirements_pool_aggregate_service import RequirementsPoolAggregateService
-        svc = RequirementsPoolAggregateService.get_instance()
-        parent_task_id, _excluded = svc.run_pipeline(scope=scope, auto_accept_themes=auto_accept_themes)
-        notifier.send_message(
-            f"🏭 **需求池生产线已启动**\n"
-            f"范围: {scope}\n"
-            f"task_id: {parent_task_id}\n"
-            "通过 /api/requirements_pool/pipeline/{id} 查看进度。"
-        )
-    except ValueError as e:
-        notifier.send_message(f"⚠️ 需求池生产线未启动: {e}")
-    except Exception as e:
-        logger.error(f"[task:req_aggregate_pipeline] {e}")
-        notifier.send_message(f"❌ 需求池生产线启动失败: {e}")
-
-
-def _task_darwin_reqpool_eval(max_rounds: int = 2, notify_on_complete: bool = True, **kwargs):
-    notifier = _notifier()
-    try:
-        notifier.send_message("🧬 Darwin reqpool 评估已触发，后台执行中...")
-        from evolution_core.adapters.reqpool_adapter import ReqpoolAdapter
-        adapter = ReqpoolAdapter()
-        scores = adapter.score_fast()
-        weakest = min(scores, key=scores.get) if scores else "N/A"
-        msg = (
-            f"🧬 Darwin reqpool 评估完成\n"
-            f"维度数: {len(scores)}\n"
-            f"最弱维度: {weakest} = {scores.get(weakest, 0):.2f}\n"
-            f"全部分数: {', '.join(f'{k}={v:.2f}' for k, v in sorted(scores.items()))}"
-        )
-        if notify_on_complete:
-            notifier.send_message(msg)
-        logger.info(f"[task:darwin_eval] done: {scores}")
-    except Exception as e:
-        logger.error(f"[task:darwin_eval] {e}")
-        try:
-            notifier.send_message(f"❌ Darwin reqpool 评估失败: {e}")
-        except Exception:
-            pass
-
 
 def _task_weekly_report(notify_on_complete: bool = True, project_key: str = "MYPROJECT",
                         domain_modules=None, **kwargs):
@@ -766,9 +709,6 @@ def main():
 
     # Task handlers 注册
     from services.scheduler_service import start_scheduler, register_task_handler
-    register_task_handler("requirement_pool_analysis", _task_requirement_pool_analysis)
-    register_task_handler("requirement_aggregate_pipeline", _task_requirement_aggregate_pipeline)
-    register_task_handler("darwin_reqpool_eval", _task_darwin_reqpool_eval)
     register_task_handler("weekly_report", _task_weekly_report)
     register_task_handler("monthly_report", _task_monthly_report)
     register_task_handler("nightly_exploration", _task_nightly_exploration)

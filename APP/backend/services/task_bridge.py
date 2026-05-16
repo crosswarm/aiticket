@@ -18,18 +18,14 @@ if str(_BACKEND) not in sys.path:
 # ── schedule_id → agent_name 映射（从 schedule JSON agent_hint 自动派生 + 硬编码兜底）──
 _SCHEDULE_AGENT_MAP_FALLBACK: dict = {
     "nightly-exploration":    "competitor",
-    "darwin-reqpool-eval":    "darwin",
     "nightly-training":       "reply",
-    "weekly-req-analysis":    "req_cluster",
-    "weekly-report":          "req_analyst",
+    "weekly-report":          "daily_summary",
     "weekly-fact-extraction": "kb_fact",
     "weekly-adopted-extract": "adopted",
     "oneshot-backfill-facts": "kb_fact",
     "jobmaster-monitor":      "darwin",
     "jobmaster-heartbeat":    "darwin",
-    "jobmaster-daily":        "req_analyst",
-    "daily-reqpool-ingest":   "req_analyst",
-    "weekly-req-cluster":     "req_cluster",
+    "jobmaster-daily":        "daily_summary",
 }
 
 
@@ -65,7 +61,7 @@ def notify_trigger(schedule_id: str, title: str) -> Optional[str]:
     """在 agent_tasks 插入 running 行，返回 task_id（失败返回 None）"""
     try:
         from agents.base import AgentTask, AgentStatus
-        agent_name = SCHEDULE_AGENT_MAP.get(schedule_id, "req_analyst")
+        agent_name = SCHEDULE_AGENT_MAP.get(schedule_id, "daily_summary")
         task = AgentTask.new(
             agent_name=agent_name,
             title=title,

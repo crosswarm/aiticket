@@ -24,10 +24,7 @@ def _get_adapter(module_id: str):
     if module_id == "reply":
         from APP.backend.evolution_core.adapters.reply_adapter import ReplyAdapter
         return ReplyAdapter()
-    if module_id == "reqpool":
-        from APP.backend.evolution_core.adapters.reqpool_adapter import ReqpoolAdapter
-        return ReqpoolAdapter()
-    raise ValueError(f"Unknown module: '{module_id}'. Available: classify, reply, reqpool")
+    raise ValueError(f"Unknown module: '{module_id}'. Available: classify, reply")
 
 
 def cmd_status(adapter, args) -> None:

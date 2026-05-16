@@ -12,7 +12,7 @@ memory_write_template: null
 id: 72e979f1-fc0d-4183-b7e4-50df2f02efc0
 version: '1.0'
 hidden: true
-parent_agent: prd_master
+parent_agent: claude
 kind: omc_subagent
 triggerable_via: parent_only
 source_md: /Users/cfone/Studio/aiticket/.claude/agents/refactor-planner.md

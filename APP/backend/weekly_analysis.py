@@ -7,7 +7,12 @@ from typing import List, Dict, Optional, Tuple
 from collections import Counter
 from analysis import CrewListParser, TopicParser, PROJECT_DISPLAY_NAMES
 from llm_service import LLMService
-from report_requirement_insights import get_process_labeled_issues, get_requirements_in_pool
+def get_process_labeled_issues(df, label_pattern: str = "流程-") -> list:
+    label_col = "标签"
+    if label_col not in df.columns:
+        return []
+    mask = df[label_col].astype(str).str.contains(label_pattern, na=False, regex=False)
+    return df[mask].to_dict("records")
 from kpi_calculator import KPICalculator
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -275,8 +280,6 @@ class WeeklyAnalyzer:
             '运维' in str(r.get('自定义字段(解决方案)', ''))
         )
 
-        all_ticket_keys = df['问题关键字'].astype(str).tolist() if '问题关键字' in df.columns else []
-        requirements_pool = get_requirements_in_pool(df=df, ticket_keys=all_ticket_keys)
         process_labeled = get_process_labeled_issues(df=df, label_pattern="流程-")
 
         # Transferred
@@ -495,29 +498,6 @@ class WeeklyAnalyzer:
 {format_for_llm(req_df)}"""
         report_content += get_ai_summary(req_prompt) + "\n\n"
 
-        if requirements_pool.get('total_count', 0) > 0:
-            report_content += "### 纳入需求库统计\n\n"
-            report_content += f"- **本周纳入需求库**: {requirements_pool.get('total_count', 0)} 个"
-            if requirements_pool.get('source_method'):
-                report_content += f" *(数据来源: {requirements_pool.get('source_method')})*"
-            report_content += "\n\n"
-
-            reqs = requirements_pool.get('requirements', [])
-            if reqs:
-                report_content += "### 纳入需求库问题清单\n\n"
-                report_content += "| 工单编号 | 问题描述 | 问题类型 | 经办人 | 创建日期 |\n"
-                report_content += "|---------|---------|---------|--------|----------|\n"
-                for req in reqs[:20]:
-                    key = req.get('问题关键字', req.get('id', 'N/A'))
-                    title = str(req.get('概要', ''))[:40].replace('\n', ' ').replace('|', '\\|')
-                    issue_type = str(req.get('自定义字段(研发确认问题类型)', '-'))[:20]
-                    assignee = str(req.get('经办人', '-'))[:10]
-                    created = str(req.get('创建日期', '-'))[:10]
-                    report_content += f"| {key} | {title} | {issue_type} | {assignee} | {created} |\n"
-                if len(reqs) > 20:
-                    report_content += f"\n*...共 {len(reqs)} 个工单，仅显示前 20 个*\n"
-                report_content += "\n"
-
         if process_labeled:
             report_content += "### \"流程-\"标签重点关注问题\n\n"
             report_content += f"*本周共有 {len(process_labeled)} 个带\"流程-\"标签的工单*\n\n"
@@ -689,7 +669,6 @@ class WeeklyAnalyzer:
                 "count_process": count_process,
                 "count_transferred": count_transferred,
                 "ratio_transferred": ratio_transferred,
-                "has_requirements_pool": requirements_pool.get('total_count', 0) > 0,
                 "has_labeled_issues": len(process_labeled) > 0,
             },
             "charts": {
@@ -712,7 +691,6 @@ class WeeklyAnalyzer:
                 "ops_tickets": extract_ticket_details(ops_df),
                 "all_tickets": extract_ticket_details(df)  # 全部工单，用于去重验证
             },
-            "requirements_pool": requirements_pool,
             "labeled_issues": {
                 "process_labeled": process_labeled
             },

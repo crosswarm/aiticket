@@ -89,27 +89,17 @@ user_contributed)     reply_style_rules)
 | 健康检查 | 覆盖率报告 + 缺失话题检测（`/api/kb/lint`） |
 | 自动保护 | sync 前备份、sync 后验证，防止 AI 编译条目被误清 |
 
-### 2.5 需求池
-
-| 功能 | 说明 |
-|---|---|
-| 需求聚合 | 从 Jira 多项目拉取需求工单，按话题分类存入向量库 |
-| 需求分析 | 高频模式识别、模块分布统计 |
-| 定时入库 | `daily-reqpool-ingest.json` 每日自动同步 |
-| 需求评估 | 结合 KB 上下文对需求可行性做初步分析 |
-
-### 2.6 定时任务（JobMaster）
+### 2.5 定时任务（JobMaster）
 
 | 任务文件 | 时间 | 说明 |
 |---|---|---|
 | `daily-summary-0725.json` | 每天 07:25 | 生成日报（看板状态摘要） |
 | `nightly-training.json` | 每晚 02:00 | 回复训练 + 规则更新 |
-| `daily-reqpool-ingest.json` | 每天定时 | 需求池同步 |
 | `weekly-*.json` | 每周日 03:00-05:00 | KB 知识提炼 + 模式学习 |
 | `jobmaster-heartbeat.json` | 每 5 分钟 | 任务调度器健康检查 |
 | `agent-memory-audit.json` | 定期 | Agent 内存审计 |
 
-### 2.7 用户与认证
+### 2.6 用户与认证
 
 | 功能 | 说明 |
 |---|---|

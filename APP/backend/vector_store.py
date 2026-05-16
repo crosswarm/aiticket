@@ -77,7 +77,6 @@ class VectorStore:
     集合1: issues - 存储工单原始内容向量
     集合2: analysis_cache - 存储AI分析结果
     集合3: similarity_graph - 存储工单相似度关系
-    集合4: req_pool - 存储需求池
     集合5: query_cache - 查询结果缓存
     """
 
@@ -101,7 +100,6 @@ class VectorStore:
         self.issues_collection = self._get_or_create_collection("issues")
         self.analysis_collection = self._get_or_create_collection("analysis_cache")
         self.similarity_collection = self._get_or_create_collection("similarity_graph")
-        self.req_pool_collection = self._get_or_create_collection("req_pool")
         self.req_clusters_collection = self._get_or_create_collection("req_clusters")
 
         # 初始化查询缓存集合
@@ -111,7 +109,6 @@ class VectorStore:
         print(f"  - 工单集合: {self._safe_collection_count(self.issues_collection)} 条")
         print(f"  - 分析缓存: {self._safe_collection_count(self.analysis_collection)} 条")
         print(f"  - 相似度图: {self._safe_collection_count(self.similarity_collection)} 条")
-        print(f"  - 需求池: {self._safe_collection_count(self.req_pool_collection)} 条")
         print(f"  - 需求聚类: {self._safe_collection_count(self.req_clusters_collection)} 条")
         if self.query_cache:
             print(f"  - 查询缓存: {self._safe_collection_count(self.query_cache)} 条")
@@ -643,199 +640,6 @@ class VectorStore:
         
         return count
 
-    # ==================== 需求池 (Requirement Pool) 操作 ====================
-    
-    def upsert_requirement(self, req_id: str, title: str, description: str, metadata: Dict = None):
-        """
-        添加或更新需求池记录
-        """
-        doc_id = f"req_{req_id}"
-        embedding_text = f"{title}\n{description}"[:2000]
-
-        meta = {
-            'req_id': req_id,
-            'title': title[:500],
-            'description': description[:2000], # store some of description in metadata
-            'status': metadata.get('status', 'new') if metadata else 'new',
-            'source_issues': json.dumps(metadata.get('source_issues', []) if metadata else []),
-            'ai_analysis': json.dumps(metadata.get('ai_analysis', {}) if metadata else {}),
-            'review_records': json.dumps(metadata.get('review_records', []) if metadata else {}),
-            'entry_source': metadata.get('entry_source', '') if metadata else '',
-            'requirement_fact_packet': json.dumps(metadata.get('requirement_fact_packet', {}) if metadata else {}),
-            'created_at': metadata.get('created_at', datetime.now().isoformat()) if metadata else datetime.now().isoformat(),
-            'updated_at': datetime.now().isoformat(),
-            'feishu_notified': metadata.get('feishu_notified', False) if metadata else False,
-            'topic_l1': metadata.get('topic_l1', '') if metadata else '',
-            'topic_l2': metadata.get('topic_l2', '') if metadata else '',
-        }
-
-        # 如果没有embedding函数，手动计算向量（使用简单的哈希方式生成384维向量）
-        if self.embedding_func is None:
-            try:
-                import numpy as np
-                import hashlib
-                # 使用文本哈希生成伪随机向量
-                hash_bytes = hashlib.sha256(embedding_text.encode()).digest()
-                # 转换为384维的float32向量（标准的多语言MiniLM维度）
-                np.random.seed(int.from_bytes(hash_bytes[:4], 'big'))
-                embedding = np.random.randn(384).astype(np.float32)
-                # 归一化
-                embedding = embedding / np.linalg.norm(embedding)
-
-                self.req_pool_collection.upsert(
-                    ids=[doc_id],
-                    embeddings=[embedding.tolist()],
-                    metadatas=[meta]
-                )
-                return True
-            except Exception as e:
-                print(f"[VectorStore] Upsert requirement with manual embedding failed: {e}")
-                return False
-        else:
-            # 使用embedding函数
-            try:
-                self.req_pool_collection.upsert(
-                    ids=[doc_id],
-                    documents=[embedding_text],
-                    metadatas=[meta]
-                )
-                return True
-            except Exception as e:
-                print(f"[VectorStore] Upsert requirement failed: {e}")
-                return False
-
-    def get_requirement(self, req_id: str) -> Optional[Dict]:
-        """获取指定的需求"""
-        try:
-            result = self.req_pool_collection.get(
-                ids=[f"req_{req_id}"],
-                include=['metadatas', 'documents']
-            )
-            if result and result['ids']:
-                meta = result['metadatas'][0]
-                return {
-                    'req_id': meta.get('req_id'),
-                    'title': meta.get('title', ''),
-                    'description': meta.get('description', ''),
-                    'status': meta.get('status', 'new'),
-                    'source_issues': json.loads(meta.get('source_issues', '[]')),
-                    'ai_analysis': json.loads(meta.get('ai_analysis', '{}')),
-                    'review_records': json.loads(meta.get('review_records', '[]')),
-                    'entry_source': meta.get('entry_source', ''),
-                    'requirement_fact_packet': json.loads(meta.get('requirement_fact_packet', '{}')),
-                    'created_at': meta.get('created_at'),
-                    'updated_at': meta.get('updated_at'),
-                    'feishu_notified': meta.get('feishu_notified', False),
-                }
-        except Exception as e:
-             print(f"[VectorStore] Get requirement failed: {e}")
-        return None
-
-    def list_requirements(self, status: str = None, date_range: Dict = None) -> List[Dict]:
-        """获取需求列表，支持状态筛选和日期范围筛选
-
-        Args:
-            status: 状态筛选
-            date_range: 日期范围筛选 {'start': '2026-01-01', 'end': '2026-02-28'}
-        """
-        try:
-            where_clause = {"status": status} if status else None
-
-            result = self.req_pool_collection.get(
-                where=where_clause,
-                include=['metadatas']
-            )
-
-            reqs = []
-            if result and result['metadatas']:
-                for meta in result['metadatas']:
-                    req = {
-                        'req_id': meta.get('req_id'),
-                        'title': meta.get('title', ''),
-                        'description': meta.get('description', ''),
-                        'status': meta.get('status', 'new'),
-                        'source_issues': json.loads(meta.get('source_issues', '[]')),
-                        'ai_analysis': json.loads(meta.get('ai_analysis', '{}')),
-                        'review_records': json.loads(meta.get('review_records', '[]')),
-                        'entry_source': meta.get('entry_source', ''),
-                        'requirement_fact_packet': json.loads(meta.get('requirement_fact_packet', '{}')),
-                        'created_at': meta.get('created_at'),
-                        'updated_at': meta.get('updated_at'),
-                        'feishu_notified': meta.get('feishu_notified', False),
-                    }
-
-                    # 内存中过滤日期范围
-                    if date_range and req.get('created_at'):
-                        req_date = req['created_at'][:10]  # 取YYYY-MM-DD部分
-                        if date_range.get('start') and req_date < date_range['start']:
-                            continue
-                        if date_range.get('end') and req_date > date_range['end']:
-                            continue
-
-                    reqs.append(req)
-
-            # 按创建时间倒序
-            reqs.sort(key=lambda x: x.get('created_at', ''), reverse=True)
-            return reqs
-        except Exception as e:
-            print(f"[VectorStore] List requirements failed: {e}")
-            return []
-
-    def delete_requirement(self, req_id: str) -> bool:
-        """删除指定的需求"""
-        try:
-            self.req_pool_collection.delete(ids=[f"req_{req_id}"])
-            return True
-        except Exception as e:
-            print(f"[VectorStore] Delete requirement failed: {e}")
-            return False
-
-    def clear_requirements(self) -> bool:
-        """清空所有需求（谨慎使用）"""
-        try:
-            # 获取所有需求ID
-            result = self.req_pool_collection.get()
-            if result and result['ids']:
-                self.req_pool_collection.delete(ids=result['ids'])
-            return True
-        except Exception as e:
-            print(f"[VectorStore] Clear requirements failed: {e}")
-            return False
-
-    def search_similar_requirements(self, query: str, top_k: int = 5) -> List[Dict]:
-        """
-        语义搜索相似的需求（用于查重）
-        """
-        if self.req_pool_collection.count() == 0:
-            return []
-
-        try:
-            results = self.req_pool_collection.query(
-                query_texts=[query],
-                n_results=min(top_k, self.req_pool_collection.count()),
-                include=['metadatas', 'distances']
-            )
-
-            similar_reqs = []
-            if results and results['ids'] and results['ids'][0]:
-                for i in range(len(results['ids'][0])):
-                    distance = results['distances'][0][i]
-                    score = 1 - distance
-
-                    meta = results['metadatas'][0][i]
-                    similar_reqs.append({
-                        'req_id': meta.get('req_id'),
-                        'title': meta.get('title', ''),
-                        'score': float(score),
-                        'status': meta.get('status', 'new')
-                    })
-
-                similar_reqs.sort(key=lambda x: x['score'], reverse=True)
-            return similar_reqs
-        except Exception as e:
-            print(f"[VectorStore] Search similar requirements failed: {e}")
-            return []
-
     # ==================== 需求聚类操作 ====================
 
     def upsert_cluster(self, cluster_id: str, title: str, metadata: Dict) -> bool:
@@ -904,26 +708,6 @@ class VectorStore:
             return True
         except Exception as e:
             print(f"[VectorStore] delete_cluster failed: {e}")
-            return False
-
-    def update_requirement_field(self, req_id: str, fields: Dict) -> bool:
-        """局部更新需求元数据字段，fields 中值为 None 表示删除该字段"""
-        doc_id = f"req_{req_id}"
-        try:
-            result = self.req_pool_collection.get(ids=[doc_id], include=["metadatas"])
-            if not result or not result["ids"]:
-                return False
-            meta = result["metadatas"][0].copy()
-            for k, v in fields.items():
-                if v is None:
-                    meta.pop(k, None)
-                else:
-                    meta[k] = json.dumps(v, ensure_ascii=False, default=str) if isinstance(v, (dict, list)) else v
-            meta["updated_at"] = datetime.now().isoformat()
-            self.req_pool_collection.update(ids=[doc_id], metadatas=[meta])
-            return True
-        except Exception as e:
-            print(f"[VectorStore] update_requirement_field failed: {e}")
             return False
 
     # ==================== 查询缓存操作 ====================
