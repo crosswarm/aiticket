@@ -16,5 +16,5 @@
   "run_count": 0,
   "last_status": "unknown",
   "schema_version": "1.0",
-  "agent_hint": "req_analyst"
+  "agent_hint": "daily_summary"
 }

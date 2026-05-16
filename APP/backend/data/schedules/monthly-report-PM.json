@@ -15,5 +15,5 @@
   "host_constraint": "mini",
   "run_count": 0,
   "schema_version": "1.0",
-  "agent_hint": "req_analyst"
+  "agent_hint": "daily_summary"
 }

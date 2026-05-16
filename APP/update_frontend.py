@@ -2,7 +2,7 @@ import os
 import re
 
 frontend_dir = os.path.join(os.path.dirname(__file__), 'frontend')
-files = ['index.html', 'board.html', 'report.html', 'requirements.html', 'req_pool.html']
+files = ['index.html', 'board.html', 'report.html']
 
 def update_file(filepath):
     try:
@@ -16,8 +16,6 @@ def update_file(filepath):
     content = re.sub(r'href="/search\.html"', 'href="search.html"', content)
     content = re.sub(r'href="/board\.html"', 'href="board.html"', content)
     content = re.sub(r'href="/report\.html"', 'href="report.html"', content)
-    content = re.sub(r'href="/requirements\.html"', 'href="requirements.html"', content)
-    content = re.sub(r'href="/req_pool\.html"', 'href="req_pool.html"', content)
     content = re.sub(r'href="/"', 'href="index.html"', content)
     
     # Replace single quote hrefs for board.html drawer bug

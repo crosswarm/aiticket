@@ -14,10 +14,9 @@
 | handover_suggest     | shared   | on_adoption               |             5 |             5 |
 | kb_fact              | shared   | on_pattern_confirmed      |             5 |             5 |
 | reply                | private  | on_adoption               |             7 |             5 |
-| req_analyst          | shared   | on_pattern_found          |             6 |             5 |
 
 ## 公共记忆写入者（scope=shared，慎重新增）
-- adopted, competitor, handover_suggest, kb_fact, req_analyst
+- adopted, competitor, handover_suggest, kb_fact
 
 ## 私有记忆写入者（scope=private）
 - claude, darwin, reply

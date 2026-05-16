@@ -328,7 +328,7 @@ class OriginalDemandRecord(BaseModel):
     description: Optional[str] = Field(None, description="需求描述")
     create_time: Optional[str] = Field(None, description="创建时间字符串")
 
-    # --- AI 分析字段（本地产出，ReqAnalystAgent 输出）---
+    # --- AI 分析字段（本地产出）---
     ai_core_problem: Optional[str] = Field(None, description="核心问题一句话")
     ai_module: Optional[str] = Field(None, description="涉及模块")
     ai_product_layer: Optional[str] = Field(None, description="产品层级")

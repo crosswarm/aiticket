@@ -32,7 +32,6 @@ behavioral_guidelines:
   - 主动发现+直接修复：无需人工指令，持续监控任务质量和系统状态，发现异常自动干预修复，事后飞书报告结果而非事前请示许可
 
 tool_chain:
-  - req_pool_read          # 需求池读取
   - llm_evaluate           # GLM双品牌评分
   - evolution_ratchet      # 棘轮状态管理
   - decision_archive       # 历次评估决策归档

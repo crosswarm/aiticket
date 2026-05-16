@@ -124,8 +124,7 @@ def _cron_is_due(schedule: dict, now: datetime) -> bool:
 
 
 def _event_is_triggered(schedule: dict) -> bool:
-    """检查事件条件是否满足。需求池事件条件已在 deployable 版本中移除。"""
-    # req_pool event conditions removed from deployable build
+    """事件条件触发检查。当前版本始终返回 False（事件驱动调度未启用）。"""
     return False
 
 

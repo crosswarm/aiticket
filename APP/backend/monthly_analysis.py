@@ -22,9 +22,7 @@ TOPIC_PATH = os.path.join(BASE_DIR, "data", "topic.md")
 from weekly_analysis import WeeklyAnalyzer
 from analysis import CrewListParser, TopicParser, PROJECT_DISPLAY_NAMES
 from llm_service import LLMService
-from requirements_pool_service import RequirementsPoolService
 from vector_store import VectorStore
-from report_requirement_insights import get_process_labeled_issues, get_requirements_in_pool
 from kpi_calculator import KPICalculator
 
 # 月报存储目录
@@ -830,27 +828,11 @@ class MonthlyReportGenerator:
         self.domain_modules = domain_modules or []
         self.monthly_analyzer = MonthlyAnalyzer(project_key, domain_modules=domain_modules)
         self.yoy_analyzer = YoYAnalyzer()
-        # 初始化需求池服务
-        try:
-            vector_store = VectorStore()
-            self.req_pool_service = RequirementsPoolService(vector_store)
-        except Exception as e:
-            print(f"[MonthlyReport] 初始化需求池服务失败: {e}")
-            self.req_pool_service = None
-
-    def _get_requirements_in_pool(self, df: pd.DataFrame = None, tickets: List[Dict] = None, ticket_keys: List[str] = None) -> Dict:
-        result = get_requirements_in_pool(
-            df=df,
-            tickets=tickets,
-            ticket_keys=ticket_keys,
-            req_pool_service=self.req_pool_service,
-        )
-        if result.get("total_count", 0):
-            print(f"[MonthlyReport] 获取到 {result['total_count']} 个纳入需求库工单，来源: {result.get('source_method', '-')}")
-        return result
 
     def _get_process_labeled_issues(self, df: pd.DataFrame = None, tickets: List[Dict] = None) -> List[Dict]:
-        labeled_tickets = get_process_labeled_issues(df=df, tickets=tickets, label_pattern="流程-")
+        labeled_tickets = [t for t in (tickets or []) if any(
+            str(t.get('标签', '')).find('流程-') >= 0 for _ in [1]
+        )]
         if labeled_tickets:
             print(f"[MonthlyReport] 获取到 {len(labeled_tickets)} 个带'流程-'标签的工单")
         return labeled_tickets
@@ -959,8 +941,7 @@ class MonthlyReportGenerator:
                 api_key, provider, model_name, base_url
             )
 
-        # 7.5 获取需求池数据和标签工单数据
-        requirements_pool = None
+        # 7.5 获取标签工单数据
         labeled_issues = None
 
         # 获取本月所有工单ID
@@ -1017,14 +998,6 @@ class MonthlyReportGenerator:
                 if combined_df is not None:
                     source_df = combined_df
                     print(f"[MonthlyReport] 成功合并 {len(source_df)} 条CSV记录用于需求库和标签筛选")
-
-        # 获取需求池数据 - 优先从原始数据筛选，fallback到Chroma匹配
-        print("获取需求池数据...")
-        requirements_pool = self._get_requirements_in_pool(
-            df=source_df,
-            tickets=all_tickets,
-            ticket_keys=all_ticket_keys
-        )
 
         # 获取标签工单数据 - 统一使用新方法
         print("筛选标签工单...")
@@ -1088,7 +1061,6 @@ class MonthlyReportGenerator:
             monthly_data, yoy_metrics, mom_metrics, last_year_data, last_month_data, year, month,
             top10_analysis, detailed_tables,
             api_key, provider, model_name, base_url,
-            requirements_pool=requirements_pool,
             labeled_issues=labeled_issues,
             cross_week_analysis=cross_week_analysis,
             next_month_plan=next_month_plan,
@@ -1124,7 +1096,6 @@ class MonthlyReportGenerator:
                 'has_mom_data': last_month_data is not None,
                 'last_month_period': f"{prev_year}年{prev_month}月" if last_month_data else None,
                 'has_detailed_analysis': raw_df is not None,
-                'has_requirements_pool': requirements_pool is not None and requirements_pool.get('total_count', 0) > 0,
                 'has_labeled_issues': labeled_issues is not None and len(labeled_issues.get('process_labeled', [])) > 0
             },
             'charts': {**monthly_data.get('charts', {}), 'daily_customer_density': kpi_data.get('daily_customer_density', {})},
@@ -1133,7 +1104,6 @@ class MonthlyReportGenerator:
             'yoy_insights': ai_yoy_insights if ai_yoy_insights else self.yoy_analyzer.generate_yoy_insights(
                 yoy_metrics, f"{year}年{month}月", f"{last_year}年{month}月"
             ) if last_year_data else "",
-            'requirements_pool': requirements_pool,
             'labeled_issues': labeled_issues,
             'kpi_analysis': {
                 'current': {k: v for k, v in kpi_data.get('current', {}).items() if k != 'customer_breakdown'},
@@ -1163,7 +1133,6 @@ class MonthlyReportGenerator:
                                   top10_analysis: str = "", detailed_tables: str = "",
                                   api_key: str = "", provider: str = "gemini",
                                   model_name: str = "", base_url: str = "",
-                                  requirements_pool: Dict = None,
                                   labeled_issues: Dict = None,
                                   cross_week_analysis: str = "",
                                   next_month_plan: str = "",
@@ -1320,48 +1289,6 @@ class MonthlyReportGenerator:
             req_tickets, "需求", req_ai_prompt,
             api_key, provider, model_name, base_url
         )
-
-        # 5.1 纳入需求库统计
-        if requirements_pool and requirements_pool.get('total_count', 0) > 0:
-            content += "\n### 纳入需求库统计\n\n"
-            total = requirements_pool.get('total_count', 0)
-            source_method = requirements_pool.get('source_method', '')
-
-            content += f"- **本月纳入需求库**: {total} 个"
-            if source_method:
-                content += f" *(数据来源: {source_method})*"
-            content += "\n\n"
-
-            # 纳入需求库问题清单
-            reqs = requirements_pool.get('requirements', [])
-            if reqs:
-                content += "### 纳入需求库问题清单\n\n"
-                content += "| 工单编号 | 问题描述 | 问题类型 | 经办人 | 创建日期 |\n"
-                content += "|---------|---------|---------|--------|----------|\n"
-
-                for req in reqs[:20]:  # 限制显示前20个
-                    key = req.get('问题关键字', req.get('id', 'N/A'))
-                    # 兼容两种数据格式
-                    if '概要' in req:
-                        # 新格式：来自CSV筛选
-                        title = str(req.get('概要', ''))[:40].replace('\n', ' ').replace('|', '\\|')
-                        issue_type = str(req.get('自定义字段(研发确认问题类型)', '-'))[:20]
-                        assignee = str(req.get('经办人', '-'))[:10]
-                        created = str(req.get('创建日期', '-'))[:10]
-                    else:
-                        # 旧格式：来自Chroma需求池
-                        source_issues = req.get('source_issues', [])
-                        key = ', '.join(source_issues[:2]) if source_issues else key
-                        title = str(req.get('title', ''))[:40].replace('\n', ' ').replace('|', '\\|')
-                        issue_type = '-'
-                        assignee = '-'
-                        created = str(req.get('created_at', '-'))[:10]
-
-                    content += f"| {key} | {title} | {issue_type} | {assignee} | {created} |\n"
-
-                if len(reqs) > 20:
-                    content += f"\n*...共 {len(reqs)} 个工单，仅显示前 20 个*\n"
-                content += "\n"
 
         # 5.2 "流程-"标签重点关注问题
         if labeled_issues and labeled_issues.get('process_labeled'):

@@ -1,7 +1,7 @@
 """
-ExplorationAssetRetriever: 从 KB 探索成果中一步提取需求所需的全部资产。
+ExplorationAssetRetriever: 从 KB 探索成果中一步提取分析所需的全部资产。
 
-当需求池分析需要竞品数据时，先查已有探索成果（KB文档+截图+原型+feature_matrix），
+先查已有探索成果（KB文档+截图+原型+feature_matrix），
 不够时输出探索指引。
 """
 from __future__ import annotations

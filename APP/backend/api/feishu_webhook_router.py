@@ -20,7 +20,6 @@ from pydantic import BaseModel
 from typing import Optional
 
 from services.feishu_interaction_service import get_interaction_service, compute_value_score
-from requirements_pool_service import get_req_pool_service
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +109,7 @@ async def receive_webhook(payload: WebhookPayload):
 
 @router.post("/push-analysis")
 async def push_analysis(req: PushAnalysisRequest):
-    """推送需求分析卡片到飞书（由需求池分析或调度任务调用）"""
+    """推送分析卡片到飞书"""
     svc = get_interaction_service()
     analysis = {
         "summary": req.summary,
@@ -146,97 +145,6 @@ async def push_prd_result(req: PushPrdRequest):
     if not ok:
         raise HTTPException(status_code=404, detail=f"会话 {req.session_id} 不存在")
     return {"pushed": True, "session_id": req.session_id}
-
-
-@router.post("/process-batch")
-async def process_batch_notifications():
-    """
-    批量处理 pending_notify 需求：计算价值评分，推送分析卡片，标记已通知。
-    由 Mac Mini OpenClaw cron 每 2 分钟调用。仅在 CRON_HOST=true 的实例执行。
-    """
-    if not _IS_CRON_HOST:
-        return {"processed": 0, "results": [], "skipped": "not_cron_host"}
-    svc = get_interaction_service()
-    rps = get_req_pool_service()
-    if rps is None:
-        return {"processed": 0, "results": [], "error": "requirements_pool_service not initialized"}
-
-    try:
-        reqs = (rps.get_pending_notify() or [])[:5]
-    except Exception as e:
-        logger.error(f"[process-batch] 获取 pending_notify 失败: {e}")
-        return {"processed": 0, "results": [], "error": str(e)}
-
-    results = []
-    for r in reqs:
-        req_id = r["req_id"]
-        # 跳过已有活跃会话的需求
-        existing = svc.get_session_by_req(req_id)
-        if existing and existing.get("status") not in ("prd_done", "deferred"):
-            logger.info(f"[process-batch] 跳过已有活跃会话: {req_id} status={existing.get('status')}")
-            continue
-
-        ai = r.get("ai_analysis", {}) or {}
-        individual = (ai.get("individual", {}) or {})
-        batch_ctx = (ai.get("batch_context", {}) or {})
-
-        # 查找相似需求（反映需求普遍性，用于评分加分）
-        similar_reqs = []
-        try:
-            from search_chroma import get_vector_store
-            vs = get_vector_store()
-            if vs:
-                _query = f"{r.get('title', '')} {(r.get('description', '') or '')[:200]}"
-                similar_reqs = vs.search_similar_requirements(query=_query, top_k=10)
-                # 手动过滤：排除自身 + 相似度阈值 0.65
-                similar_reqs = [sr for sr in similar_reqs if sr.get('req_id') != req_id and sr.get('score', 0) >= 0.65]
-        except Exception:
-            pass
-
-        value_score = compute_value_score(ai, similar_count=len(similar_reqs))
-        summary = individual.get("core_problem", "") or individual.get("summary", "")
-        summary = summary[:200] if summary else ""
-        suggestion = (
-            individual.get("mvp_suggestion", "")
-            or individual.get("detailed_solution", "")
-            or ""
-        )
-        suggestion = suggestion[:300]
-        refs = ", ".join(r.get("source_issues", []) or [])
-        acceptance_criteria = individual.get("acceptance_criteria") or []
-
-        analysis = {
-            "value_score": value_score,
-            "summary": summary,
-            "suggestion": suggestion,
-            "references": refs,
-            "acceptance_criteria": acceptance_criteria,
-            "similar_requirement_ids": [sr.get('req_id', '') for sr in similar_reqs[:5]],
-            "similar_requirement_count": len(similar_reqs),
-        }
-
-        try:
-            session_id = svc.push_analysis_card(
-                user_id="qiangxiao",
-                req_id=req_id,
-                req_title=r.get("title", req_id),
-                analysis=analysis,
-            )
-        except Exception as e:
-            logger.error(f"[process-batch] push_analysis_card 失败 {req_id}: {e}")
-            results.append({"req_id": req_id, "error": str(e)})
-            continue
-
-        # 标记已通知
-        try:
-            rps.mark_feishu_notified(req_id)
-        except Exception as e:
-            logger.warning(f"[process-batch] mark_notified 失败 {req_id}: {e}")
-
-        results.append({"req_id": req_id, "session_id": session_id, "value_score": value_score})
-        logger.info(f"[process-batch] 推送完成: {req_id} score={value_score} session={session_id}")
-
-    return {"processed": len(results), "results": results}
 
 
 @router.post("/auto-confirm-timeouts")

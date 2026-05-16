@@ -5,8 +5,6 @@ with open('board.html', 'r', encoding='utf-8') as f:
 content = re.sub(r'href="/search\.html"', 'href="search.html"', content)
 content = re.sub(r'href="/board\.html"', 'href="board.html"', content)
 content = re.sub(r'href="/report\.html"', 'href="report.html"', content)
-content = re.sub(r'href="/requirements\.html"', 'href="requirements.html"', content)
-content = re.sub(r'href="/req_pool\.html"', 'href="req_pool.html"', content)
 
 api_base_script = """
         const getApiBase = () => {

@@ -1,4 +1,4 @@
-"""UXDeverAgent — UX 设计分析 Agent（需求池 UX 视角拆解）"""
+"""UXDeverAgent — UX 设计分析 Agent"""
 from __future__ import annotations
 
 import logging

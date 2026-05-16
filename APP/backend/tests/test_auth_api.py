@@ -19,16 +19,6 @@ def load_main(monkeypatch, tmp_path):
     return importlib.reload(main)
 
 
-def test_protected_requirements_pool_requires_login(monkeypatch, tmp_path):
-    main = load_main(monkeypatch, tmp_path)
-    client = TestClient(main.app)
-
-    response = client.get("/api/requirements_pool")
-
-    assert response.status_code == 401
-    assert response.json()["detail"] == "Authentication required"
-
-
 def test_bootstrap_login_and_admin_role_enforcement(monkeypatch, tmp_path):
     main = load_main(monkeypatch, tmp_path)
     client = TestClient(main.app)

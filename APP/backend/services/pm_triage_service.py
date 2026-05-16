@@ -1,6 +1,5 @@
 """
 PM 原始需求分诊服务
-- 调用 ReqAnalystAgent 对需求进行 AI 分析（含价值评分、变相方案、分诊建议）
 - 分析结果缓存到 data_cache/pm_triage/{aid}.json
 - 提供 summarize_board() 聚合看板统计
 """
@@ -85,7 +84,6 @@ class PMTriageService:
     """
 
     def __init__(self):
-        # 懒加载 ReqAnalystAgent（依赖 vector_store，需要在 FastAPI 上下文中获取）
         self._agent = None
         self._agent_lock = threading.Lock()
 
@@ -103,18 +101,8 @@ class PMTriageService:
             return {}
 
     def _get_agent(self):
-        """懒加载 ReqAnalystAgent，thread-safe"""
-        if self._agent is None:
-            with self._agent_lock:
-                if self._agent is None:
-                    try:
-                        from agents.req_analyst_agent import ReqAnalystAgent
-                        from vector_store import VectorStore
-                        vs = VectorStore()
-                        self._agent = ReqAnalystAgent(vs)
-                    except Exception as e:
-                        print(f"[PMTriageService] ReqAnalystAgent 初始化失败: {e}")
-                        self._agent = None
+        """懒加载 agent（当前版本 agent 不可用）"""
+        self._agent = None
         return self._agent
 
     # ------------------------------------------------------------------
@@ -140,7 +128,7 @@ class PMTriageService:
 
         agent = self._get_agent()
         if not agent:
-            return {"success": False, "message": "ReqAnalystAgent 不可用，请检查服务配置"}
+            return {"success": False, "message": "AI 分析 agent 不可用，请检查服务配置"}
 
         if not llm_config:
             llm_config = _load_llm_config()
