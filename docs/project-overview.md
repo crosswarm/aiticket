@@ -108,7 +108,7 @@ user_contributed)     reply_style_rules)
 | 项目偏好 | 每用户保存当前项目设置，跨设备同步 |
 | Bootstrap 建账 | `python -m bootstrap.seed_admin` 创建首个管理员 |
 
-### 2.8 客户端
+### 2.7 客户端
 
 **网页客户端**
 - `board.html` — 智能看板主页面

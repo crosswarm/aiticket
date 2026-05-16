@@ -3,9 +3,8 @@
 
 端点:
   POST /api/feishu/webhook                接收 OpenClaw 转发的用户回复
-  POST /api/feishu/push-analysis          推送需求分析卡片
+  POST /api/feishu/push-analysis          推送分析卡片
   POST /api/feishu/push-prd               推送 PRD 结果卡片
-  POST /api/feishu/process-batch          批量处理 pending_notify 需求（cron 调用）
   POST /api/feishu/auto-confirm-timeouts  自动确认超时会话 + 轮询PRD完成（cron 调用）
   GET  /api/feishu/sessions               查询会话列表
   GET  /api/feishu/sessions/{id}          查询会话详情
