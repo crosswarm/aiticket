@@ -1,8 +1,7 @@
 //这里存放Jira系统可使用的API和mock数据，使用curl方式，可根据需要程序自行转换成所需格式
 
 # Jira Account
-username:qiangxiao
-password:NEED0levine@law
+//
 
 # Jira 系统接口
 
