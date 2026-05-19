@@ -25,6 +25,9 @@ export PYTHONUNBUFFERED=1
 export JIRA_SKIP_COOKIES="${JIRA_SKIP_COOKIES:-true}"
 export ENABLE_CACHE_SERVICE="${ENABLE_CACHE_SERVICE:-false}"
 export AITICKET_ROLE="${AITICKET_ROLE:-mini}"
+export CRON_HOST="${CRON_HOST:-false}"
+# 铁律 9：全局 jira_service 兜底仅允许白名单用户（此机器 = qiangxiao）
+export JIRA_GLOBAL_FALLBACK_USERS="${JIRA_GLOBAL_FALLBACK_USERS:-qiangxiao}"
 
 export no_proxy="localhost,127.0.0.1,0.0.0.0,::1"
 export NO_PROXY="$no_proxy"

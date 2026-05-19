@@ -1060,6 +1060,36 @@ class BoardService:
                     jira_error="; ".join(errors) if errors else None,
                 )
 
+        # 铁律 9：全局会话仅白名单用户可用（mini/QCL 上 = qiangxiao）。
+        # 非白名单用户直接 unavailable，不借用全局凭据，防止跨用户数据串。
+        # 白名单由环境变量 JIRA_GLOBAL_FALLBACK_USERS（逗号分隔）控制，默认空集合。
+        _GLOBAL_FALLBACK_USERS = {
+            u.strip() for u in os.environ.get("JIRA_GLOBAL_FALLBACK_USERS", "").split(",") if u.strip()
+        }
+        if jira_client is not None and jira_client is not jira_service:
+            fallback_username = (
+                jira_client._auth_override.get("username")
+                or jira_client.cache_namespace
+            )
+            if fallback_username not in _GLOBAL_FALLBACK_USERS:
+                print(f"[BoardService] 用户 {fallback_username!r} 不在全局兜底白名单，返回 unavailable")
+                errors.append(f"global_fallback: 用户 {fallback_username} 不在白名单")
+            else:
+                fallback_jql = jql.replace("currentUser()", fallback_username) if fallback_username else jql
+                print(f"[BoardService] 全局兜底: 替换 currentUser() → {fallback_username}")
+                fallback = jira_service.search_issues_rest_api(fallback_jql)
+                if "error" not in fallback:
+                    issues = jira_service.parse_search_response(fallback)
+                    print(f"[BoardService] 全局凭据兜底获取 {len(issues)} 条工单")
+                    if issues:
+                        jira_service.save_board_cache(issues)
+                    return issues, self._build_fetch_meta(
+                        data_source="jira_direct",
+                        jira_error="; ".join(errors) if errors else None,
+                    )
+                errors.append(f"jira_service_fallback: {fallback.get('error', 'unknown')}")
+
+
         return [], self._build_fetch_meta(
             data_source="unavailable",
             jira_error="; ".join(errors) if errors else None,
