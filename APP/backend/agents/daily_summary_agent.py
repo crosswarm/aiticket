@@ -89,6 +89,7 @@ class DailySummaryAgent:
         base["schedule_state"] = self._load_schedules_state(target_date)
         base["memory_context"] = self._load_memory_files()
         base["conclusion_recent"] = self._load_conclusion_recent(target_date)
+        base["reply_kpi"] = self._collect_reply_kpi()
         return base
 
     def _build_session_sections(self, events) -> dict:
@@ -219,6 +220,34 @@ class DailySummaryAgent:
             logger.warning(f"[DailySummary] conclusion recent load failed: {exc}")
             return []
 
+    def _collect_reply_kpi(self) -> dict:
+        """读取智能回复采纳率 + 训练器最后产出时间。"""
+        result: dict = {
+            "live_total": 0, "live_adopted": 0, "adoption_rate_pct": 0.0,
+            "target_pct": 4.5, "trainer_last_run": None,
+        }
+        try:
+            feedback_path = _BASE_DIR / "data" / "reply_feedback.json"
+            if feedback_path.exists():
+                data = json.loads(feedback_path.read_text(encoding="utf-8"))
+                total = data.get("live_total", 0)
+                adopted = data.get("live_adopted", 0)
+                result["live_total"] = total
+                result["live_adopted"] = adopted
+                result["adoption_rate_pct"] = round(adopted / total * 100, 1) if total > 0 else 0.0
+        except Exception as exc:
+            logger.warning(f"[DailySummary] reply_feedback load failed: {exc}")
+        try:
+            rules_path = _BASE_DIR / "data" / "reply_style_rules.md"
+            if rules_path.exists():
+                mtime = rules_path.stat().st_mtime
+                result["trainer_last_run"] = datetime.fromtimestamp(
+                    mtime, tz=timezone.utc
+                ).strftime("%Y-%m-%d %H:%M UTC")
+        except Exception as exc:
+            logger.warning(f"[DailySummary] reply_style_rules mtime failed: {exc}")
+        return result
+
     # ── LLM prompt + summarize ───────────────────────────────────────────────
 
     def _llm_summarize(self, sections: dict, target_date: date) -> str:
@@ -264,6 +293,16 @@ class DailySummaryAgent:
 
         memory_text = sections.get("memory_context", "")[:1500]
         conclusion_text = "\n".join(sections.get("conclusion_recent", [])) or "无"
+        _kpi = sections.get("reply_kpi", {})
+        if _kpi.get("live_total", 0) > 0:
+            reply_kpi_text = (
+                f"采纳率 {_kpi.get('adoption_rate_pct', 0.0)}%"
+                f"（{_kpi.get('live_adopted', 0)}/{_kpi.get('live_total', 0)} 条），"
+                f"阶段目标 {_kpi.get('target_pct', 4.5)}%；"
+                f"训练器最后产出：{_kpi.get('trainer_last_run') or '未知'}"
+            )
+        else:
+            reply_kpi_text = "暂无数据"
 
         return f"""你是 AITicket 项目的日报编写助手。
 基于 {target_date} 的所有数据，按下列固定结构写一份飞书日报（≤ 2500 字）：
@@ -328,6 +367,9 @@ class DailySummaryAgent:
 
 **项目记忆索引（MEMORY.md 节选）**:
 {memory_text or '无'}
+
+**🤖 智能回复 KPI（请务必单独成节写入日报）**:
+{reply_kpi_text}
 """
 
     def _template_fallback(self, sections: dict, target_date: date) -> str:
@@ -347,6 +389,13 @@ class DailySummaryAgent:
             f"- {s['name']} — {s['issue']}"
             for s in schedule_issues[:5]
         ) or "- 无"
+        _kpi = sections.get("reply_kpi", {})
+        reply_kpi_text = (
+            f"采纳率 {_kpi.get('adoption_rate_pct', 0.0)}%"
+            f"（{_kpi.get('live_adopted', 0)}/{_kpi.get('live_total', 0)} 条），"
+            f"目标 {_kpi.get('target_pct', 4.5)}%；"
+            f"训练器最后产出：{_kpi.get('trainer_last_run') or '未知'}"
+        ) if _kpi.get("live_total", 0) > 0 else "暂无数据"
 
         return f"""# 📅 AITicket 日报 - {target_date}
 
@@ -365,6 +414,9 @@ class DailySummaryAgent:
 
 ## ⚠️ 失败 / 异常需要关注
 {schedule_text}
+
+## 🤖 智能回复 KPI
+{reply_kpi_text}
 
 ## ⏳ 待展开/未分析
 {tasks}
