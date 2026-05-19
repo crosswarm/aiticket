@@ -547,7 +547,10 @@ class KnowledgeHybridIndex:
                     l2_module TEXT,
                     doc_type TEXT,
                     project_key TEXT DEFAULT '_global',
-                    source_mtime TEXT
+                    source_mtime TEXT,
+                    credibility REAL DEFAULT 0.8,
+                    validation_sources TEXT,
+                    last_validated_at TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS chunks (
@@ -608,6 +611,22 @@ class KnowledgeHybridIndex:
                 self.conn.commit()
             except Exception:
                 pass  # column already exists
+            # Migration: add enricher columns to documents
+            for col, defn in [
+                ("credibility", "REAL DEFAULT 0.8"),
+                ("validation_sources", "TEXT"),
+                ("last_validated_at", "TEXT"),
+            ]:
+                try:
+                    self.conn.execute(f"ALTER TABLE documents ADD COLUMN {col} {defn}")
+                    self.conn.commit()
+                except Exception:
+                    pass  # column already exists
+            # Index for fast content_id lookups (avoids full table scan on 270K chunks)
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chunks_content_id ON chunks(content_id)"
+            )
+            self.conn.commit()
 
     def _reset(self) -> None:
         with self._lock:
