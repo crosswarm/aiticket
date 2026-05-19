@@ -214,6 +214,18 @@ class AuthService:
                 )"""
             )
 
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS project_index_jobs (
+                  project_key TEXT PRIMARY KEY,
+                  status      TEXT NOT NULL DEFAULT 'pending',
+                  total       INTEGER DEFAULT 0,
+                  done        INTEGER DEFAULT 0,
+                  started_at  INTEGER,
+                  finished_at INTEGER,
+                  error       TEXT DEFAULT ''
+                )"""
+            )
+
     def _hash_password(self, password: str) -> str:
         salt = secrets.token_bytes(16)
         iterations = 200_000

@@ -644,6 +644,14 @@ async def log_requests(request: Request, call_next):
     _cu_modules = (_cu.get("project_modules", {}).get(pk, []) if _cu else [])
     request.state.current_modules = _cu_modules
 
+    # Lazy index probe: if this project has no Chroma history, enqueue a background fill job
+    if pk and pk != "_global":
+        try:
+            from services.project_index_service import get_project_index_service
+            get_project_index_service().trigger_if_empty(pk)
+        except Exception:
+            pass
+
     # 记录请求
     logger.info(f"Request: {request.method} {path}")
 
@@ -6376,6 +6384,14 @@ class GuideGenerateRequest(BaseModel):
     tenant_info: Dict[str, Any] = {}
     screenshots: List[str] = []  # Base64编码的图片列表
     user_question: str = ""
+
+
+@app.get("/api/index/status")
+async def get_index_status(project_key: str):
+    """查询某项目的 Chroma 历史工单索引进度（供前端轮询）"""
+    from services.project_index_service import get_project_index_service
+    return get_project_index_service().get_status(project_key)
+
 
 @app.get("/guide.html")
 def read_guide_page():

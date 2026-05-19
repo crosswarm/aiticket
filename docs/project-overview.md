@@ -32,6 +32,20 @@ AITicket 是一套面向产品/技术支持团队的 **AI 增强工单处理系�
 | 模块分类 | 按 `deployment.yaml` 中 `module_taxonomy` 自动归类工单 |
 | 看板同步 | 手动或定时从 Jira 拉取最新数据到本地向量索引 |
 | Jira cookie 绑定 | 用户在 web 提交 Jira session cookie，系统代替用户调 Jira API |
+| 历史工单 lazy 索引 | 切换到尚未建索引的项目时，后台异步拉取历史工单写入 Chroma，前端顶栏显示进度 |
+
+#### 首次切换项目的索引行为
+
+切换到尚未建索引的项目时：
+- **看板**：立即从 Jira 实时拉取，无延迟
+- **相似工单召回**：后台异步建索引，顶栏显示「索引中 N%」
+- 索引完成后，AI 回复自动启用历史经验加持（相似工单 + KB 双路召回）
+
+首部署建议先跑一次全量种子，避免用户等待：
+
+```bash
+docker compose exec aiticket python -m scripts.seed_projects --days 180
+```
 
 ### 2.2 智能回复
 

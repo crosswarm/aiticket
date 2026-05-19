@@ -164,6 +164,10 @@
             }
         }
 
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
         /* 批量选择模式 */
         .issue-card.selected {
             ring: 2px solid #6366f1;
@@ -291,6 +295,11 @@
             </button>
             <!-- 作用域切换器 -->
             <div id="scope-switcher-container" style="display:inline-flex;align-items:center;margin-right:4px;"></div>
+            <!-- 索引进度徽章（项目初次使用时短暂显示） -->
+            <span id="index-build-badge" style="display:none;align-items:center;gap:4px;padding:3px 8px;border-radius:6px;background:#f0f9ff;border:1px solid #bae6fd;font-size:11px;color:#0369a1;margin-right:4px;" title="正在建立历史工单索引，智能回复召回质量稍后提升">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="animation:spin 1.2s linear infinite"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                索引中 <span id="index-build-pct">0</span>%
+            </span>
             <!-- User Menu -->
             <div id="user-menu-container" style="position:relative;display:inline-block;margin-right:4px;">
                 <button id="user-menu-btn" onclick="toggleUserMenu()" style="display:none;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--ds-border,#e2e8f0);border-radius:8px;background:var(--ds-bg-surface,#fff);cursor:pointer;font-size:13px;color:var(--ds-text-primary,#1e293b);transition:all 0.15s;"
@@ -2695,7 +2704,36 @@
                 sel.value = projKey;
             }
             loadBoardData(true);
+            _startIndexPoll(projKey);
         });
+
+        // ── 历史工单索引进度轮询 ──────────────────────────────────────
+        var _indexPollTimer = null;
+        function _startIndexPoll(projKey) {
+            if (!projKey || projKey === 'ALL' || projKey === '_global') return;
+            if (_indexPollTimer) { clearInterval(_indexPollTimer); _indexPollTimer = null; }
+            _checkIndexStatus(projKey);
+            _indexPollTimer = setInterval(function() { _checkIndexStatus(projKey); }, 5000);
+        }
+        function _checkIndexStatus(projKey) {
+            fetch('/api/index/status?project_key=' + encodeURIComponent(projKey))
+                .then(function(r) { return r.json(); })
+                .then(function(s) {
+                    var badge = document.getElementById('index-build-badge');
+                    var pct   = document.getElementById('index-build-pct');
+                    if (!badge) return;
+                    if (s.status === 'running' || s.status === 'pending') {
+                        badge.style.display = 'inline-flex';
+                        if (pct) pct.textContent = s.percent || 0;
+                    } else {
+                        badge.style.display = 'none';
+                        if (_indexPollTimer) { clearInterval(_indexPollTimer); _indexPollTimer = null; }
+                    }
+                })
+                .catch(function() {
+                    if (_indexPollTimer) { clearInterval(_indexPollTimer); _indexPollTimer = null; }
+                });
+        }
 
         // --- 账号设置：默认项目与关注模块 ---
         function _renderAcctProjectDropdown(q) {

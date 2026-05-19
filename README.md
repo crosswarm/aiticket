@@ -49,6 +49,10 @@ JIRA_BASE_URL=https://jira.mycompany.com   # 在 .env 填写
 cp -r /your/docs/dir KB/
 docker compose exec backend python scripts/import_kb.py
 
+# 建立历史工单索引（首次必跑，使智能回复能检索相似历史案例）
+# 约 5-30 分钟，视 Jira 工单量和网络延迟；之后每天自动增量
+docker compose exec aiticket python -m scripts.seed_projects --days 180
+
 # 配置主题树（可选，让分类更贴合你的业务）
 cp samples/topic.example.md APP/backend/data/topic.md
 # 按你的业务模块编辑 topic.md

@@ -13,7 +13,7 @@
     "--days",
     "2"
   ],
-  "description": "每日03:00：拉取最近2天在 Jira 更新的工单，将尚未入库的条目补充写入 Chroma issues_collection，解决新工单无法被语义搜索命中的问题",
+  "description": "每日03:00：拉取最近2天在 Jira 更新的工单，将尚未入库的条目补充写入 Chroma issues_collection；遍历 deployment.yaml 中所有 allowed_project_keys，解决新工单无法被语义搜索命中的问题",
   "last_run": null,
   "created_at": "2026-05-12T09:00:00",
   "preflight_local_llm": false,
