@@ -79,7 +79,9 @@ def _load_playbook() -> str | None:
 def _recover_orphaned_tasks() -> None:
     """daemon 启动时扫描 running 超时任务，强制置 FAILED（防永久 stuck）。"""
     _THRESHOLDS = {
-        "daily_summary": 15, "nightly_exploration": 240,
+        "req_analyst": 30, "req_enricher": 30, "req_solution": 30,
+        "daily_summary": 15, "nightly_exploration": 360,
+        "reply_training": 360,  # 实际 4-5 小时；旧默认 120min 导致假阳性 FAILED
     }
     _DEFAULT_MINUTES = 120
     try:
@@ -733,6 +735,20 @@ def main():
     try:
         start_scheduler()
         logger.info("[Scheduler] cron 已启动")
+        # 写 scheduler_owner 文件，让 main.py 检测到 daemon 已持有 scheduler，避免双启
+        import json as _json, os as _os, socket as _socket
+        from datetime import datetime as _dt_owner
+        _owner_path = _BACKEND / "data" / "runtime" / "scheduler_owner.json"
+        _owner_path.parent.mkdir(parents=True, exist_ok=True)
+        _owner_path.write_text(
+            _json.dumps({
+                "pid": _os.getpid(),
+                "host": _socket.gethostname(),
+                "role": "daemon",
+                "started": _dt_owner.utcnow().isoformat(),
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
     except Exception as e:
         logger.error(f"[Scheduler] 启动失败: {e}")
 
