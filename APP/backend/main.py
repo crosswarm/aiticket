@@ -2671,15 +2671,16 @@ def read_board_page():
     return frontend_html_response("board.html")
 
 @app.get("/api/board/issues")
-def get_board_issues(request: Request):
+async def get_board_issues(request: Request):
     """Get issues for the board (Chroma优化版)"""
+    import asyncio
     jira_client = build_request_jira_client(request)
     if jira_client is None:
         return {}
-    return board_service.get_board_data(jira_client=jira_client)
+    return await asyncio.to_thread(board_service.get_board_data, jira_client=jira_client)
 
 @app.get("/api/board")
-def get_board_data(
+async def get_board_data(
     request: Request,
     project_key: str = Query("MYPROJECT", description="项目Key"),
     assignee: str = Query("currentUser()", description="经办人"),
@@ -2723,7 +2724,9 @@ def get_board_data(
             _domain_modules = []
         else:
             _domain_modules = getattr(request.state, "current_modules", [])
-        data = board_service.get_board_data(
+        import asyncio
+        data = await asyncio.to_thread(
+            board_service.get_board_data,
             project_key=project_key,
             assignee=assignee,
             created_start=created_start,
