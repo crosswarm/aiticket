@@ -1,0 +1,22 @@
+{
+  "id": "oneshot-phase2-chroma-cleanup",
+  "name": "Phase 2 终轮 · 旧 chroma 目录清理（24h 观察期后）",
+  "task_type": "script",
+  "trigger_type": "cron",
+  "cron": "0 17 20 5 *",
+  "enabled": true,
+  "command": [
+    "bash",
+    "scripts/migrate/phase2_chroma_cleanup.sh"
+  ],
+  "timeout_seconds": 300,
+  "notify_users": ["qiangxiao"],
+  "created_at": "2026-05-19T17:00:00",
+  "created_by": "claude",
+  "last_run": null,
+  "last_status": "pending",
+  "run_count": 0,
+  "host_constraint": "mini",
+  "notes": "迁移于 2026-05-19 16:15 完成，24h 后（2026-05-20 17:00）自动触发清理旧目录。完成后请手动将此文件 enabled 改为 false 或删除。",
+  "schema_version": "1.0"
+}

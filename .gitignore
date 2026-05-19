@@ -91,7 +91,137 @@ APP/frontend/node_modules/
 # Claude backups
 .claude.backup*/
 
-# Temp
-conclusion/temp/
-aiticket-suite.zip
-board_ai_cache.json
+# Runtime data & auth (machine-specific)
+APP/backend/data/app_auth.db
+APP/backend/data/app_auth.db.*.bak*
+APP/backend/data/app_auth.key
+APP/backend/data/feishu_sessions.db
+APP/backend/data/requirements.db
+APP/backend/llm_config.json
+data/chroma_kb_runtime/
+data/sqlite/
+src
+
+# Mini-only / dev-only (any _local/ subdir at any depth is excluded)
+**/_local/
+_local/
+
+# Large ChromaDB binary (machine-specific, rebuilt from Jira data)
+data/chroma_kb/
+# Phase 2 旧 chroma 路径（24h 观察期后删除，期间不入 git）
+APP/data/chroma_kb/
+APP/data/chroma_kb_runtime/
+APP/backend/chroma_db/
+APP/backend/data/reply_trainer/chroma/
+APP/backend/data/reply_trainer/chroma_runtime/
+APP/backend/data/competitor_kb/chroma/
+
+# Migrated dirs — prevent resurrection
+APP/deploy_scripts/
+APP/e2e_tests/
+APP/frontend/tests/
+APP/update_frontend.py
+
+# Runtime databases (never commit)
+APP/backend/data/agent_tasks.db
+APP/backend/data/auth.db
+APP/backend/data/jobmaster.db
+APP/backend/data/jobmaster_state.json
+APP/backend/data/jobmaster_state.json.lock
+APP/backend/data/jobmaster_events.jsonl
+APP/backend/data/schedules/jobmaster-monitor.json
+APP/backend/data/schedules/deferred-tasks-queue.json
+APP/backend/data/operation_history.jsonl
+APP/backend/data/handover_suggestion_cache.json
+APP/backend/data/gate_rollback_log.jsonl
+APP/backend/data/auto_reply_dispatched.jsonl
+APP/backend/data/.product_facts_mtime
+APP/backend/data/competitor_kb/
+APP/backend/data/sqlite/
+
+# Runtime state / AI-learned data (sync via rsync, not git)
+APP/backend/data/board_config.json
+APP/backend/data/gate_decisions.jsonl
+APP/backend/data/learned_patterns.json
+APP/backend/data/move_history.json
+APP/backend/data/product_facts.md
+APP/backend/data/reply_style_rules.md
+APP/backend/data/pending_batch_approve.jsonl
+APP/backend/data/runtime/
+
+# KB build artifacts (sync via sync_data.sh, not git)
+KB/INDEX/manifest.json
+KB/INDEX/FILES/
+
+# Daily reports (runtime output, sync via sync_shared_data.sh)
+APP/backend/conclusion/
+
+# Tool caches / machine-specific configs
+.claude/tsc-cache/
+.omc/
+.opencli/
+APP/backend/.claude/
+APP/backend/.omc/
+.agent/skills/.omc/
+
+# Generated / nightly content
+conclusion/WeeklyReports/
+conclusion/nightly-exploration-*.md
+conclusion/reqpool_metrics.jsonl
+conclusion/kb_gaps.jsonl
+conclusion/analysis/
+.claude/scheduled_tasks.lock
+
+# Runtime dirs (sync staging, local chroma, KB source cache, backend logs)
+APP/backend/logs/
+APP/data/sqlite/
+APP/data/chroma/
+data/_sync_staging/
+data/chroma/
+data/kb_source/
+data_cache/
+
+# Binaries — never commit archives or executables
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.zip
+*.dmg
+*.exe
+deploy/private/
+deploy/public/frp/frps
+
+# Secrets
+APP/backend/.env
+APP/backend/interface/jira_api.md
+
+# ChromaDB runtime (machine-specific, regenerated)
+APP/backend/data/chroma_kb/chroma.sqlite3
+graphify-out/
+
+# Phase 2 终轮 R5 · 三层发布分类（allow-list）
+# ── private（git 不跟踪）──
+private/
+!private/.gitkeep
+
+# ── conclusion 默认 ignore，白名单 allow ──
+conclusion/*
+!conclusion/.gitkeep
+!conclusion/wisdom/
+!conclusion/req-pool/
+!conclusion/specs/
+conclusion/specs/*
+!conclusion/specs/reqpool-ux-redo-*/
+
+# ── dist 永久 ignore ──
+conclusion/**/_archived_buggy_*
+conclusion/**/_archived_*
+conclusion/**/_backup/
+conclusion/**/backup_*
+
+# Phase 2 终轮 - APP/backend runtime artifacts
+APP/backend/aiticket.db
+APP/backend/aiticket.db-shm
+APP/backend/aiticket.db-wal
+APP/backend/backend.log
+APP/backend/board_ai_cache.json

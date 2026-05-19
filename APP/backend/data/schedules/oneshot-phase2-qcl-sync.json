@@ -1,0 +1,22 @@
+{
+  "id": "oneshot-phase2-qcl-sync",
+  "name": "Phase 2 终轮 · QCL 同步（git pull + chroma 迁移）",
+  "task_type": "script",
+  "trigger_type": "cron",
+  "cron": "",
+  "enabled": false,
+  "command": [
+    "bash",
+    "deploy/private/sync_all_to_qcl.sh"
+  ],
+  "timeout_seconds": 1800,
+  "notify_users": ["qiangxiao"],
+  "created_at": "2026-05-19T17:00:00",
+  "created_by": "claude",
+  "last_run": null,
+  "last_status": "pending",
+  "run_count": 0,
+  "host_constraint": "mini",
+  "notes": "Phase 2 终轮 QCL 同步待办。本机稳定 24h 后手动执行：\n1. SSH 登录 QCL → cd /path/to/aiticket && git pull\n2. bash scripts/migrate/phase2_final_chroma.sh (在 QCL 上)\n3. 验证 curl http://localhost:18000/api/board/stats\n4. 完成后将此 schedule enabled 改为 false 并删除。\n当前状态：enabled=false，需人工确认 QCL 就绪后启用或直接手动执行。",
+  "schema_version": "1.0"
+}
