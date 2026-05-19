@@ -1010,7 +1010,12 @@ class BoardService:
                     )
 
         # 无缓存时走Jira直连（首次使用场景）
+        import time as _t2
+        _fetch_start = _t2.monotonic()
         for source in self._get_effective_fetch_order():
+            if _t2.monotonic() - _fetch_start > 12:
+                print("[BoardService] 取数总耗时超 12s，跳出降级链")
+                break
             if source == "jira_direct":
                 search_result = client.search_issues_rest_api(jql)
                 if "error" not in search_result:

@@ -47,4 +47,4 @@ exec "$PYTHON_BIN" -m uvicorn main:app \
     --log-level info \
     --workers 1 \
     --timeout-keep-alive 15 \
-    --limit-concurrency 32
+    --limit-concurrency 64

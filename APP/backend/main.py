@@ -5661,8 +5661,11 @@ def _kb_startup_sync_and_warn():
 
 
 @app.on_event("startup")
-def startup_event():
+async def startup_event():
     import threading as _threading
+    import anyio
+    # 默认 total_tokens=40，提到 64 以支持更多并发 handler 线程（每线程 ~8MB stack）
+    anyio.to_thread.current_default_thread_limiter().total_tokens = 64
     _reap_zombie_running_tasks()
     _threading.Thread(target=_kb_startup_sync_and_warn, daemon=True).start()
 
@@ -6997,6 +7000,22 @@ try:
         print("[Scheduler] 已注册 weekly_report 处理器（fallback）")
 except Exception as _e:
     print(f"[Scheduler] weekly_report fallback 注册失败: {_e}")
+
+# 始终注册 session_harvester，确保 /api/schedules/.../trigger 可用（daemon 拥有真实执行权，主进程提供 API 触发入口）
+try:
+    from services.scheduler_service import register_task_handler as _reg_handler2, _task_handlers as _th2
+    if "session_harvester" not in _th2:
+        def _session_harvester_fallback(dry_run: bool = True, **kwargs):
+            try:
+                from agents.session_harvester_agent import SessionHarvesterAgent
+                result = SessionHarvesterAgent().execute(dry_run=dry_run)
+                logger.info(f"[task:session_harvester] done: {result}")
+            except Exception as _exc:
+                logger.exception(f"[task:session_harvester] failed: {_exc}")
+        _reg_handler2("session_harvester", _session_harvester_fallback)
+        print("[Scheduler] 已注册 session_harvester 处理器（fallback）")
+except Exception as _e:
+    print(f"[Scheduler] session_harvester fallback 注册失败: {_e}")
 
 # ── JIRA Session 自动刷新（每 6 小时，避免 session 过期导致移动工单失败）──────
 def _auto_refresh_jira_session():
