@@ -4565,7 +4565,7 @@
                 const _gvDomainParam = _gvMods.length > 0 ? '&domain_modules='+encodeURIComponent(_gvMods.join(',')) : '';
                 const [gateData, pendingData] = await Promise.all([
                     fetch(API_BASE+'/api/board/gate-view-tickets?hours=720&include_unscored=true&project_key='+encodeURIComponent(_gvProjKey)+_gvDomainParam).then(r=>r.json()),
-                    fetch(API_BASE+'/api/board/pending-approvals?limit=200').then(r=>r.json()),
+                    fetch(API_BASE+'/api/board/pending-approvals?limit=200&project_key='+encodeURIComponent(_gvProjKey)).then(r=>r.json()),
                 ]);
                 _gateViewData = gateData;
                 window.gateStatusByKey = gateData.by_key || {};
@@ -5113,14 +5113,9 @@ ${_colDecision(byKey)}
                         <input type="checkbox" class="pending-checkbox" data-approval-id="${item.approval_id}" onchange="updatePendingCount()" aria-label="选中 ${item.issue_key||''} 用于批量通过" style="width:14px;height:14px;cursor:pointer;margin-top:2px;flex-shrink:0">
                         <div style="flex:1;min-width:0">
                             <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:2px">
-                                <span style="font-size:10px;background:#eef2ff;color:#4338ca;border-radius:4px;padding:1px 5px;font-weight:600;flex-shrink:0">待审批</span>
+                                <span style="font-size:10px;background:#dcfce7;color:#15803d;border-radius:4px;padding:1px 5px;font-weight:600;flex-shrink:0">✓ 已生成</span>
                                 <span style="font-size:11px;font-family:var(--ds-font-mono,monospace);color:var(--ds-text-muted,#94a3b8)">${item.issue_key||''}</span>
                                 ${scoreChip}
-                            </div>
-                            ${summary}${preview}
-                            <div style="display:flex;gap:6px;margin-top:5px">
-                                <button onclick="approveSingle('${item.approval_id}')" class="ds-btn ds-btn-primary ds-btn-xs">单条通过</button>
-                                <button onclick="viewReplyDraft('${item.approval_id}')" class="ds-btn ds-btn-ghost ds-btn-xs">查看草稿</button>
                             </div>
                             ${summary}${preview}
                         </div>
@@ -5141,18 +5136,15 @@ ${_colDecision(byKey)}
                         <input type="checkbox" class="pending-checkbox" data-issue-key="${k}" onchange="updatePendingCount()" onclick="event.stopPropagation()" aria-label="选中 ${k} 用于批量通过" style="width:14px;height:14px;cursor:pointer;margin-top:2px;flex-shrink:0">
                         <div style="flex:1;min-width:0">
                             <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:2px">
-                                ${_gateBadge(k)}<span style="font-size:11px;font-family:var(--ds-font-mono,monospace);color:var(--ds-text-muted,#94a3b8)">${k}</span>${confChip}${dueDateChip}
+                                <span style="font-size:10px;background:#fef3c7;color:#a16207;border-radius:4px;padding:1px 5px;font-weight:600;flex-shrink:0">⏳ 待生成</span><span style="font-size:11px;font-family:var(--ds-font-mono,monospace);color:var(--ds-text-muted,#94a3b8)">${k}</span>${confChip}${dueDateChip}
                             </div>
                             ${summary}${replyPreview}
                         </div>
                     </div>
                 </div>`;
             }).join('');
-            const candidateSection = candidateKeys.length > 0 ? `
-                <div style="padding:6px 12px 4px;font-size:10px;font-weight:600;color:var(--ds-text-muted,#94a3b8);letter-spacing:.05em;text-transform:uppercase">${items.length > 0 ? '候选' : '待批准候选'} · ${candidateKeys.length}</div>
-                ${candidateCardHtml}
-            ` : '';
-            const bodyContent = stagingCards + candidateSection || '<div class="gate-col-empty">暂无待批准工单</div>';
+            const allCards = stagingCards + candidateCardHtml;
+            const bodyContent = allCards || '<div class="gate-col-empty">暂无待批准工单</div>';
             const total = items.length + candidateKeys.length;
             return _colWrap('var(--ds-warning,#ca8a04)',
                 _colHeader(SVG_CLOCK,'非重点-待批准', total, 'var(--ds-warning)')
