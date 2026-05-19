@@ -262,7 +262,7 @@ def _task_reply_training(questions: int = 300, stop_hour: int = 7,
             )
             if result.returncode == 0:
                 # 语义校验：检查训练是否真正学到了数据
-                _metrics_path = _PROJ_ROOT / "conclusion" / "_local" / "training" / "training_metrics.jsonl"
+                _metrics_path = Path(_PROJ_ROOT) / "private" / "conclusion" / "training" / "training_metrics.jsonl"
                 _n = 0
                 try:
                     lines = _metrics_path.read_text(encoding="utf-8").strip().splitlines()
@@ -613,7 +613,7 @@ def _task_daily_summary_watchdog(**kwargs):
     from datetime import date as _d, timedelta as _td
     from pathlib import Path as _P
     yesterday = _d.today() - _td(days=1)
-    archive = _P(f"conclusion/daily_reports/{yesterday}.md")
+    archive = _P(_PROJ_ROOT) / "conclusion" / "daily_reports" / f"{yesterday}.md"
     if not archive.exists():
         logger.warning("[task:daily_summary_watchdog] archive missing, re-running daily_summary")
         _task_daily_summary(date=str(yesterday))

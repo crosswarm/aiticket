@@ -27,10 +27,11 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_BASE_DIR = Path(__file__).resolve().parent.parent
+_BASE_DIR = Path(__file__).resolve().parent.parent   # APP/backend/
+_PROJECT_ROOT = _BASE_DIR.parent.parent              # project root
 _MEMORY_DIR = Path.home() / ".claude" / "projects" / "-Users-cfone-Studio-aiticket" / "memory"
 _SCHEDULES_DIR = _BASE_DIR / "data" / "schedules"
-_CONCLUSION_DIR = _BASE_DIR / "conclusion"
+_CONCLUSION_DIR = _PROJECT_ROOT / "conclusion"
 _AGENT_TASKS_DB = _BASE_DIR / "data" / "sqlite" / "agent_tasks.db"
 
 

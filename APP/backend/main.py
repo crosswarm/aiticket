@@ -6848,7 +6848,7 @@ if _RUN_BG and ENABLE_SCHEDULER:
             from datetime import date as _date, timedelta as _td
             from pathlib import Path as _Path
             yesterday = _date.today() - _td(days=1)
-            archive = _Path(f"conclusion/daily_reports/{yesterday}.md")
+            archive = _Path(__file__).parent.parent.parent / "conclusion" / "daily_reports" / f"{yesterday}.md"
             if not archive.exists():
                 logger.warning("[Scheduler] watchdog: archive missing, re-running daily_summary")
                 _task_daily_summary(date=str(yesterday))
