@@ -618,6 +618,20 @@ class VectorStore:
                 metadatas=metadatas[i:i+batch_size]
             )
     
+    def batch_add_generic_issues(self, issues) -> None:
+        """Accept a list of GenericIssue objects and index them via batch_add_issues."""
+        docs = [
+            {
+                "key": i.key,
+                "summary": i.summary,
+                "description": i.description,
+                "source": i.source,
+                **{k: v for k, v in i.extra.items() if isinstance(v, str)},
+            }
+            for i in issues
+        ]
+        self.batch_add_issues(docs)
+
     def get_stats(self) -> Dict:
         """获取统计信息"""
         return {

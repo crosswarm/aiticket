@@ -679,7 +679,23 @@ MONTHLY_REPORT_DIR = os.environ.get("MONTHLY_REPORT_DIR") or os.path.normpath(os
 ALLOW_EMBEDDING_DOWNLOAD = os.environ.get("ALLOW_EMBEDDING_DOWNLOAD", "true").lower() == "true"
 
 search_engine = ChromaSearchEngine(allow_download=ALLOW_EMBEDDING_DOWNLOAD)
-board_service = ChromaBoardService(llm_service, api_key=None, allow_download=ALLOW_EMBEDDING_DOWNLOAD)
+
+# dist branch: load non-Jira data source provider if configured
+_active_issue_provider = None
+try:
+    from providers.factory import get_active_provider as _get_provider
+    _active_issue_provider = _get_provider()
+    if _active_issue_provider is not None:
+        print(f"[main] 数据源: {_active_issue_provider.name} (非Jira模式)")
+except Exception as _prov_err:
+    print(f"[main] provider 加载失败，使用 Jira 默认路径: {_prov_err}")
+
+board_service = ChromaBoardService(
+    llm_service,
+    api_key=None,
+    allow_download=ALLOW_EMBEDDING_DOWNLOAD,
+    issue_provider=_active_issue_provider,
+)
 
 requirement_service = get_requirement_planning_service(llm_service)
 kb_analyzer = get_kb_analyzer(llm_service)

@@ -95,11 +95,55 @@ def run(days: int = 2, project_override: str | None = None, dry_run: bool = Fals
     return total
 
 
+def run_for_provider(provider, dry_run: bool = False) -> int:
+    """Generic incremental sync for non-Jira providers (dist branch).
+
+    Re-fetches all issues from the provider, checks which keys are already
+    indexed in Chroma, and adds only the new ones.
+    """
+    print(f"[IncrementalIndex] [{provider.name}] 拉取全量工单...")
+    vs = VectorStore()
+    try:
+        issues = provider.fetch_all()
+    except Exception as e:
+        print(f"[IncrementalIndex] [{provider.name}] 拉取失败: {e}")
+        return 0
+
+    to_add = [i for i in issues if not vs.get_issue_by_key(i.key)]
+    if not to_add:
+        print(f"[IncrementalIndex] [{provider.name}] 所有工单均已入库")
+        return 0
+
+    print(f"[IncrementalIndex] [{provider.name}] 补充写入 {len(to_add)} 条: "
+          f"{[i.key for i in to_add[:5]]}")
+    if not dry_run:
+        vs.batch_add_generic_issues(to_add)
+        print(f"[IncrementalIndex] [{provider.name}] 完成")
+    else:
+        print(f"[IncrementalIndex] [{provider.name}] dry-run，跳过实际写入")
+    return len(to_add)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=2, help="拉取最近 N 天的工单（默认 2）")
     parser.add_argument("--project", type=str, default=None, help="指定单个项目 key（默认遍历所有 allowed_project_keys）")
     parser.add_argument("--dry-run", action="store_true", help="只打印，不写入 Chroma")
     args = parser.parse_args()
+
+    # If a non-Jira provider is configured, use the generic path
+    try:
+        from config.loader import cfg as _cfg
+        _ds_type = (_cfg("data_source") or {}).get("type", "jira")
+        if _ds_type != "jira":
+            from providers.factory import get_active_provider as _get_prov
+            _prov = _get_prov()
+            if _prov:
+                n = run_for_provider(_prov, dry_run=args.dry_run)
+                print(f"[IncrementalIndex] 总计新增 {n} 条")
+                sys.exit(0)
+    except Exception:
+        pass
+
     n = run(days=args.days, project_override=args.project, dry_run=args.dry_run)
     print(f"[IncrementalIndex] 总计新增 {n} 条")
