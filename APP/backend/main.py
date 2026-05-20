@@ -87,12 +87,7 @@ try:
 except ImportError:
     agents_router = None
     _agents_router_available = False
-try:
-    from api.jobmaster_router import router as jobmaster_router
-    _jobmaster_router_available = True
-except ImportError:
-    jobmaster_router = None
-    _jobmaster_router_available = False
+_jobmaster_router_available = False
 from services.pm_scheduler import start_pm_scheduler, get_pm_scheduler
 from services.pm_collaboration_service import get_pm_service
 
@@ -5803,7 +5798,6 @@ def resolve_default_llm_runtime() -> Dict[str, str]:
 LLM_FEATURE_ROUTING_KEY = "llm_feature_routing"
 
 SYSTEM_LLM_FEATURES = [
-    {"id": "darwin_eval", "name": "Darwin 进化评估"},
     {"id": "req_analysis", "name": "需求分析"},
     {"id": "spec_gen", "name": "Spec/PRD 生成"},
     {"id": "competitive", "name": "竞品搜索分析"},
@@ -6625,12 +6619,7 @@ try:
 except Exception as _hbe:
     import logging as _hbl
     _hbl.getLogger(__name__).warning(f"hook_bridge_router 加载失败: {_hbe}")
-if _jobmaster_router_available:
-    app.include_router(jobmaster_router)
-
 # RUN_BACKGROUND_JOBS=1 时才在本进程内启调度器/自动化轮询。
-# 多 worker 模式下，调度由独立 daemon（scripts/local_jobmaster_daemon.py）负责，
-# API workers 不设此变量，避免 N 个 worker 重复触发 cron 和竞争写入。
 _RUN_BG = os.environ.get("RUN_BACKGROUND_JOBS") == "1"
 
 # 启动PM调度器（如果启用，且在后台任务进程中）
@@ -6807,44 +6796,6 @@ if _RUN_BG and ENABLE_SCHEDULER:
 
         register_task_handler("reply_training", _task_reply_training)
 
-        _JM_PY = "/Volumes/MacMini/opt/miniconda3/envs/antigravity/bin/python3.12"
-        _JM_SCRIPT = str(Path(__file__).parent / "scripts" / "jobmaster_agent.py")
-        _JM_CWD = str(Path(__file__).parent)
-
-        def _run_jobmaster(mode: str):
-            import subprocess
-            from services.feishu_notifier import get_notifier
-            try:
-                result = subprocess.run(
-                    [_JM_PY, _JM_SCRIPT, "--mode", mode],
-                    capture_output=True, text=True,
-                    timeout=300, cwd=_JM_CWD,
-                )
-                if result.returncode != 0:
-                    get_notifier().send_message(f"❌ JobMaster[{mode}] 失败\n{result.stderr[:400]}")
-                    logger.error(f"[Scheduler] JobMaster[{mode}] failed: {result.stderr[:300]}")
-                else:
-                    logger.info(f"[Scheduler] JobMaster[{mode}] done")
-            except Exception as exc:
-                logger.error(f"[Scheduler] JobMaster[{mode}] exception: {exc}")
-                try:
-                    from services.feishu_notifier import get_notifier as _gn
-                    _gn().send_message(f"❌ JobMaster[{mode}] 启动异常: {exc}")
-                except Exception:
-                    pass
-
-        def _task_jobmaster_daily(**kwargs):
-            _run_jobmaster("daily")
-
-        def _task_jobmaster_monitor(**kwargs):
-            _run_jobmaster("monitor")
-
-        def _task_jobmaster_heartbeat(**kwargs):
-            _run_jobmaster("heartbeat")
-
-        register_task_handler("jobmaster_daily", _task_jobmaster_daily)
-        register_task_handler("jobmaster_monitor", _task_jobmaster_monitor)
-        register_task_handler("jobmaster_heartbeat", _task_jobmaster_heartbeat)
 
         def _task_daily_summary(**kwargs):
             from datetime import date as _date
@@ -7088,14 +7039,12 @@ except Exception as _vi_err:
 try:
     from agents.registry import AgentRegistry as _AgentRegistry
     from agents.reply_agent import ReplyAgent
-    from agents.darwin_agent import DarwinAgent
-    from agents.kb_fact_agent import KbFactAgent
     from agents.adopted_agent import AdoptedAgent
     from agents.competitor_agent import CompetitorAgent
     from agents.handover_suggest_agent import HandoverSuggestAgent
 
     _reg = _AgentRegistry.get_instance()
-    for _agent_cls in [DarwinAgent, KbFactAgent, AdoptedAgent, CompetitorAgent]:
+    for _agent_cls in [AdoptedAgent, CompetitorAgent]:
         try:
             _reg.register(_agent_cls())
         except Exception as _ae:
