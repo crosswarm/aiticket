@@ -1,14 +1,13 @@
 gates:
   completeness:
     enabled: true
+    scope_filter: []
+    agent: kb_fact
     auto_inquiry_max_per_ticket: 2
     llm_provider: local
-    scope_filter:
-      projects: ["流程中心", "消息中心"]
-      customer_problem_types: ["bug", "客开", "需求问题", "实施问题", "数据问题"]
-
   classification:
-    enabled: false
+    enabled: true
+    agent: darwin
     auto_move_threshold: 0.92
     suspect_label_threshold: 0.70
     rollback_pause_rate: 0.05

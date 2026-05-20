@@ -25,6 +25,10 @@ _lock = threading.Lock()
 _debounce: dict[str, float] = {}
 _DEBOUNCE_SEC = 60
 
+# simple TTL cache for get_recent_decision
+_recent_decision_cache: dict[str, tuple[float, dict]] = {}  # issue_key -> (timestamp, result)
+_RECENT_DECISION_TTL = 300  # 5 minutes
+
 _ALL_ACTIONS = [
     "auto_returned",
     "auto_moved",
@@ -102,6 +106,8 @@ def log_gate_decision(
     operation_steps: list = None,
     actor: str = "system",
     force: bool = False,
+    blocked_by: list = None,
+    reply_gateway: dict = None,
 ) -> bool:
     """
     追加一条 gate 决策记录。同一 issue_key 在 60 秒内仅记一次，防止重试重复。
@@ -142,6 +148,7 @@ def log_gate_decision(
             "reply_summary": (reply_summary or "")[:80],
             "operation_steps": operation_steps if operation_steps is not None else [],
             "actor": actor or "system",
+            "reply_gateway": reply_gateway or {},
         }
         try:
             os.makedirs(os.path.dirname(_JSONL_PATH), exist_ok=True)
@@ -414,7 +421,13 @@ def get_recent_decision(issue_key: str) -> dict | None:
     """
     返回该 issue_key 的最近一条决策记录，或 None。
     最多扫描最后 10000 行（性能保护），用于回滚场景。
+    结果缓存 300 秒（TTL），避免高频看板轮询重复扫描。
     """
+    now = time.monotonic()
+    cached = _recent_decision_cache.get(issue_key)
+    if cached and (now - cached[0]) < _RECENT_DECISION_TTL:
+        return cached[1]
+
     if not _JSONL_PATH_obj.exists():
         return None
 
@@ -443,4 +456,37 @@ def get_recent_decision(issue_key: str) -> dict | None:
         print(f"[GateDecisionLog] get_recent_decision failed: {exc}")
         return None
 
+    _recent_decision_cache[issue_key] = (now, latest)
     return latest
+
+
+def get_gate_summary(issue_key: str) -> dict | None:
+    """Returns compact gate verdicts for board list mini-badge display."""
+    record = get_recent_decision(issue_key)
+    if not record:
+        return None
+    rg = record.get("reply_gateway", {})
+    gates = rg.get("gates", {})
+    if not gates:
+        # backward compat: use old gate_decisions field
+        gd = record.get("gate_decisions", {})
+        if not gd:
+            return None
+        return {
+            "G1": "pass" if gd.get("completeness") == "passed" else ("fail" if gd.get("completeness") == "blocked" else "skipped"),
+            "G2": "pass" if gd.get("classification") == "passed" else ("fail" if gd.get("classification") == "blocked" else "skipped"),
+            "G3": "pass" if gd.get("reuse") == "passed" else "skipped",
+            "G4": "pass" if gd.get("specificity") == "passed" else "skipped",
+            "G5": "pass" if gd.get("supervisor") == "passed" else ("fail" if gd.get("supervisor") == "blocked" else "skipped"),
+            "final_action": record.get("final_action", ""),
+        }
+    return {
+        "G1": gates.get("G1_completeness", {}).get("verdict", "skipped"),
+        "G2": gates.get("G2_classification", {}).get("verdict", "skipped"),
+        "G3": gates.get("G3_reuse", {}).get("verdict", "skipped"),
+        "G4": gates.get("G4_specificity", {}).get("verdict", "skipped"),
+        "G5": gates.get("G5_supervisor", {}).get("verdict", "skipped"),
+        "final_action": rg.get("final_action", record.get("final_action", "")),
+        "composite_confidence": rg.get("auto_decision", {}).get("composite_confidence"),
+        "display_cards": rg.get("display_cards", []),
+    }

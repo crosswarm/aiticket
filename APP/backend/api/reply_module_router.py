@@ -58,6 +58,7 @@ def generate_by_module(req: GenerateByModuleRequest, raw_request: Request, _quot
             "fallback_used": inferred_module is None,
             "cached": result.get("cached", False),
             "word_count": result.get("word_count", 0),
+            "reply_gateway": result.get("reply_gateway"),
         }
     except HTTPException:
         raise

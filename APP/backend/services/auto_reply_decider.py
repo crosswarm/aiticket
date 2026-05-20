@@ -32,6 +32,12 @@ class AutoReplyDecision:
     action: str  # "auto_reply" | "auto_reply_low_risk" | "pending_batch_approve" | "manual_with_steps" | "manual_review" | "human_required"
     product_type: str
     is_key_customer: bool
+    blocked_by: list = None  # hard gates that blocked auto_reply, for observability
+    reply_gateway_version: str = ""
+
+    def __post_init__(self):
+        if self.blocked_by is None:
+            self.blocked_by = []
 
 
 def decide(
@@ -41,10 +47,50 @@ def decide(
     *,
     reuse_matched: bool = False,
     risk_flags: list = None,
+    specificity_level: str = None,
+    reply_gateway: dict = None,  # NEW: v2 gateway result
 ) -> AutoReplyDecision:
     """
     综合 supervisor_score、产品优先级、客户重要度，决定是否自动回复。
     """
+    gateway_version = ""
+    if reply_gateway:
+        gateway_version = reply_gateway.get("version", "v2")
+        gates = reply_gateway.get("gates", {})
+        # blocked_by: any gate with verdict=fail
+        blocked = [
+            name for name, g in gates.items()
+            if isinstance(g, dict) and g.get("verdict") == "fail"
+        ]
+        # override supervisor_score from G5 if not provided
+        if supervisor_score is None:
+            supervisor_score = gates.get("G5_supervisor", {}).get("score")
+        # override risk_flags from G5
+        if not risk_flags:
+            risk_flags = gates.get("G5_supervisor", {}).get("risk_flags", [])
+        # override specificity_level from G4
+        if not specificity_level:
+            specificity_level = gates.get("G4_specificity", {}).get("level")
+        # override reuse_matched from G3
+        if not reuse_matched:
+            g3 = gates.get("G3_reuse", {})
+            reuse_matched = g3.get("composite_score", 0) >= 0.85
+        # G2 fail -> force needs_decision immediately
+        g2 = gates.get("G2_classification", {})
+        if g2.get("verdict") == "fail":
+            return AutoReplyDecision(
+                auto_reply=False,
+                composite_score=None,
+                threshold=None,
+                action="needs_decision",
+                product_type=product_type,
+                is_key_customer=is_key_customer,
+                blocked_by=blocked,
+                reply_gateway_version=gateway_version,
+            )
+    else:
+        blocked = []
+
     if supervisor_score is None:
         return AutoReplyDecision(
             auto_reply=False,
@@ -120,6 +166,23 @@ def decide(
         else:
             action = "auto_reply"
 
+    # 硬门：非 VIP low-risk 旁路的 auto_reply 必须同时满足所有条件
+    blocked_by: list = list(blocked)  # start with any reply_gateway gate failures
+    if action == "auto_reply":
+        hg = cfg.get("hard_gates", {})
+        sup_min = hg.get("supervisor_score_min", 0.85)
+        if supervisor_score < sup_min:
+            blocked_by.append(f"supervisor_score={supervisor_score:.2f}<{sup_min}")
+        if hg.get("require_no_risk_flags", True) and (risk_flags or []):
+            blocked_by.append(f"risk_flags={risk_flags}")
+        if hg.get("require_reuse_match", True) and not reuse_matched:
+            blocked_by.append("reuse_skipped")
+        if hg.get("require_specificity_high", True) and specificity_level != "high":
+            blocked_by.append(f"specificity={specificity_level}")
+        if blocked_by:
+            action = "pending_batch_approve"
+            auto_reply = False
+
     return AutoReplyDecision(
         auto_reply=auto_reply,
         composite_score=composite,
@@ -127,6 +190,8 @@ def decide(
         action=action,
         product_type=product_type,
         is_key_customer=is_key_customer,
+        blocked_by=blocked_by,
+        reply_gateway_version=gateway_version,
     )
 
 

@@ -102,6 +102,84 @@ def _active_pending_records() -> list[dict]:
     return active
 
 
+def _filter_by_jira_status(records: list[dict], jira_client=None,
+                           assignee_filter: set | None = None) -> list[dict]:
+    """Remove records whose Jira status is not in _ACTIVE_STATUS and write auto-cleaned tombstones.
+    Optionally filter to records whose Jira assignee is in assignee_filter (no tombstone written).
+
+    Fails open: if Jira is unreachable, returns the original records unchanged.
+    Uses a 60-second in-memory cache to avoid hammering Jira on repeated calls.
+    Pass jira_client (a JiraService instance with valid session) for request-scoped auth;
+    falls back to the module-level singleton if omitted.
+    """
+    if not records:
+        return records
+
+    client = jira_client or _jira_svc.jira_service
+
+    now = time.time()
+    to_fetch: list[str] = []
+    # meta_map: issue_key → {"status": str, "assignee": str}
+    meta_map: dict[str, dict] = {}
+
+    for rec in records:
+        key = rec.get("issue_key", "")
+        if not key:
+            continue
+        cached = _JIRA_STATUS_CACHE.get(key)
+        if cached and cached[1] > now:
+            meta_map[key] = {"status": cached[0], "assignee": cached[2] if len(cached) > 2 else ""}
+        else:
+            to_fetch.append(key)
+
+    if to_fetch:
+        for i in range(0, len(to_fetch), 100):
+            chunk = to_fetch[i:i + 100]
+            jql = f"key in ({','.join(chunk)})"
+            try:
+                result = client.search_issues_rest_api(
+                    jql, max_results=len(chunk), fields="status,assignee"
+                )
+                if "error" in result:
+                    print(f"[pending_approval_store] jira status fetch error: {result['error']}, skip filter")
+                    return records
+                for issue in result.get("issues", []):
+                    k = issue.get("key", "")
+                    fields = issue.get("fields") or {}
+                    status = (fields.get("status") or {}).get("name", "")
+                    ass = fields.get("assignee") or {}
+                    assignee_name = ass.get("name") or ass.get("displayName") or ""
+                    if k:
+                        meta_map[k] = {"status": status, "assignee": assignee_name}
+                        _JIRA_STATUS_CACHE[k] = (status, now + _CACHE_TTL_SEC, assignee_name)
+            except Exception as exc:
+                print(f"[pending_approval_store] jira status fetch exception, skip filter: {exc}")
+                return records
+
+    active = []
+    for rec in records:
+        key = rec.get("issue_key", "")
+        meta = meta_map.get(key, {})
+        status = meta.get("status", "")
+        if status and status not in _ACTIVE_STATUS:
+            with _lock:
+                _append_record({
+                    "type": "rejected",
+                    "approval_id": rec["approval_id"],
+                    "ts": _now_iso(),
+                    "approver": "system",
+                    "reason": f"auto_cleaned: jira_status={status}",
+                })
+            print(f"[pending_approval_store] auto-cleaned {key} (status={status})")
+            continue
+        if assignee_filter:
+            rec_assignee = meta.get("assignee", "")
+            if rec_assignee and rec_assignee not in assignee_filter:
+                continue
+        active.append(rec)
+    return active
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -160,15 +238,28 @@ def add(
         return new_id
 
 
-def list_pending(limit: int = 200, offset: int = 0) -> list[dict]:
+def list_pending(limit: int = 200, offset: int = 0, jira_client=None,
+                 project_key: str = "",
+                 assignee_filter: set | None = None) -> list[dict]:
     """
     Return pending entries not yet approved or rejected, newest-first.
 
     Each entry exposes: approval_id, issue_key, issue_summary, customer_name,
     is_key_customer, reply_summary, composite_score, threshold,
     product_priority, issue_type_confirmed, created_at.
+
+    Pass project_key to filter by project prefix (e.g. "LCZX" keeps only LCZX-* tickets).
+    Pass assignee_filter (set of names) to show only tickets belonging to those assignees.
+    Pass jira_client (a JiraService instance with valid request session) to enable
+    real-time Jira status + assignee filtering; omit to skip (faster, no network call).
     """
     active = _active_pending_records()
+    if project_key:
+        prefix = f"{project_key}-"
+        active = [r for r in active if (r.get("issue_key") or "").startswith(prefix)]
+    if jira_client is not None:
+        active = _filter_by_jira_status(active, jira_client=jira_client,
+                                        assignee_filter=assignee_filter)
     page = active[offset: offset + limit]
     keys = (
         "approval_id", "issue_key", "issue_summary", "customer_name",
