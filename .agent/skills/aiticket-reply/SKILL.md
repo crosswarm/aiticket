@@ -172,6 +172,26 @@ curl -s "$BASE_URL/api/reply/module-coverage?module=流程中心"
 | `suggested_issue_type` | 推荐问题类型（展示给用户） |
 | `kb_sources` / `kb_refs` | KB 引用列表（展示标题；内容供 Claude 参考） |
 | `module_used` / `fallback_used` | 模块信息（展示给用户） |
+| `reply_gateway.gates.G1_completeness.verdict` | G1 信息完整性判断（pass/warn/fail/skipped） |
+| `reply_gateway.gates.G2_classification.verdict` | G2 项目分类判断；fail 时含 transfer_to/transferee |
+| `reply_gateway.gates.G3_reuse.reuse_strategy` | G3 历史复用策略（direct/reference/skip） |
+| `reply_gateway.gates.G4_specificity.level` | G4 回复具体度（high/medium/low/none） |
+| `reply_gateway.gates.G5_supervisor.verdict` | G5 监督审计判断；score 为 0-1 浮点 |
+| `reply_gateway.display_cards` | 展示卡片列表（含 badge_color/badge_text/message/action_hint） |
+| `reply_gateway.final_action` | 最终操作建议（normal_reply/handover/return_to_support/inquiry） |
+| `reply_gateway.extra_operations` | 附加操作列表（如 move_jira/return_to_support 等） |
+| `reply_gateway.auto_decision.composite_confidence` | 综合置信度（0-1 浮点，展示时 ×100 取整加 %） |
+| `reply_gateway.auto_decision.action` | 智能决策动作（auto_replied_normal/needs_decision/veto 等） |
+| `reply_gateway.auto_decision.blocked_by` | 阻断自动回复的 gate 列表（verdict=fail 的 gate 名称） |
+
+**5段网关渲染示例**（用户问「这工单要不要回？」时的标准输出格式）:
+```
+G1 信息完整 [pass] · G2 项目分类 [warn, 置信度 50%] · G3 历史复用 [reference] · G4 回复具体 [high, 3条KB] · G5 监督审计 [pass, 87%]
+综合置信度 62% · 建议人工 review（blocked_by: []）
+```
+- final_action = handover → 输出：「⚠️ 建议移交至 KKZC，转交 sunaoodi（置信度 X%）」
+- final_action = return_to_support → 输出：「ℹ️ 信息不足，建议先向用户追问：{G1.inquiry_draft}」
+- final_action = normal_reply → 正常展示回复内容
 
 **如果返回 `status: "warning"`**（无 AI 分析），跳过此步直接进入步骤 3。
 

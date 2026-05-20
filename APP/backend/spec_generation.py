@@ -10,7 +10,7 @@ from llm_service import LLMService
 from vector_store import VectorStore
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.normpath(os.path.join(BASE_DIR, "../.."))
+PROJECT_ROOT = os.path.normpath(os.path.join(BASE_DIR, "../../../.."))
 
 SPEC_DIR = os.path.join(PROJECT_ROOT, "design/spec")
 
