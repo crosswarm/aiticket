@@ -528,5 +528,50 @@ def main():
     print("  3. 验证：python scripts/validate_demo_e2e.py")
 
 
+def seed_all(force: bool = False) -> dict:
+    """Backend-callable wrapper: create all demo files. Returns summary dict."""
+    _ensure_deps()
+    ensure_dirs()
+    generate_tickets_xlsx(force)
+    generate_kb_txt(force)
+    generate_kb_pdf(force)
+    generate_kb_docx(force)
+    generate_kb_xlsx(force)
+    generate_kb_readme(force)
+    xlsx = ROOT / "data/imports/demo_hr_tickets.xlsx"
+    return {
+        "xlsx_path": str(xlsx),
+        "issues_count": 16,
+        "kb_files": [
+            str(ROOT / "KB/hr/01_attendance_policy.txt"),
+            str(ROOT / "KB/hr/02_leave_application_guide.md"),
+            str(ROOT / "KB/hr/03_onboarding_checklist.docx"),
+            str(ROOT / "KB/hr/04_salary_components.xlsx"),
+        ],
+    }
+
+
+def clear_all() -> dict:
+    """Backend-callable wrapper: remove all demo files. Returns summary dict."""
+    import shutil
+    removed = []
+    errors = []
+    xlsx = ROOT / "data/imports/demo_hr_tickets.xlsx"
+    kb_hr = ROOT / "KB/hr"
+    if xlsx.exists():
+        try:
+            xlsx.unlink()
+            removed.append(str(xlsx))
+        except Exception as e:
+            errors.append(f"xlsx: {e}")
+    if kb_hr.exists():
+        try:
+            shutil.rmtree(str(kb_hr))
+            removed.append(str(kb_hr))
+        except Exception as e:
+            errors.append(f"KB/hr: {e}")
+    return {"removed": removed, "errors": errors}
+
+
 if __name__ == "__main__":
     main()

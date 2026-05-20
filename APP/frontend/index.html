@@ -282,6 +282,17 @@
 
             <p class="text-xs text-slate-500 mt-2">配置仅存储在本地浏览器中。</p>
 
+            <!-- Demo Data Section (admin only) -->
+            <div id="demoDataSection" class="hidden mt-4 border-t pt-4">
+                <label class="block text-sm font-bold mb-2">演示数据</label>
+                <div id="demoDataStatusText" class="text-sm text-slate-500 mb-3">加载中...</div>
+                <button id="clearDemoDataBtn" onclick="clearDemoData()" disabled
+                    class="px-4 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-sm hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed transition">
+                    一键清空演示数据
+                </button>
+                <p class="text-xs text-slate-400 mt-2">清空后将删除 HR 工单、知识库文件并回退到默认配置。此操作不可撤销。</p>
+            </div>
+
             <div class="flex justify-end gap-3 mt-6">
                 <button onclick="closeSettings()" class="px-4 py-2 text-slate-500 hover:text-slate-700">取消</button>
                 <button onclick="saveSettings()"
@@ -513,6 +524,63 @@
 
             handleProviderChange(false); // Update UI state without overwriting inputs from presets
             document.getElementById('settingsModal').classList.remove('hidden');
+            loadDemoStatus();
+        }
+
+        async function loadDemoStatus() {
+            const section = document.getElementById('demoDataSection');
+            const statusText = document.getElementById('demoDataStatusText');
+            const clearBtn = document.getElementById('clearDemoDataBtn');
+            try {
+                const resp = await fetch('/api/admin/demo-status');
+                if (!resp.ok) return; // not admin or endpoint missing
+                section.classList.remove('hidden');
+                const data = await resp.json();
+                const hasFiles = data.files_present && (data.files_present.xlsx || data.files_present.kb_hr);
+                if (data.seeded && hasFiles) {
+                    statusText.textContent = '已安装演示数据（HR 工单 + 知识库）';
+                    statusText.className = 'text-sm text-green-600 mb-3';
+                    clearBtn.disabled = false;
+                } else if (data.seeded && !hasFiles) {
+                    statusText.textContent = '演示数据已清空';
+                    statusText.className = 'text-sm text-slate-400 mb-3';
+                    clearBtn.disabled = true;
+                } else {
+                    statusText.textContent = '未安装演示数据';
+                    statusText.className = 'text-sm text-slate-400 mb-3';
+                    clearBtn.disabled = true;
+                }
+            } catch (e) {
+                // Non-admin users won't see this section
+            }
+        }
+
+        async function clearDemoData() {
+            if (!confirm('确认清空所有演示数据？\n\n将删除 HR 工单文件、知识库文件，并回退 deployment.yaml。此操作不可撤销。')) return;
+            const btn = document.getElementById('clearDemoDataBtn');
+            const statusText = document.getElementById('demoDataStatusText');
+            btn.disabled = true;
+            btn.textContent = '清空中...';
+            try {
+                const resp = await fetch('/api/admin/clear-demo-data', { method: 'POST' });
+                const data = await resp.json();
+                if (resp.ok && data.success) {
+                    statusText.textContent = '演示数据已清空，知识库索引重置中...';
+                    statusText.className = 'text-sm text-slate-400 mb-3';
+                    btn.textContent = '一键清空演示数据';
+                    setTimeout(loadDemoStatus, 2000);
+                } else {
+                    statusText.textContent = '清空失败：' + (data.errors || []).join('; ');
+                    statusText.className = 'text-sm text-red-500 mb-3';
+                    btn.disabled = false;
+                    btn.textContent = '一键清空演示数据';
+                }
+            } catch (e) {
+                statusText.textContent = '网络错误，请重试';
+                statusText.className = 'text-sm text-red-500 mb-3';
+                btn.disabled = false;
+                btn.textContent = '一键清空演示数据';
+            }
         }
 
         function populateSettingsUI(config) {

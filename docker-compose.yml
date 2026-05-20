@@ -10,7 +10,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./APP/backend/config/deployment.yaml:/app/config/deployment.yaml:ro
+      - ./APP/backend/config/deployment.yaml:/app/config/deployment.yaml
       - aiticket-data:/data
       - aiticket-logs:/app/logs
     healthcheck:

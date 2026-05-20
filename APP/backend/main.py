@@ -1231,6 +1231,88 @@ def reset_demo(request: Request):
         return {"status": "error", "message": str(e)}
 
 
+@app.get("/api/admin/demo-status")
+def get_demo_status(request: Request):
+    """Demo 数据安装状态查询（admin）。bootstrap 流程和设置页均依赖此接口。"""
+    require_admin_user(request)
+    from demo_manager import get_demo_status as _get_status
+    return _get_status()
+
+
+class _InstallDemoRequest(BaseModel):
+    install: bool = True
+
+
+@app.post("/api/admin/install-demo-data")
+def install_demo_data(payload: _InstallDemoRequest, request: Request, background_tasks: BackgroundTasks):
+    """首次安装演示数据（admin，一次性）。install=false 仅跳过提示，不创建文件。"""
+    require_admin_user(request)
+    import demo_manager as _dm
+    status = _dm.get_demo_status()
+    if status["seeded"]:
+        raise HTTPException(status_code=409, detail="Demo 数据已安装，不可重复安装")
+
+    if not payload.install:
+        # 用户选择跳过，记录已提示，不创建文件
+        _dm.DEMO_DISMISSED_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _dm.DEMO_DISMISSED_MARKER.touch()
+        _dm.DEMO_SEEDED_MARKER.touch()
+        return {"success": True, "install": False, "message": "已跳过演示数据安装"}
+
+    try:
+        result = _dm.seed_all(force=False)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"演示数据生成失败: {exc}")
+
+    # 触发 KB 重索引（后台执行，不阻塞响应）
+    def _sync_kb():
+        try:
+            kb_runtime_service.sync(force_refresh=True)
+        except Exception:
+            pass
+
+    background_tasks.add_task(_sync_kb)
+
+    # 清除 Excel board 缓存，强制重新读取
+    import glob as _glob
+    for _cp in _glob.glob(os.path.join(_CODE_DIR, "data", "cache", "*excel*")):
+        try:
+            os.remove(_cp)
+        except Exception:
+            pass
+
+    # 写入已安装标记
+    _dm.DEMO_SEEDED_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    _dm.DEMO_SEEDED_MARKER.touch()
+
+    return {
+        "success": True,
+        "install": True,
+        "issues_count": result["issues_count"],
+        "kb_files": len(result.get("kb_files", [])),
+        "message": f"已安装 {result['issues_count']} 条 HR 演示工单，知识库正在后台索引中",
+    }
+
+
+@app.post("/api/admin/clear-demo-data")
+def clear_demo_data(request: Request, background_tasks: BackgroundTasks):
+    """清空演示数据（admin，随时可用）。删除文件、回退配置、清理缓存。"""
+    require_admin_user(request)
+    from demo_manager import clear_all as _clear_all
+    result = _clear_all()
+
+    # 重建空的 chroma KB collection（后台执行）
+    def _reset_kb():
+        try:
+            kb_runtime_service.sync(force_refresh=True)
+        except Exception:
+            pass
+
+    background_tasks.add_task(_reset_kb)
+
+    return result
+
+
 @app.get("/api/settings/profile")
 def get_profile_settings(request: Request):
     return {"user": require_authenticated_user(request)}

@@ -45,32 +45,19 @@ open http://localhost:18000
 
 ```bash
 git clone https://github.com/crosswarm/aiticket.git && cd aiticket
+cp .env.example .env
+# 编辑 .env：填写至少一个 LLM API Key（Jira 相关字段留空）
 
-# 生成 HR 演示工单 (16 条) + 知识库文件 (txt/pdf/docx/xlsx)
-python scripts/seed_demo_hr.py
-
-# 使用 demo 配置启动（Excel 数据源，无需 Jira）
-cp samples/deployment.demo-hr.yaml config/deployment.yaml
-IS_DEMO_INSTANCE=1 docker compose up -d
-
-# 验证 16 条工单已加载
-curl http://localhost:18000/api/board/stats
-# → {"issues_count": 16, ...}
-
-# 验证 KB 知识库检索正常
-curl "http://localhost:18000/api/kb/search?q=年假天数"
-# → 命中 02_leave_application_guide
-
-# 验证智能回复能引用 KB 内容
-curl -X POST http://localhost:18000/api/board/generate-reply \
-  -H "Content-Type: application/json" -d '{"issue_key":"excel:HR-001"}'
-# → 回复内容包含「迟到」「扣款」等考勤知识库关键词
-
-open http://localhost:18000   # 打开看板，看到 HR 工单卡片
+docker compose up -d
+open http://localhost:18000
+# 1. 填写管理员用户名 + 密码，点击"创建管理员账号"
+# 2. 弹出"是否安装 HR 演示数据"勾选框 → 保持勾选 → 继续
+# 3. 看板自动加载 16 条 HR 工单，KB 索引后台运行（约 30 秒）
 ```
 
-> **演示数据覆盖**：考勤 / 请假 / 入职 / 薪酬四个模块，KB 知识库含完整制度文档。
-> 体验完后只需替换 `config/deployment.yaml` 为真实 Jira 配置即可正式使用。
+> **演示数据覆盖**：考勤 / 请假 / 入职 / 薪酬四个模块，KB 知识库含完整制度文档。  
+> 体验完后在**系统设置 → 演示数据 → 一键清空**，然后配置真实数据源即可正式使用。  
+> 详见 [演示数据管理手册](docs/demo-data-management.md)。
 
 ---
 

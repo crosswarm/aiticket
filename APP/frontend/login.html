@@ -122,6 +122,53 @@
         <p class="text-center text-xs text-slate-400 mt-6">
             首次使用？请联系管理员创建账号
         </p>
+
+        <!-- Bootstrap form (first-time admin setup, hidden by default) -->
+        <form id="bootstrap-form" style="display:none" onsubmit="handleBootstrap(event)">
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-slate-700 mb-1.5">管理员用户名</label>
+                <input type="text" id="bs-username" required placeholder="admin"
+                    class="login-input w-full px-3.5 py-2.5 border border-slate-200 rounded-lg text-sm bg-white text-slate-800 placeholder-slate-400">
+            </div>
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-slate-700 mb-1.5">密码</label>
+                <input type="password" id="bs-password" required placeholder="至少 8 位"
+                    class="login-input w-full px-3.5 py-2.5 border border-slate-200 rounded-lg text-sm bg-white text-slate-800 placeholder-slate-400">
+            </div>
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-slate-700 mb-1.5">确认密码</label>
+                <input type="password" id="bs-confirm" required placeholder="再次输入密码"
+                    class="login-input w-full px-3.5 py-2.5 border border-slate-200 rounded-lg text-sm bg-white text-slate-800 placeholder-slate-400">
+            </div>
+            <button type="submit" id="bootstrap-btn"
+                class="login-btn w-full py-2.5 text-white font-medium rounded-lg text-sm">
+                创建管理员账号
+            </button>
+        </form>
+
+        <!-- Demo data install prompt (shown after bootstrap, hidden by default) -->
+        <div id="demo-prompt" style="display:none">
+            <div class="mb-4 p-4 bg-indigo-50 rounded-xl border border-indigo-100 text-sm text-slate-700">
+                <p class="font-medium text-slate-800 mb-2">包含以下演示内容：</p>
+                <ul class="list-disc list-inside space-y-1 text-slate-600">
+                    <li>16 条 HR 工单（考勤 / 请假 / 入职 / 薪酬）</li>
+                    <li>4 个知识库文档（制度 / 流程 / 薪酬说明）</li>
+                    <li>开箱即用的智能回复体验</li>
+                </ul>
+            </div>
+            <div class="mb-5 flex items-center">
+                <input type="checkbox" id="demo-install-check" checked
+                    class="w-4 h-4 text-indigo-600 border-slate-300 rounded focus:ring-indigo-500 cursor-pointer">
+                <label for="demo-install-check" class="ml-2 text-sm text-slate-700 cursor-pointer font-medium">
+                    安装 HR 演示数据
+                </label>
+            </div>
+            <div id="demo-install-status" style="display:none" class="mb-3 text-sm text-indigo-600 text-center"></div>
+            <button id="demo-confirm-btn" onclick="handleDemoInstall()"
+                class="login-btn w-full py-2.5 text-white font-medium rounded-lg text-sm">
+                继续
+            </button>
+        </div>
     </div>
 
     <script>
@@ -183,11 +230,123 @@
                 var resp = await fetch(API_BASE+'/api/auth/me');
                 if (resp.ok) {
                     window.location.href = API_BASE + '/board.html';
+                } else {
+                    // Check if bootstrap is required (first admin setup)
+                    var bsResp = await fetch(API_BASE+'/api/auth/bootstrap-status');
+                    if (bsResp.ok) {
+                        var bsData = await bsResp.json();
+                        if (bsData.bootstrap_required) {
+                            showBootstrapForm();
+                        }
+                    }
                 }
             } catch (e) {
                 // Not logged in, stay on login page
             }
         })();
+
+        function showBootstrapForm() {
+            document.getElementById('login-form').style.display = 'none';
+            document.getElementById('bootstrap-form').style.display = 'block';
+            document.querySelector('h1').textContent = 'AI 工单系统 — 初始化设置';
+            document.querySelector('p.text-sm.text-slate-500').textContent = '首次使用，请创建管理员账号';
+        }
+
+        async function handleBootstrap(e) {
+            e.preventDefault();
+            var btn = document.getElementById('bootstrap-btn');
+            var username = document.getElementById('bs-username').value.trim();
+            var password = document.getElementById('bs-password').value;
+            var confirm = document.getElementById('bs-confirm').value;
+            var errorEl = document.getElementById('login-error');
+
+            if (password !== confirm) {
+                errorEl.textContent = '两次输入的密码不一致';
+                errorEl.classList.remove('hidden');
+                return;
+            }
+            errorEl.classList.add('hidden');
+            btn.disabled = true;
+            btn.textContent = '创建中...';
+
+            try {
+                var resp = await fetch(API_BASE+'/api/auth/bootstrap', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({username: username, password: password}),
+                });
+                var data = await resp.json();
+                if (resp.ok && data.status === 'success') {
+                    // Check if we should show demo install prompt
+                    var dsResp = await fetch(API_BASE+'/api/admin/demo-status');
+                    if (dsResp.ok) {
+                        var dsData = await dsResp.json();
+                        if (!dsData.seeded && !dsData.prompt_dismissed) {
+                            showDemoPrompt();
+                            return;
+                        }
+                    }
+                    window.location.href = API_BASE + '/board.html';
+                } else {
+                    errorEl.textContent = data.detail || '创建失败，请重试';
+                    errorEl.classList.remove('hidden');
+                }
+            } catch (err) {
+                errorEl.textContent = '网络错误，请检查连接后重试';
+                errorEl.classList.remove('hidden');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '创建管理员账号';
+            }
+        }
+
+        function showDemoPrompt() {
+            document.getElementById('bootstrap-form').style.display = 'none';
+            document.getElementById('demo-prompt').style.display = 'block';
+            document.querySelector('h1').textContent = '是否安装演示数据？';
+            document.querySelector('p.text-sm.text-slate-500').textContent = '可帮助您快速体验系统功能';
+        }
+
+        async function handleDemoInstall() {
+            var doInstall = document.getElementById('demo-install-check').checked;
+            var btn = document.getElementById('demo-confirm-btn');
+            var statusEl = document.getElementById('demo-install-status');
+            btn.disabled = true;
+            btn.textContent = doInstall ? '安装中...' : '跳过中...';
+            if (doInstall) {
+                statusEl.textContent = '正在生成演示文件和知识库，请稍候（约 10-30 秒）...';
+                statusEl.style.display = 'block';
+            }
+            try {
+                var resp = await fetch(API_BASE+'/api/admin/install-demo-data', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({install: doInstall}),
+                });
+                var data = await resp.json();
+                if (resp.ok && data.success) {
+                    statusEl.textContent = doInstall
+                        ? ('已安装 ' + data.issues_count + ' 条演示工单，知识库索引中...')
+                        : '已跳过演示数据安装';
+                    statusEl.style.display = 'block';
+                    setTimeout(function() {
+                        window.location.href = API_BASE + '/board.html';
+                    }, 1500);
+                } else {
+                    statusEl.textContent = '操作失败：' + (data.detail || '未知错误');
+                    statusEl.style.color = '#ef4444';
+                    statusEl.style.display = 'block';
+                    btn.disabled = false;
+                    btn.textContent = doInstall ? '安装演示数据' : '跳过';
+                }
+            } catch (err) {
+                statusEl.textContent = '网络错误，请重试';
+                statusEl.style.color = '#ef4444';
+                statusEl.style.display = 'block';
+                btn.disabled = false;
+                btn.textContent = doInstall ? '安装演示数据' : '跳过';
+            }
+        }
     </script>
 </body>
 </html>
