@@ -741,8 +741,19 @@ class BoardService:
     3. 支持语义相似的建议复用，减少API调用
     """
 
-    def __init__(self, llm_service: LLMService, api_key: str = None, allow_download: bool = True):
+    def __init__(self, llm_service: LLMService, api_key: str = None, allow_download: bool = True,
+                 issue_provider=None):
         self.llm_service = llm_service
+
+        # Non-Jira provider support (dist branch).
+        # When issue_provider is None the native Jira fallback chain is used.
+        self._issue_provider = issue_provider
+        if issue_provider is not None:
+            from providers.repository import IssueRepository
+            self._issue_repo = IssueRepository()
+        else:
+            self._issue_repo = None
+        self._bg_provider_refresh_running = False
 
         # 使用绝对路径确保一致性（demo 沙箱走 DEMO_RUNTIME_DIR）
         persist_dir = os.path.join(BASE_DIR, "chroma_db")
@@ -1004,6 +1015,25 @@ class BoardService:
         优化：如果本地缓存存在且不超过5分钟，优先返回缓存，后台异步刷新Jira。
         force=True 跳过缓存，直接从Jira获取最新数据。
         """
+        # ── Non-Jira provider path (dist branch) ──────────────────────────
+        if self._issue_provider is not None:
+            if not force:
+                ci = self._issue_repo.get_cache_info(self._issue_provider.name)
+                if ci["age_sec"] < 300:
+                    cached = self._issue_repo.load(self._issue_provider.name)
+                    if cached:
+                        print(f"[BoardService] provider 快路径: {self._issue_provider.name} "
+                              f"缓存 {ci['age_sec']:.0f}s ({len(cached)}条), 后台刷新")
+                        self._background_refresh_provider()
+                        return cached, self._build_fetch_meta(
+                            data_source=f"{self._issue_provider.name}_cache_fast")
+            issues = self._issue_provider.fetch_all()
+            if issues:
+                self._issue_repo.save(self._issue_provider.name, issues)
+                print(f"[BoardService] provider 拉取: {self._issue_provider.name} {len(issues)}条")
+            return issues, self._build_fetch_meta(data_source=self._issue_provider.name)
+        # ── Jira path (unchanged below) ────────────────────────────────────
+
         self._ensure_fetch_strategy_state()
         errors: List[str] = []
         client = jira_client or jira_service
@@ -1113,6 +1143,25 @@ class BoardService:
             data_source="unavailable",
             jira_error="; ".join(errors) if errors else None,
         )
+
+    def _background_refresh_provider(self):
+        """Background refresh for non-Jira providers (dist branch)."""
+        if self._bg_provider_refresh_running:
+            return
+        self._bg_provider_refresh_running = True
+
+        def _refresh():
+            try:
+                issues = self._issue_provider.fetch_all()
+                if issues:
+                    self._issue_repo.save(self._issue_provider.name, issues)
+                    print(f"[BoardService] provider 后台刷新完成: {self._issue_provider.name} {len(issues)}条")
+            except Exception as e:
+                print(f"[BoardService] provider 后台刷新失败: {e}")
+            finally:
+                self._bg_provider_refresh_running = False
+
+        threading.Thread(target=_refresh, daemon=True).start()
 
     def _background_refresh_cache(self, jql: str, client):
         """后台线程刷新Jira缓存，不阻塞响应。"""
@@ -1887,6 +1936,14 @@ class BoardService:
 
     def _get_issue_from_cache(self, issue_key: str, jira_client: Optional[JiraService] = None) -> Optional[JiraIssue]:
         """从本地缓存获取工单信息（无需Jira连接）"""
+        # Non-Jira provider: look up via IssueRepository.
+        # GenericIssue.__getattr__ forwards .contact_name etc. to extra dict,
+        # so all existing callers continue to work without modification.
+        if self._issue_repo is not None and ":" in issue_key:
+            hit = self._issue_repo.get_by_key(issue_key)
+            if hit:
+                return hit  # type: ignore[return-value]
+
         # 先从看板数据中查找
         for col in self.board_data.values() if hasattr(self, 'board_data') else []:
             for issue_dict in col:
