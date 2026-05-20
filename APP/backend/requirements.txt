@@ -31,7 +31,7 @@ openai==2.15.0
 pandas==2.3.3
 proto-plus==1.27.0
 protobuf==5.29.5
-pyasn1==0.6.2
+pyasn1==0.6.3
 pyasn1_modules==0.4.2
 pydantic==2.12.5
 pydantic_core==2.41.5
