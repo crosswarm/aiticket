@@ -2159,7 +2159,13 @@ class JiraService:
 
     def _try_chrome_cookie_refresh(self, domain: str) -> list:
         """从 Chrome Keychain 解密 Jira session cookies（macOS only）。
-        镜像 refresh_jira_session.sh 逻辑，内联执行无需 shell。"""
+        DEPRECATED 2026-05-19: 已委派给 JiraSessionRefresher，保留 6 周作回退。"""
+        try:
+            from services.jira_session_refresher import JiraSessionRefresher
+            return JiraSessionRefresher.get_instance()._chrome_decrypt(domain)
+        except Exception:
+            pass
+        # Legacy inline fallback（保留以防 import 失败）
         import shutil, sqlite3, subprocess
         from hashlib import pbkdf2_hmac
 
@@ -2277,9 +2283,31 @@ class JiraService:
             else:
                 print("[MoveIssue] session文件超过4小时，重新构建")
 
-        # 优先从 Chrome 解密（Chrome cookies 能通过 MoveIssue.jspa web UI 认证；REST JSESSIONID 不行）
-        print("[MoveIssue] 尝试 Chrome cookie 解密（web UI 需要真实浏览器 session）...")
-        cookies_list = self._try_chrome_cookie_refresh(domain)
+        # 优先通过 JiraSessionRefresher 刷新（统一入口；Chrome 解密 > REST fallback）
+        print("[MoveIssue] 尝试 JiraSessionRefresher 刷新（web UI 需要真实浏览器 session）...")
+        try:
+            import shutil as _shutil
+            from services.jira_session_refresher import JiraSessionRefresher
+            _refresher = JiraSessionRefresher.get_instance()
+            _refresher.refresh_now()          # 写入 /tmp/jira-session.json（全局）
+            _global = "/tmp/jira-session.json"
+            if os.path.exists(_global):
+                with open(_global) as _f:
+                    _saved = _json.load(_f)
+                _fresh = _saved.get("cookies", [])
+                if _validate_cookies(_fresh):
+                    # 若 state_path 是 per-user 路径，同步一份
+                    if state_path != _global:
+                        _shutil.copy2(_global, state_path)
+                    print(f"[MoveIssue] Refresher 刷新成功 ({len(_fresh)} cookies)")
+                    return state_path
+                print("[MoveIssue] Refresher 刷新后 cookies 仍无效，继续 fallback")
+                cookies_list = _fresh
+            else:
+                cookies_list = []
+        except Exception as _re:
+            print(f"[MoveIssue] Refresher 调用异常: {_re}，回退 Chrome 解密")
+            cookies_list = self._try_chrome_cookie_refresh(domain)
 
         # Chrome 解密失败时，尝试用当前 JiraService 的 cookies 构建 session
         if not cookies_list and hasattr(self, 'cookies') and self.cookies:

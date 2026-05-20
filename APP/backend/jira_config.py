@@ -148,18 +148,38 @@ class JiraConfigParser:
         if auth_header:
             config["headers"]["Authorization"] = auth_header
 
-        # Optionally include cookies from legacy curl config
+        # Optionally include cookies: prefer runtime /tmp/jira-session.json over stale file cookies
         if include_cookies:
-            search_section = self.get_section("工单查询")
-            if search_section:
-                curl_config = self.parse_curl_command(search_section)
-                config["cookies"] = curl_config.get("cookies", {})
-                # Merge additional headers (but don't override Authorization)
-                for key, value in curl_config.get("headers", {}).items():
-                    if key.lower() not in ["content-type", "accept", "authorization"]:
-                        config["headers"][key] = value
+            runtime_cookies = self._load_runtime_cookies()
+            if runtime_cookies:
+                config["cookies"] = runtime_cookies
+            else:
+                # Fallback: legacy curl config in jira_api.md (may be stale)
+                search_section = self.get_section("工单查询")
+                if search_section:
+                    curl_config = self.parse_curl_command(search_section)
+                    config["cookies"] = curl_config.get("cookies", {})
+                    for key, value in curl_config.get("headers", {}).items():
+                        if key.lower() not in ["content-type", "accept", "authorization"]:
+                            config["headers"][key] = value
 
         return config
+
+    def _load_runtime_cookies(self) -> Dict[str, str]:
+        """从 /tmp/jira-session.json 读取最新运行时 cookies（JiraSessionRefresher 维护）。
+        若文件不存在或超过 2 小时，返回空 dict 使调用方回落到 jira_api.md。"""
+        import json as _json, os as _os, time as _t
+        path = "/tmp/jira-session.json"
+        if not _os.path.exists(path):
+            return {}
+        try:
+            if _t.time() - _os.path.getmtime(path) > 7200:
+                return {}
+            with open(path) as f:
+                state = _json.load(f)
+            return {c["name"]: c["value"] for c in state.get("cookies", []) if c.get("name") and c.get("value")}
+        except Exception:
+            return {}
 
     def get_common_config(self) -> Dict[str, Any]:
         """

@@ -1181,6 +1181,17 @@ def update_admin_user(user_id: str, payload: dict, request: Request):
     return {"status": "ok"}
 
 
+@app.post("/api/admin/jira-session/refresh")
+def admin_jira_session_refresh(request: Request):
+    """管理员触发 Jira session 全局刷新（无需用户 token）。供 refresh_jira_session.sh 调用。"""
+    try:
+        from services.jira_session_refresher import JiraSessionRefresher
+        meta = JiraSessionRefresher.get_instance().refresh_now()
+        return {"status": "ok", **meta}
+    except Exception as exc:
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
+
+
 @app.post("/api/admin/reset-demo")
 def reset_demo(request: Request):
     """Demo 沙箱重置（仅 IS_DEMO_INSTANCE=true 时有效）."""
@@ -1406,33 +1417,20 @@ def jira_session_status_endpoint(request: Request):
 
 @app.post("/api/settings/jira-session-auto-refresh")
 def auto_refresh_jira_session(request: Request):
-    """调用 refresh_jira_session.sh --user <username> 从 Chrome 解密 cookies，
+    """通过 JiraSessionRefresher 从 Chrome 解密 cookies，
     写入 /tmp/jira-session-{username}.json，并把 JSESSIONID 同步到数据库绑定。"""
-    import subprocess
     user = require_authenticated_user(request)
     username = user["username"]
 
-    script = Path(__file__).parent / "scripts" / "refresh_jira_session.sh"
-    if not script.exists():
-        return {"status": "error", "message": f"脚本不存在: {script}"}
-
     try:
-        result = subprocess.run(
-            ["bash", str(script), "--user", username],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
-        return {"status": "error", "message": "刷新脚本超时（30s）"}
+        from services.jira_session_refresher import JiraSessionRefresher
+        refresher = JiraSessionRefresher.get_instance()
+        meta = refresher.refresh_now(user=username)
     except Exception as exc:
-        return {"status": "error", "message": f"脚本执行异常: {exc}"}
+        return {"status": "error", "message": f"Refresher 异常: {exc}"}
 
-    if result.returncode != 0:
-        return {
-            "status": "error",
-            "message": (result.stderr or "刷新失败")[-500:],
-        }
+    if meta.get("cookie_count", 0) == 0:
+        return {"status": "error", "message": "刷新未获取到 cookies（Chrome 可能未运行或未登录）"}
 
     # 读取刚生成的 per-user session 文件，提取 JSESSIONID 存数据库
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", username)
@@ -1474,6 +1472,86 @@ def auto_refresh_jira_session(request: Request):
         "message": "已从 Chrome 自动刷新 session",
         "binding": binding,
     }
+
+
+# --- Jira Session Push / Peek (Mini → QCL internal sync) ---
+
+@app.post("/internal/jira-session/push")
+def internal_jira_session_push(request: Request):
+    """Mini 推送 Chrome-解密的 Jira session 到此实例（QCL）。
+    Bearer token 由环境变量 JIRA_SESSION_PUSH_TOKEN 控制。"""
+    import os as _os, json as _json
+    expected_token = _os.environ.get("JIRA_SESSION_PUSH_TOKEN", "")
+    if not expected_token:
+        return JSONResponse({"error": "push not configured"}, status_code=503)
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header != f"Bearer {expected_token}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = _json.loads(request.state._body if hasattr(request.state, "_body") else b"")
+    except Exception:
+        import asyncio as _aio
+        body = {}
+    try:
+        from services.jira_session_refresher import JiraSessionRefresher
+        JiraSessionRefresher.get_instance().receive_push(body)
+        meta = body.get("_meta", {})
+        return {"status": "ok", "source": meta.get("source"), "cookie_count": meta.get("cookie_count")}
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.post("/internal/jira-session/push-body")
+async def internal_jira_session_push_body(request: Request):
+    """Mini → QCL 推送（异步版，正确解析 body）。"""
+    import os as _os
+    expected_token = _os.environ.get("JIRA_SESSION_PUSH_TOKEN", "")
+    if not expected_token:
+        return JSONResponse({"error": "push not configured"}, status_code=503)
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header != f"Bearer {expected_token}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"bad json: {exc}"}, status_code=400)
+    try:
+        from services.jira_session_refresher import JiraSessionRefresher
+        JiraSessionRefresher.get_instance().receive_push(body)
+        meta = body.get("_meta", {})
+        return {"status": "ok", "source": meta.get("source"), "cookie_count": meta.get("cookie_count")}
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@app.get("/internal/jira-session/peek")
+def internal_jira_session_peek(request: Request):
+    """健康检查：返回 /tmp/jira-session.json 的 mtime + source，不返回 cookie 值。"""
+    import os as _os, time as _t
+    expected_token = _os.environ.get("JIRA_SESSION_PUSH_TOKEN", "")
+    if expected_token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header != f"Bearer {expected_token}":
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+    path = "/tmp/jira-session.json"
+    if not _os.path.exists(path):
+        return {"exists": False}
+    try:
+        mtime = _os.path.getmtime(path)
+        age_sec = int(_t.time() - mtime)
+        with open(path) as f:
+            import json as _json
+            state = _json.load(f)
+        meta = state.get("_meta", {})
+        return {
+            "exists": True,
+            "age_sec": age_sec,
+            "source": meta.get("source", "unknown"),
+            "cookie_count": len(state.get("cookies", [])),
+            "refreshed_at": meta.get("refreshed_at"),
+        }
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 # --- PM Session Auto-Refresh (Chrome 解密) ---
@@ -2767,6 +2845,21 @@ async def get_board_data(
                         iss["ai_analysis"]["grounded_confidence_score"] = gc_score
         except Exception:
             pass
+        try:
+            from services.gate_decision_log import get_gate_summary as _get_gs
+            if isinstance(data, dict):
+                for col_issues in data.values():
+                    if not isinstance(col_issues, list):
+                        continue
+                    for iss in col_issues:
+                        _iss_key = iss.get("key") or iss.get("issue_key", "")
+                        if not _iss_key:
+                            continue
+                        _gs = _get_gs(_iss_key)
+                        if _gs:
+                            iss["gate_summary"] = _gs
+        except Exception:
+            pass
         return {
             "status": "success",
             "data": data,
@@ -3229,13 +3322,22 @@ def get_issue_detail(issue_key: str, request: Request, background_tasks: Backgro
             "reporter": ((_fields.get("reporter") or {}).get("displayName") or ""),
         }
         background_tasks.add_task(board_service._auto_submit_analysis, [_ticket_dict])
-        return {
+        detail_response = {
             "status": "success",
             "attachments": attachments,
             "comments": comments[-10:],  # 最新10条
             "changelog": changelog[-15:],  # 最新15条
             "labels": labels,
         }
+        try:
+            from services.gate_decision_log import get_recent_decision as _get_rd, get_gate_summary as _get_gs
+            _gate_log = _get_rd(issue_key)
+            if _gate_log:
+                detail_response["reply_gateway"] = _gate_log.get("reply_gateway", {})
+                detail_response["gate_summary"] = _get_gs(issue_key)
+        except Exception:
+            pass
+        return detail_response
     except HTTPException:
         raise
     except Exception as e:
@@ -3321,6 +3423,7 @@ def move_issue_jira(request: MoveIssueJiraRequest, raw_request: Request):
         if result.get("success"):
             try:
                 from services.operation_event_log import log_event as _log_event
+                _move_issue_info = board_service._get_issue_from_cache(request.issue_key or request.issue_id) or {}
                 _log_event(
                     "move_jira", request.issue_key or request.issue_id,
                     raw_request.headers.get("X-User-Name", "unknown"),
@@ -3328,6 +3431,9 @@ def move_issue_jira(request: MoveIssueJiraRequest, raw_request: Request):
                     module=(request.field_values or {}).get("customfield_10123"),
                     comment=request.comment,
                     source="ui_modal",
+                    summary=_move_issue_info.get("summary", ""),
+                    customer=_move_issue_info.get("customer_name", ""),
+                    product_version=_move_issue_info.get("product_version", ""),
                 )
             except Exception:
                 pass
@@ -4152,6 +4258,10 @@ def generate_reply(request: GenerateReplyRequest, raw_request: Request, _quota=D
             "kb_hits_scored": result.get("kb_hits_scored", []),
             "similar_issues_scored": result.get("similar_issues_scored", []),
             "reply_strategy": result.get("reply_strategy", ""),
+            "final_action": _final_action_r,
+            "blocked_by": result.get("blocked_by", []),
+            "auto_dispatch": _dispatch_info,
+            "reply_gateway": result.get("reply_gateway"),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -4253,6 +4363,28 @@ def tickets_by_gate_action(hours: int = Query(72, ge=1, le=168)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/board/gate-log/{issue_key}")
+def get_gate_log(issue_key: str, raw_request: Request):
+    """获取工单的历史 gate 决策记录（用于 skill/浏览查询）"""
+    try:
+        from services.gate_decision_log import get_recent_decision, get_gate_summary
+        record = get_recent_decision(issue_key)
+        summary = get_gate_summary(issue_key)
+        if not record:
+            return {"issue_key": issue_key, "has_data": False, "gate_summary": None, "reply_gateway": None}
+        return {
+            "issue_key": issue_key,
+            "has_data": True,
+            "ts": record.get("ts"),
+            "final_action": record.get("final_action"),
+            "gate_summary": summary,
+            "reply_gateway": record.get("reply_gateway", {}),
+            "auto_reply_decision": record.get("auto_reply_decision"),
+        }
+    except Exception as e:
+        return {"issue_key": issue_key, "has_data": False, "error": str(e)}
+
+
 _RETURN_KEYWORDS = ('报错', '失败', '异常', '错误', '不能', '无法', '故障', '提示')
 
 def _classify_recommendation_type(issue: dict) -> str:
@@ -4276,7 +4408,7 @@ def _classify_recommendation_type(issue: dict) -> str:
 
 
 @app.get("/api/board/gate-view-tickets")
-def get_gate_view_tickets(request: Request, background_tasks: BackgroundTasks, hours: int = Query(720, ge=1), include_unscored: bool = True, project_key: str = Query("MYPROJECT"), domain_modules: Optional[str] = Query(None)):
+def get_gate_view_tickets(request: Request, background_tasks: BackgroundTasks, hours: int = Query(720, ge=1), include_unscored: bool = True, project_key: str = Query("LCZX"), domain_modules: Optional[str] = Query(None), assignee: Optional[str] = Query(None, description="经办人过滤；空=当前用户，ALL=全部")):
     """
     闸门看板数据源：将当前可见的 Jira 工单与历史闸门决策缓存融合。
     无决策记录的工单默认归入 manual 列并标记 unscored=True。
@@ -4324,6 +4456,20 @@ def get_gate_view_tickets(request: Request, background_tasks: BackgroundTasks, h
             ]
         except Exception:
             all_issues = []
+
+    # 2b. 经办人过滤：默认只看当前用户名下的工单
+    _cu = get_current_user(request)
+    _me_names: set[str] = set()
+    if assignee in (None, ""):
+        if _cu:
+            for _k in ("username", "display_name"):
+                if _cu.get(_k):
+                    _me_names.add(_cu[_k])
+    elif assignee.upper() not in ("ALL", "*"):
+        _me_names = {assignee}
+    # ALL / * → _me_names 为空，不过滤
+    if _me_names:
+        all_issues = [iss for iss in all_issues if (iss.get("assignee") or "") in _me_names]
 
     # 3. customer tagger
     try:
@@ -4561,12 +4707,26 @@ def list_pending_approvals(
     request: Request,
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
+    project_key: str = Query("", description="按项目前缀过滤；空=全部"),
+    assignee: Optional[str] = Query(None, description="经办人过滤；空=当前用户，ALL=全部"),
 ):
     """列出 staging 中待批准的自动回复草稿。实时查 Jira 状态过滤掉已完成工单。"""
     try:
         from services.pending_approval_store import list_pending as _list_pending
         jira_client = build_request_jira_client(request, require_binding=False)
-        return {"items": _list_pending(limit=limit, offset=offset, jira_client=jira_client)}
+        _cu = get_current_user(request)
+        _me: set[str] = set()
+        if assignee in (None, ""):
+            if _cu:
+                for _k in ("username", "display_name"):
+                    if _cu.get(_k):
+                        _me.add(_cu[_k])
+        elif assignee.upper() not in ("ALL", "*"):
+            _me = {assignee}
+        return {"items": _list_pending(
+            limit=limit, offset=offset, jira_client=jira_client,
+            project_key=project_key, assignee_filter=_me or None,
+        )}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -6987,47 +7147,25 @@ try:
 except Exception as _e:
     print(f"[Scheduler] session_harvester fallback 注册失败: {_e}")
 
-# ── JIRA Session 自动刷新（每 6 小时，避免 session 过期导致移动工单失败）──────
+# ── JIRA Session 自动刷新（每 30 分钟，Chrome 解密优先，REST fallback）────────
 def _auto_refresh_jira_session():
-    """通过 REST /rest/auth/1/session 刷新 JSESSIONID，写入 /tmp/jira-session.json"""
-    import threading, json as _json, requests as _req
-    def _do_refresh():
-        try:
-            cfg = jira_svc.config_parser
-            username, password = cfg.username, cfg.password
-            if not username or not password:
-                print("[JiraAutoRefresh] 未配置 username/password，跳过")
-                return
-            resp = _req.post(
-                f"{jira_svc.base_url.rstrip('/')}/rest/auth/1/session",
-                json={"username": username, "password": password},
-                headers={"Content-Type": "application/json", "Accept": "application/json",
-                         "User-Agent": "curl/8.7.1"},
-                verify=jira_svc.ssl_verify, timeout=15,
-                proxies=getattr(jira_svc, "proxies", None),
-            )
-            if resp.status_code == 200:
-                jsessionid = resp.json().get("session", {}).get("value", "")
-                if jsessionid:
-                    state = {"cookies": [{"name": "JSESSIONID", "value": jsessionid,
-                                          "domain": "jira.example.com", "path": "/",
-                                          "httpOnly": True, "secure": True,
-                                          "sameSite": "None", "expires": -1}],
-                             "origins": []}
-                    with open("/tmp/jira-session.json", "w") as f:
-                        _json.dump(state, f)
-                    print(f"[JiraAutoRefresh] ✓ JSESSIONID 已刷新 (len={len(jsessionid)})")
-                    return
-            print(f"[JiraAutoRefresh] 刷新失败 HTTP {resp.status_code}: {resp.text[:100]}")
-        except Exception as e:
-            print(f"[JiraAutoRefresh] 异常: {e}")
-        finally:
-            # 无论成功与否，6小时后再次执行
-            threading.Timer(6 * 3600, _do_refresh).start()
-
-    # 启动时延迟 10s 首次执行（等待服务完全就绪）
-    threading.Timer(10, _do_refresh).start()
-    print("[JiraAutoRefresh] 已注册，每 6 小时自动刷新 Jira session")
+    """初始化 JiraSessionRefresher 单例并启动后台周期刷新（30 分钟）。
+    macOS: Chrome Keychain 解密 → web UI 可用。Linux/fallback: REST JSESSIONID（仅 REST API）。"""
+    try:
+        from services.jira_session_refresher import JiraSessionRefresher
+        cfg = jira_svc.config_parser
+        refresher = JiraSessionRefresher.get_instance()
+        refresher.configure(
+            jira_base_url=jira_svc.base_url,
+            ssl_verify=jira_svc.ssl_verify,
+            proxies=getattr(jira_svc, "proxies", None) or {},
+            username=cfg.username,
+            password=cfg.password,
+        )
+        refresher.start_background(interval_sec=1800)
+        print("[JiraAutoRefresh] 已注册 JiraSessionRefresher，每 30 分钟刷新")
+    except Exception as e:
+        print(f"[JiraAutoRefresh] 初始化失败: {e}")
 
 # ── 注册 Agents ─────────────────────────────────────────────────────────────
 try:
