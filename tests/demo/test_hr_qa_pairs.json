@@ -1,0 +1,65 @@
+{
+  "description": "HR 演示数据 Q&A 真值表：每条工单的智能回复中期望命中的关键词（满足 >=2 个即 PASS）",
+  "pairs": [
+    {
+      "issue_key": "excel:HR-001",
+      "module": "考勤",
+      "summary": "迟到几次才会扣款",
+      "expect_keywords": ["迟到", "扣款", "申诉", "3次", "考勤"],
+      "pass_threshold": 2
+    },
+    {
+      "issue_key": "excel:HR-002",
+      "module": "考勤",
+      "summary": "考勤异常怎么申诉",
+      "expect_keywords": ["申诉", "考勤", "24小时", "截止", "25号"],
+      "pass_threshold": 2
+    },
+    {
+      "issue_key": "excel:HR-005",
+      "module": "请假",
+      "summary": "年假有几天",
+      "expect_keywords": ["年假", "制度", "规则", "人力", "配置"],
+      "pass_threshold": 2
+    },
+    {
+      "issue_key": "excel:HR-006",
+      "module": "请假",
+      "summary": "请假流程怎么走",
+      "expect_keywords": ["钉钉", "审批", "请假", "流程", "上级"],
+      "pass_threshold": 2
+    },
+    {
+      "issue_key": "excel:HR-009",
+      "module": "入职",
+      "summary": "入职第一天需要带什么",
+      "expect_keywords": ["工牌", "社保", "合同", "入职", "报到"],
+      "pass_threshold": 2
+    },
+    {
+      "issue_key": "excel:HR-013",
+      "module": "薪酬",
+      "summary": "绩效工资怎么计算",
+      "expect_keywords": ["绩效", "工资", "加班费", "个税", "基本工资"],
+      "pass_threshold": 2
+    }
+  ],
+  "kb_search_cases": [
+    {
+      "query": "年假天数",
+      "expect_hit_filename_contains": "leave_application_guide"
+    },
+    {
+      "query": "考勤迟到扣款",
+      "expect_hit_filename_contains": "attendance_policy"
+    },
+    {
+      "query": "入职报到工牌",
+      "expect_hit_filename_contains": "onboarding_checklist"
+    },
+    {
+      "query": "薪酬绩效加班费",
+      "expect_hit_filename_contains": "salary_components"
+    }
+  ]
+}

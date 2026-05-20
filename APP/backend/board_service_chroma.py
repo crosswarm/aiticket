@@ -2367,19 +2367,30 @@ class BoardService:
         # 获取AI分析结果
         ai_analysis = None
 
-        # 1. 从向量缓存获取（跳过规则引擎降级结果，避免缓存垃圾内容）
+        # 1. 从向量缓存获取（优先非规则引擎结果）
+        _rule_engine_fallback = None
         try:
             cached = self.vector_store.get_cached_analysis(issue_key)
-            if cached and cached.get('model_used') != 'rule_engine':
-                ai_analysis = cached
+            if cached:
+                if cached.get('model_used') != 'rule_engine':
+                    ai_analysis = cached
+                else:
+                    _rule_engine_fallback = cached
         except Exception as e:
             print(f"[GenerateReply] 向量缓存获取失败: {e}")
 
-        # 2. 从文件缓存获取（同样跳过规则引擎降级结果）
+        # 2. 从文件缓存获取（优先非规则引擎结果，保留规则引擎作兜底）
         if not ai_analysis:
             file_cached = load_file_cached_analysis(issue_key, PROJECT_ROOT)
-            if file_cached and file_cached.get('model_used') != 'rule_engine':
-                ai_analysis = file_cached
+            if file_cached:
+                if file_cached.get('model_used') != 'rule_engine':
+                    ai_analysis = file_cached
+                elif not _rule_engine_fallback:
+                    _rule_engine_fallback = file_cached
+
+        # 2b. 无真实AI分析时，允许使用规则引擎降级结果（demo/no-LLM 场景）
+        if not ai_analysis and _rule_engine_fallback:
+            ai_analysis = _rule_engine_fallback
 
         if not ai_analysis:
             # 无 AI 分析时，尝试从看板缓存获取工单信息，直接走训练器

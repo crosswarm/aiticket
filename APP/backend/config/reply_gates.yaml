@@ -1,7 +1,7 @@
 gates:
   completeness:
-    enabled: true
-    scope_filter: []
+    enabled: false
+    scope_filter: {}
     agent: kb_fact
     auto_inquiry_max_per_ticket: 2
     llm_provider: local

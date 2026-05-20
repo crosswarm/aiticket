@@ -24,6 +24,7 @@ Thumbs.db
 KB/**
 !KB/.gitkeep
 !KB/README.md
+!KB/hr/**
 conclusion/**
 !conclusion/.gitkeep
 !conclusion/README.md

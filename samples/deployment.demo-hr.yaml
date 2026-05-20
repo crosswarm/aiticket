@@ -1,0 +1,48 @@
+# AITicket Demo — HR 工单演示配置
+# 复制此文件到 config/deployment.yaml 后修改 llm 段，然后运行：
+#   python scripts/seed_demo_hr.py
+#   docker compose up -d
+
+instance:
+  name: "HR Demo Ticket"
+  slug: "hr-demo"
+  primary_project_key: "HR"
+  allowed_project_keys:
+    - "HR"
+
+# llm 段不写 — 复用 .env 中已配置的 LLM API Key 或原 deployment.yaml 中的 llm 节
+
+module_taxonomy:
+  - name: "考勤"
+    team: ""
+    keywords: ["考勤", "迟到", "早退", "签到", "打卡", "旷工", "考勤异常", "考勤申诉"]
+  - name: "请假"
+    team: ""
+    keywords: ["请假", "年假", "病假", "调休", "婚假", "产假", "事假", "假期"]
+  - name: "入职"
+    team: ""
+    keywords: ["入职", "报到", "工牌", "社保", "公积金", "劳动合同", "试用期", "新员工"]
+  - name: "薪酬"
+    team: ""
+    keywords: ["薪酬", "工资", "绩效", "加班费", "年终奖", "个税", "五险一金", "基本工资"]
+
+kb:
+  root_dir: "KB"
+
+data_source:
+  type: excel
+  excel:
+    file_path: "data/imports/demo_hr_tickets.xlsx"
+    column_map:
+      key:           "工单编号"
+      reporter:      "提出者"
+      contact_info:  "提出者联系方式"
+      customer_name: "所属企业"
+      summary:       "问题标题"
+      description:   "问题描述"
+      created:       "提出时间"
+      status:        "当前状态"
+      assignee:      "处理人"
+      priority:      "优先级"
+      issue_type:    "工单类型"
+      project_name:  "业务模块"

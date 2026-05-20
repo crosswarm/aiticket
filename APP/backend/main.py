@@ -2772,7 +2772,7 @@ async def get_board_issues(request: Request):
     """Get issues for the board (Chroma优化版)"""
     import asyncio
     jira_client = build_request_jira_client(request)
-    if jira_client is None:
+    if jira_client is None and not _IS_DEMO and not _active_issue_provider:
         return {}
     return await asyncio.to_thread(board_service.get_board_data, jira_client=jira_client)
 
@@ -2813,7 +2813,7 @@ async def get_board_data(
     """
     try:
         jira_client = build_request_jira_client(request)
-        if jira_client is None and not _IS_DEMO:
+        if jira_client is None and not _IS_DEMO and not _active_issue_provider:
             return {}
         if domain_modules is not None:
             _domain_modules = [m.strip() for m in domain_modules.split(",") if m.strip()]
@@ -4274,9 +4274,9 @@ def generate_reply(request: GenerateReplyRequest, raw_request: Request, _quota=D
             "kb_hits_scored": result.get("kb_hits_scored", []),
             "similar_issues_scored": result.get("similar_issues_scored", []),
             "reply_strategy": result.get("reply_strategy", ""),
-            "final_action": _final_action_r,
+            "final_action": result.get("final_action", ""),
             "blocked_by": result.get("blocked_by", []),
-            "auto_dispatch": _dispatch_info,
+            "auto_dispatch": result.get("auto_dispatch"),
             "reply_gateway": result.get("reply_gateway"),
         }
     except Exception as e:

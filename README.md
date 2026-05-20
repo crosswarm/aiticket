@@ -39,6 +39,41 @@ open http://localhost:18000
 
 > **最低要求**：Docker 20.10+、4 GB 内存、10 GB 磁盘
 
+## 5 秒试玩 Demo（无需 Jira）
+
+不想先配 Jira？用内置 HR 工单演示数据直接体验智能看板与 KB 问答：
+
+```bash
+git clone https://github.com/crosswarm/aiticket.git && cd aiticket
+
+# 生成 HR 演示工单 (16 条) + 知识库文件 (txt/pdf/docx/xlsx)
+python scripts/seed_demo_hr.py
+
+# 使用 demo 配置启动（Excel 数据源，无需 Jira）
+cp samples/deployment.demo-hr.yaml config/deployment.yaml
+IS_DEMO_INSTANCE=1 docker compose up -d
+
+# 验证 16 条工单已加载
+curl http://localhost:18000/api/board/stats
+# → {"issues_count": 16, ...}
+
+# 验证 KB 知识库检索正常
+curl "http://localhost:18000/api/kb/search?q=年假天数"
+# → 命中 02_leave_application_guide
+
+# 验证智能回复能引用 KB 内容
+curl -X POST http://localhost:18000/api/board/generate-reply \
+  -H "Content-Type: application/json" -d '{"issue_key":"excel:HR-001"}'
+# → 回复内容包含「迟到」「扣款」等考勤知识库关键词
+
+open http://localhost:18000   # 打开看板，看到 HR 工单卡片
+```
+
+> **演示数据覆盖**：考勤 / 请假 / 入职 / 薪酬四个模块，KB 知识库含完整制度文档。
+> 体验完后只需替换 `config/deployment.yaml` 为真实 Jira 配置即可正式使用。
+
+---
+
 ## 接入自己的 Jira 和 KB
 
 ```bash

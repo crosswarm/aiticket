@@ -1,0 +1,70 @@
+data_source:
+  excel:
+    column_map:
+      assignee: 处理人
+      contact_info: 提出者联系方式
+      created: 提出时间
+      customer_name: 所属企业
+      description: 问题描述
+      issue_type: 工单类型
+      key: 工单编号
+      priority: 优先级
+      project_name: 业务模块
+      reporter: 提出者
+      status: 当前状态
+      summary: 问题标题
+    file_path: data/imports/demo_hr_tickets.xlsx
+  type: excel
+instance:
+  allowed_project_keys:
+  - HR
+  name: HR Demo Ticket
+  primary_project_key: HR
+  slug: hr-demo
+kb:
+  root_dir: KB
+module_taxonomy:
+- keywords:
+  - 考勤
+  - 迟到
+  - 早退
+  - 签到
+  - 打卡
+  - 旷工
+  - 考勤异常
+  - 考勤申诉
+  name: 考勤
+  team: ''
+- keywords:
+  - 请假
+  - 年假
+  - 病假
+  - 调休
+  - 婚假
+  - 产假
+  - 事假
+  - 假期
+  name: 请假
+  team: ''
+- keywords:
+  - 入职
+  - 报到
+  - 工牌
+  - 社保
+  - 公积金
+  - 劳动合同
+  - 试用期
+  - 新员工
+  name: 入职
+  team: ''
+- keywords:
+  - 薪酬
+  - 工资
+  - 绩效
+  - 加班费
+  - 年终奖
+  - 个税
+  - 五险一金
+  - 基本工资
+  name: 薪酬
+  team: ''

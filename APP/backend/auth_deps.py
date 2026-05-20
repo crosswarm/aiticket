@@ -39,6 +39,10 @@ def require_reply_quota(request: Request) -> Dict[str, Any]:
     2. Skill 端 device token：X-AiTicket-Token + X-AiTicket-Client-Id → 在线验证 → 放行
     3. 匿名：按 client_id + IP 双维度计数，任一超过 DAILY_ANON_LIMIT 则 429
     """
+    import os as _os
+    if _os.getenv("IS_DEMO_INSTANCE", "").lower() in ("1", "true"):
+        return {"user_id": "demo", "display_name": "Demo", "client_id": "demo", "is_anon": False}
+
     # 1. Web 端已认证
     web_user = getattr(request.state, "current_user", None)
     if web_user:
