@@ -225,3 +225,6 @@ APP/backend/aiticket.db-shm
 APP/backend/aiticket.db-wal
 APP/backend/backend.log
 APP/backend/board_ai_cache.json
+
+# Phase 2 终轮 · 旧 data/ 重命名后遗留
+data.legacy.*/
