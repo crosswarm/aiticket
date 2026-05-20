@@ -30,7 +30,7 @@ numpy==2.0.2
 openai==2.15.0
 pandas==2.3.3
 proto-plus==1.27.0
-protobuf==5.29.5
+protobuf==5.29.6
 pyasn1==0.6.2
 pyasn1_modules==0.4.2
 pydantic==2.12.5
