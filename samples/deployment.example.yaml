@@ -1,0 +1,122 @@
+# AITicket deployment configuration example
+# Copy to config/deployment.yaml (or set CONFIG_FILE env var) and edit.
+#
+# Loader search order:
+#   1. $CONFIG_FILE
+#   2. /app/config/deployment.yaml  (Docker / QCL)
+#   3. APP/backend/config/deployment.yaml
+#   4. config/deployment.yaml
+
+# ── Instance ─────────────────────────────────────────────────────────────────
+instance:
+  name: "My AITicket"
+  slug: "myticket"
+  primary_project_key: "PROJ"
+  allowed_project_keys:
+    - "PROJ"
+
+# ── Jira ─────────────────────────────────────────────────────────────────────
+jira:
+  base_url: "https://jira.example.com"
+  ssl_verify: true
+  # ca_bundle: "/path/to/ca.pem"   # optional custom CA
+
+# ── LLM ──────────────────────────────────────────────────────────────────────
+llm:
+  default_provider_chain:
+    - zhipu
+    - minimax
+
+# ── Module taxonomy ──────────────────────────────────────────────────────────
+module_taxonomy:
+  - name: "通用"
+    team: ""
+    keywords: []
+  # - name: "财务"
+  #   team: "finance"
+  #   keywords: ["凭证", "核算", "结账"]
+
+# ── Knowledge base ───────────────────────────────────────────────────────────
+kb:
+  root_dir: "KB"
+
+# ── Data source (choose ONE type) ────────────────────────────────────────────
+#
+# The data_source section is OPTIONAL.  When omitted (or type = jira), AITicket
+# connects to the Jira instance above and uses the standard fallback chain.
+#
+# dist branch adds two additional source types: excel and api.
+# Only one source is active at a time.
+
+data_source:
+  type: jira        # jira (default) | excel | api
+
+  # ── Excel / CSV ────────────────────────────────────────────────────────────
+  # Use this when you have no Jira instance and want to load issues from a
+  # spreadsheet.  Supports .xlsx, .xls, and .csv files.
+  #
+  # excel:
+  #   file_path: "data/imports/tickets.xlsx"
+  #   # Map GenericIssue field names → spreadsheet column headers.
+  #   # The "key" column is required.  Values must not contain colons.
+  #   column_map:
+  #     key:          "工单号"         # required
+  #     summary:      "标题"
+  #     description:  "问题描述"
+  #     status:       "状态"
+  #     assignee:     "处理人"
+  #     reporter:     "报告人"
+  #     created:      "创建时间"
+  #     updated:      "更新时间"
+  #     priority:     "优先级"
+  #     issue_type:   "工单类型"
+  #     project_name: "项目名称"
+  #     # Extra columns land in GenericIssue.extra and are accessible as
+  #     # attributes: issue.customer_name, issue.contract_id, etc.
+  #     customer_name: "客户名称"
+
+  # ── Third-party REST API ────────────────────────────────────────────────────
+  # Use this to connect to Zendesk, Freshdesk, a custom ticketing system, or
+  # any JSON REST API.  Authentication and field mapping are fully configurable.
+  #
+  # api:
+  #   base_url: "https://support.example.com"
+  #
+  #   auth:
+  #     type: bearer                    # basic | bearer | apikey
+  #     token_env: "SUPPORT_API_TOKEN"  # read token from env var
+  #     # For basic auth:
+  #     # type: basic
+  #     # username_env: "API_USER"
+  #     # password_env: "API_PASS"
+  #     # For API key auth:
+  #     # type: apikey
+  #     # key_env: "API_KEY"
+  #     # header: "X-API-Key"           # default header name
+  #
+  #   endpoints:
+  #     list:   "/api/v2/tickets"
+  #     detail: "/api/v2/tickets/{id}"  # optional, used by get_issue()
+  #
+  #   pagination:
+  #     style:      page          # page | offset | none
+  #     page_param: page
+  #     size_param: per_page
+  #     size:       100
+  #
+  #   # items_key: JSON path to the array within the response object.
+  #   # Omit if the response is itself a JSON array.
+  #   items_key: "$.tickets"
+  #
+  #   # Map GenericIssue field names → JSON paths in each item.
+  #   # Use dot-notation: "$.fields.summary" walks item["fields"]["summary"].
+  #   field_map:
+  #     external_id: "$.id"
+  #     summary:     "$.subject"
+  #     description: "$.description"
+  #     status:      "$.status"
+  #     assignee:    "$.assignee_id"
+  #     created:     "$.created_at"
+  #     updated:     "$.updated_at"
+  #     priority:    "$.priority"
+  #     issue_type:  "$.type"
