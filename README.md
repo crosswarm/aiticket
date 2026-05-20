@@ -118,6 +118,52 @@ cp -r client-skill/aiticket ~/.claude/skills/aiticket
 安装后用 `/aiticket-login` 绑定服务器，即可使用 `/aiticket-search`、`/aiticket-reply`、`/aiticket-kb` 等命令。
 详见 [client-skill/aiticket/SKILL.md](client-skill/aiticket/SKILL.md)。
 
+## Data Sources（`dist` 分支）
+
+除 Jira 外，`dist` 分支还支持从 **Excel/CSV** 文件或任意 **第三方 REST API** 导入工单，
+无需 Jira 账号即可使用 AI 回复生成、KB 检索等全部功能。
+
+### Excel / CSV
+
+```yaml
+# config/deployment.yaml
+data_source:
+  type: excel
+  excel:
+    file_path: "data/imports/tickets.xlsx"
+    column_map:
+      key:         "工单号"
+      summary:     "标题"
+      description: "问题描述"
+      status:      "状态"
+      assignee:    "处理人"
+```
+
+参考样本：[`data/imports/sample_tickets.xlsx`](data/imports/sample_tickets.xlsx)
+
+### 第三方 REST API
+
+```yaml
+data_source:
+  type: api
+  api:
+    base_url: "https://support.example.com"
+    auth:
+      type: bearer
+      token_env: "SUPPORT_API_TOKEN"
+    endpoints:
+      list: "/api/v2/tickets"
+    field_map:
+      external_id: "$.id"
+      summary:     "$.subject"
+      description: "$.description"
+```
+
+完整配置参考：[`samples/deployment.example.yaml`](samples/deployment.example.yaml)  
+技术文档：[`APP/backend/providers/README.md`](APP/backend/providers/README.md)
+
+---
+
 ## 贡献
 
 欢迎 PR！请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
