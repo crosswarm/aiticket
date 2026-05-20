@@ -1440,6 +1440,13 @@
                             <div class="text-xs font-medium mb-1" style="color:var(--ds-text-secondary,#475569);">回复策略</div>
                             <div id="re-basis-strategy" class="text-xs leading-relaxed" style="color:var(--ds-text-secondary,#475569);white-space:pre-wrap;"></div>
                         </div>
+                        <!-- 5段网关分析 -->
+                        <div id="re-gateway-panel" class="hidden">
+                            <div class="text-xs font-medium mb-1" style="color:var(--ds-text-secondary,#475569)">5段网关分析</div>
+                            <div id="re-gateway-badges" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:5px;"></div>
+                            <div id="re-gateway-action" class="hidden" style="font-size:11px;padding:5px 8px;border-radius:6px;border:1px solid;"></div>
+                            <div id="re-gateway-decision" class="hidden" style="margin-top:4px;font-size:11px;padding:4px 8px;border-radius:5px;background:#f8fafc;border:1px solid #e2e8f0;line-height:1.6;"></div>
+                        </div>
                         <!-- 信息不足标签 -->
                         <div id="re-basis-info-insufficient" class="hidden flex items-center gap-2 p-2 rounded-lg" style="background:#fef3c7;border:1px solid #fcd34d;">
                             <span style="font-size:14px;">⚠️</span>
@@ -3457,6 +3464,22 @@
             const dueDate = issue.due_date ? formatDate(issue.due_date) : '';
             const assignee = issue.assignee || '';
 
+            // Gate mini-badges (only when gate_summary has data)
+            let gateBadges = '';
+            const gateSummary = issue.gate_summary;
+            if (gateSummary && Object.keys(gateSummary).length > 0) {
+                const _gvc = {pass:'background:#d1fae5;color:#065f46',warn:'background:#fef9c3;color:#92400e',fail:'background:#fee2e2;color:#991b1b',skipped:'background:#f1f5f9;color:#94a3b8'};
+                const _gOrder = ['G1','G2','G3','G4','G5'];
+                const _gLabel = {G1:'信息完整',G2:'项目分类',G3:'历史复用',G4:'回复具体',G5:'监督审计'};
+                gateBadges = '<div style="display:flex;gap:3px;margin-top:4px;">';
+                _gOrder.forEach(gk => {
+                    const v = (gateSummary[gk] || 'skipped');
+                    const s = _gvc[v] || _gvc.skipped;
+                    gateBadges += `<span style="font-size:9px;padding:1px 4px;border-radius:3px;${s};font-weight:600;white-space:nowrap" title="${_gLabel[gk]}: ${v}">${gk}</span>`;
+                });
+                gateBadges += '</div>';
+            }
+
             return `
                 <div class="issue-card draggable"
                      style="cursor:pointer;padding:10px;border-radius:8px;background:var(--ds-bg-base,#fff);border:1px solid var(--ds-border,#e2e8f0);transition:box-shadow 0.15s;${canDrag ? '' : 'opacity:0.75;'}"
@@ -3476,6 +3499,7 @@
                         ${escapeHtml(issue.summary || '无标题')}
                     </div>
                     ${briefText ? `<div style="font-size:11px;color:var(--ds-text-muted,#64748b);margin-top:4px;font-style:italic;">${briefText}</div>` : ''}
+                    ${gateBadges}
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
                         ${assignee ? `<span style="font-size:10px;color:var(--ds-text-muted,#64748b);background:var(--ds-bg-subtle,#f3f4f6);padding:1px 5px;border-radius:4px;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${assignee}">👤 ${assignee}</span>` : '<span></span>'}
                         ${dueDate ? `<span style="font-size:10px;color:var(--ds-text-muted,#64748b)">${dueDate}</span>` : ''}
@@ -7392,10 +7416,30 @@ ${_colDecision(byKey)}
             }
         }
 
-        function updateReplyBasis(data) {
+        async function updateReplyBasis(data) {
             const basis = document.getElementById('re-reply-basis');
             if (!basis) return;
             basis.classList.remove('hidden');
+            // 兜底：若缓存命中分支没回填 reply_gateway，主动查 gate-log
+            if (!data.reply_gateway || !data.reply_gateway.gates) {
+                const _ik = data.issue_key || currentIssueKey || '';
+                if (_ik) {
+                    try {
+                        const _r = await fetch(`${API_BASE}/api/board/gate-log/${_ik}`);
+                        const _j = await _r.json();
+                        if (_j && _j.has_data && _j.reply_gateway && _j.reply_gateway.gates) {
+                            data.reply_gateway = _j.reply_gateway;
+                            if (!data.reply_gateway.auto_decision && _j.auto_reply_decision) {
+                                data.reply_gateway.auto_decision = {
+                                    composite_confidence: _j.auto_reply_decision.composite_score,
+                                    action: _j.final_action || _j.auto_reply_decision.action,
+                                    blocked_by: _j.auto_reply_decision.blocked_by || [],
+                                };
+                            }
+                        }
+                    } catch (e) { console.warn('[updateReplyBasis] gate-log fetch failed', e); }
+                }
+            }
             // 正常回复路径：隐藏信息不足标签
             document.getElementById('re-basis-info-insufficient')?.classList.add('hidden');
 
@@ -7513,10 +7557,75 @@ ${_colDecision(byKey)}
             strategyRow.classList.remove('hidden');
             const strategy = data.reply_strategy || '';
             strategyEl.textContent = strategy.trim() || '暂无策略说明';
+
+            // 5段网关分析
+            const gwPanel = document.getElementById('re-gateway-panel');
+            const gwBadges = document.getElementById('re-gateway-badges');
+            const gwAction = document.getElementById('re-gateway-action');
+            const rg = data.reply_gateway;
+            if (gwPanel && gwBadges && rg && rg.gates) {
+                const _gvc = {pass:'background:#d1fae5;color:#065f46',warn:'background:#fef9c3;color:#92400e',fail:'background:#fee2e2;color:#991b1b',skipped:'background:#f1f5f9;color:#94a3b8'};
+                const _gDefs = [
+                    {key:'G1_completeness', label:'G1 信息完整'},
+                    {key:'G2_classification', label:'G2 项目分类'},
+                    {key:'G3_reuse', label:'G3 历史复用'},
+                    {key:'G4_specificity', label:'G4 回复具体'},
+                    {key:'G5_supervisor', label:'G5 监督审计'},
+                ];
+                gwBadges.innerHTML = _gDefs.map(({key, label}) => {
+                    const g = rg.gates[key] || {};
+                    const v = g.verdict || 'skipped';
+                    const s = _gvc[v] || _gvc.skipped;
+                    let detail = v;
+                    if (key === 'G2_classification' && g.transfer_to) detail = `→${g.transfer_to}`;
+                    else if (key === 'G3_reuse' && g.reuse_strategy) detail = g.reuse_strategy;
+                    else if (key === 'G4_specificity' && g.level) detail = g.level;
+                    else if (key === 'G5_supervisor' && g.score != null) detail = Math.round(g.score * 100) + '%';
+                    return `<span style="font-size:10px;padding:2px 7px;border-radius:4px;${s};white-space:nowrap" title="${label}: ${v}">${label} <b>${detail}</b></span>`;
+                }).join('');
+                if (gwAction) {
+                    const fa = rg.final_action;
+                    const g2 = rg.gates.G2_classification || {};
+                    if (fa === 'handover' && g2.transfer_to) {
+                        const td = g2.transferee_display || g2.transferee || '';
+                        gwAction.classList.remove('hidden');
+                        gwAction.style.cssText = 'font-size:11px;padding:5px 8px;border-radius:6px;border:1px solid #fed7aa;background:#fff7ed;color:#9a3412;';
+                        gwAction.innerHTML = `⚠️ 建议移交至 <b>${g2.transfer_to}</b>${td ? '，转交 ' + td : ''}（置信度 ${Math.round((g2.confidence||0)*100)}%）`;
+                    } else if (fa === 'return_to_support') {
+                        gwAction.classList.remove('hidden');
+                        gwAction.style.cssText = 'font-size:11px;padding:5px 8px;border-radius:6px;border:1px solid #fcd34d;background:#fef3c7;color:#92400e;';
+                        gwAction.innerHTML = 'ℹ️ 信息不足，已准备问询草稿';
+                    } else {
+                        gwAction.classList.add('hidden');
+                    }
+                }
+                // auto_decision: composite_confidence + action + blocked_by
+                const adDiv = document.getElementById('re-gateway-decision');
+                if (adDiv) {
+                    const ad = rg.auto_decision || {};
+                    if (ad.composite_confidence != null) {
+                        const pct = Math.round((ad.composite_confidence || 0) * 100);
+                        const actMap = {auto_replied_normal:'自动回复',auto_replied_low_risk:'低风险自动回复',needs_decision:'需人工决策',veto:'否决',manual:'人工',manual_review:'人工审核',pending_batch_approve:'待批量审批'};
+                        let html = `<span style="font-weight:600">综合置信度 ${pct}%</span>`;
+                        if (ad.action) html += ` <span style="color:#64748b;margin-left:4px">· ${actMap[ad.action]||ad.action}</span>`;
+                        const blocked = ad.blocked_by || [];
+                        if (blocked.length > 0) {
+                            html += ` <span style="color:#dc2626;margin-left:4px">· ⛔ ${blocked.map(b=>`<b>${b}</b>`).join(', ')}</span>`;
+                        }
+                        adDiv.innerHTML = html;
+                        adDiv.classList.remove('hidden');
+                    } else {
+                        adDiv.classList.add('hidden');
+                    }
+                }
+                gwPanel.classList.remove('hidden');
+            } else if (gwPanel) {
+                gwPanel.classList.add('hidden');
+            }
         }
 
-        function updateGenDetails(data) {
-            updateReplyBasis(data);
+        async function updateGenDetails(data) {
+            await updateReplyBasis(data);
             const panel = document.getElementById('re-gen-details');
             if (!panel) return;
             panel.classList.remove('hidden');

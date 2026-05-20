@@ -10,6 +10,7 @@
 
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
+import concurrent.futures
 import json
 import os
 import threading
@@ -775,6 +776,14 @@ class BoardService:
         # 回复训练器
         self.reply_trainer = ReplyTrainer()
 
+        # 智能回复网关 v2
+        from services.reply_gateway import ReplyGateway as _ReplyGateway
+        self.reply_gateway = _ReplyGateway(
+            vector_store=self.vector_store,
+            llm_service=None,
+            reply_trainer=self.reply_trainer,
+        )
+
         # 分析状态内存缓存（用于前端轮询）
         self.analysis_status = {}  # issue_key -> status
         self.jira_cache_service = None
@@ -787,6 +796,11 @@ class BoardService:
         self._jira_direct_last_error = None
         self._jira_direct_last_failure_at = None
         self._jira_direct_state_lock = threading.Lock()
+
+        # 回复内容预生成线程池（低优先级，分析完成后自动预热回复缓存，让用户秒开回复弹窗）
+        self._reply_pregen_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="reply-pregen"
+        )
 
     def _load_llm_config(self) -> Dict:
         """从配置文件加载LLM配置"""
@@ -1734,6 +1748,25 @@ class BoardService:
             'completed_at': datetime.now().isoformat()
         }
         print(f"[BoardService] {issue_key} AI分析完成")
+        # 分析完成后异步预热回复缓存，让用户秒开回复弹窗
+        self._reply_pregen_pool.submit(self._pregen_reply_async, issue_key)
+
+    def _pregen_reply_async(self, issue_key: str):
+        """后台预生成回复内容，预热 reply_cache（不阻塞主线程）"""
+        try:
+            cached = get_cached_reply(issue_key, {})
+            if cached and len(cached) >= 10:
+                print(f"[ReplyPregen] {issue_key} 已有缓存，跳过预生成")
+                return
+            result = self.generate_reply_content(issue_key, force=False)
+            rc = result.get("reply_content") or result.get("solution_content") or ""
+            if rc:
+                print(f"[ReplyPregen] {issue_key} 预生成完成 ({result.get('word_count', 0)} 字)")
+            else:
+                reason = result.get("status") or result.get("gate_status") or result.get("error", "no_content")
+                print(f"[ReplyPregen] {issue_key} 预生成跳过: {reason}")
+        except Exception as e:
+            print(f"[ReplyPregen] {issue_key} 预生成异常: {e}")
     
     def get_analysis_updates(self, issue_keys: List[str]) -> Dict[str, Dict]:
         """
@@ -2390,6 +2423,24 @@ class BoardService:
                 _patch_analysis_cache(issue_key,
                     grounded_confidence_score=_cached_gc.get("score"),
                     grounded_evidence_status=_cached_gc.get("evidence_status"))
+                _cached_gw = None
+                try:
+                    from services.gate_decision_log import get_recent_decision as _grd
+                    _rec = _grd(issue_key)
+                    if _rec and isinstance(_rec.get("reply_gateway"), dict) and _rec["reply_gateway"].get("gates"):
+                        _cached_gw = _rec["reply_gateway"]
+                        if "auto_decision" not in _cached_gw:
+                            _ard = _rec.get("auto_reply_decision") or {}
+                            if _ard:
+                                _cached_gw["auto_decision"] = {
+                                    "composite_confidence": _ard.get("composite_score"),
+                                    "threshold_hit": _ard.get("action"),
+                                    "action": _rec.get("final_action", ""),
+                                    "decided_by": "auto_reply_decider",
+                                    "blocked_by": list(_rec.get("blocked_by") or []),
+                                }
+                except Exception as _gw_exc:
+                    print(f"[GenerateReply] cache hit gateway hydrate failed: {_gw_exc}")
                 return {
                     "reply_content": cached_reply,
                     "solution_content": cached_reply,
@@ -2407,6 +2458,8 @@ class BoardService:
                     "style_rules_applied": True,
                     "grounded_confidence": _cached_gc,
                     "reply_strategy": (_file_ana.get("reply_strategy_cached") or _ana.get("reasoning") or _file_ana.get("reasoning") or ""),
+                    "reply_gateway": _cached_gw,
+                    "issue_key": issue_key,
                 }
 
         # 4. 使用Chroma搜索相似工单
@@ -2741,6 +2794,31 @@ class BoardService:
         _transfer_pending = getattr(self, '_gate2_transfer_pending', None)
         self._gate2_transfer_pending = None  # reset
 
+        # ── Reply Gateway v2 ────────────────────────────────────────────────
+        try:
+            _gw_ticket_meta = {
+                "project": issue_key.split("-")[0] if issue_key else "",
+                "issue_type": (ai_analysis or {}).get("issue_type", ""),
+                "description": (ai_analysis or {}).get("issue_description", ""),
+                "summary": (ai_analysis or {}).get("issue_title", ""),
+                "product_version": (ai_analysis or {}).get("product_version", ""),
+                "customer_name": _customer_name_g5,
+            }
+            _gw_result = self.reply_gateway.run(
+                issue_key,
+                ai_analysis or {},
+                _gw_ticket_meta,
+                only=["G1", "G2", "G3", "G4"],
+                kb_evidence=kb_evidence,
+                reply_examples=reply_examples,
+                generated_reply="",
+            )
+            self.reply_gateway.inject_g5_from_supervisor(_gw_result, issue_key, _supervisor_result)
+        except Exception as _e_gw:
+            print(f"[Gateway] assembly failed (non-blocking): {_e_gw}")
+            _gw_result = {"version": "v2", "gates": {}, "display_cards": [], "final_action": "", "extra_operations": []}
+        # ────────────────────────────────────────────────────────────────────
+
         # ── Gate 决策埋点 + Staging ──────────────────────────────────────────
         try:
             from services import gate_decision_log as _gdl
@@ -2809,10 +2887,24 @@ class BoardService:
                 final_action=_final_action_g,
                 reply_summary=(solution_content or "")[:80],
                 operation_steps=_op_steps_g,
+                blocked_by=_auto_reply_decision.blocked_by if _auto_reply_decision else [],
+                reply_gateway=_gw_result,
             )
         except Exception as _e_log:
             print(f"[GateLog] 埋点失败（非阻断）: {_e_log}")
         # ────────────────────────────────────────────────────────────────────
+
+        # ── Inject auto_decision into reply_gateway v2 ───────────────────────
+        _ad = locals().get('_auto_reply_decision')
+        if _gw_result is not None and _ad is not None:
+            _gw_result["auto_decision"] = {
+                "composite_confidence": _ad.composite_score,
+                "threshold_hit": _ad.action,
+                "action": locals().get('_final_action_g', ''),
+                "decided_by": "auto_reply_decider",
+                "blocked_by": list(_ad.blocked_by or []),
+            }
+        # ─────────────────────────────────────────────────────────────────────
 
         # Compute grounded multi-source confidence
         from services.confidence_calculator import calculate_grounded_confidence as _calc_gc
@@ -2899,6 +2991,7 @@ class BoardService:
                 (_supervisor_result.rationale if _supervisor_result else None)
                 or (ai_analysis.get("reasoning") or "")
             ),
+            "reply_gateway": _gw_result,
         }
 
     def _analyze_attachment_images(self, issue_key: str, max_images: int = 2) -> str:
