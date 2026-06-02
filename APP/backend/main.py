@@ -1674,6 +1674,7 @@ def search_tickets(request: QueryRequest):
     from fastapi.responses import StreamingResponse
     import json
     llm_runtime = resolve_effective_llm_runtime(
+        feature="smart_reply",
         provider=request.model_provider,
         api_key=request.api_key or "",
         model_name=request.model_name,
@@ -1755,6 +1756,7 @@ async def stream_analysis(request: AnalyzeStreamRequest):
     """
     from fastapi.responses import StreamingResponse
     llm_runtime = resolve_effective_llm_runtime(
+        feature="smart_reply",
         provider=request.provider,
         api_key=request.api_key or "",
         model_name=request.model_name,
@@ -2221,6 +2223,7 @@ class GenerateRequirementRequest(BaseModel):
 def start_requirement_generation(request: GenerateRequirementRequest):
     """Start a requirement generation task"""
     llm_runtime = resolve_effective_llm_runtime(
+        feature="spec_gen",
         provider=request.provider,
         api_key=request.api_key or "",
         model_name=request.model_name,
@@ -2465,6 +2468,7 @@ class KBReviewRequest(BaseModel):
 def analyze_kb_file(request: KBAnalyzeRequest):
     """多源知识库分析：返回证据包、章节建议和待确认项"""
     llm_runtime = resolve_effective_llm_runtime(
+        feature="req_analysis",
         provider=request.provider,
         api_key=request.api_key or "",
         model_name=request.model_name,
@@ -2487,6 +2491,7 @@ def analyze_kb_file(request: KBAnalyzeRequest):
 def draft_kb_prd(request: KBDraftRequest):
     """基于知识证据生成 PRD 初稿"""
     llm_runtime = resolve_effective_llm_runtime(
+        feature="spec_gen",
         provider=request.provider,
         api_key=request.api_key or "",
         model_name=request.model_name,
@@ -2534,6 +2539,7 @@ def ask_kb_question(request: KBQuestionRequest, raw_request: Request, _quota=Dep
     """Answer user question from knowledge base"""
     log_api_request(raw_request, _quota, query_text=request.query)
     llm_runtime = resolve_effective_llm_runtime(
+        feature="smart_reply",
         provider=request.provider,
         api_key=request.api_key or "",
         model_name=request.model_name,
@@ -2642,6 +2648,47 @@ def kb_restore_compiled():
     if restored == 0:
         raise HTTPException(status_code=404, detail="无可用备份或备份为空，需重新运行 batch_compile_kb.py")
     return {"ok": True, "restored": restored}
+
+
+@app.post("/api/kb/note")
+def kb_quick_note(req: dict):
+    """快捷 KB 笔记：在 product_facts.md 指定话题下追加一条事实，并立即重索引。"""
+    topic = (req.get("topic") or "").strip()
+    content = (req.get("content") or "").strip()
+    if not topic:
+        raise HTTPException(status_code=422, detail="topic 不能为空")
+    if not content:
+        raise HTTPException(status_code=422, detail="content 不能为空")
+
+    from pathlib import Path as _Path
+    from datetime import datetime as _dt
+
+    facts_path = _Path(__file__).parent / "data" / "product_facts.md"
+    if not facts_path.exists():
+        raise HTTPException(status_code=500, detail="product_facts.md 不存在")
+
+    md_text = facts_path.read_text(encoding="utf-8")
+    date_str = _dt.now().strftime("%Y-%m-%d")
+    new_line = f"- {content}（快捷记录，{date_str}）"
+
+    section_header = f"## {topic}"
+    if section_header in md_text:
+        idx = md_text.index(section_header)
+        eol = md_text.index("\n", idx)
+        md_text = md_text[:eol + 1] + new_line + "\n" + md_text[eol + 1:]
+    else:
+        md_text = md_text.rstrip("\n") + f"\n\n{section_header}\n{new_line}\n"
+
+    facts_path.write_text(md_text, encoding="utf-8")
+
+    n = 0
+    try:
+        from services.search.product_facts_indexer import reindex as _reindex_facts
+        n = _reindex_facts(force=True)
+    except Exception as e:
+        print(f"[kb/note] reindex failed: {e}")
+
+    return {"status": "ok", "topic": topic, "indexed": n}
 
 
 @app.post("/api/kb/lint")
@@ -6018,12 +6065,17 @@ def resolve_feature_llm_runtime(feature: str, *, exclude_providers: list = None)
 
 def resolve_effective_llm_runtime(
     *,
+    feature: str = "",
     provider: str = "",
     api_key: str = "",
     model_name: str = "",
     base_url: str = "",
 ) -> Dict[str, str]:
-    defaults = resolve_default_llm_runtime()
+    # 无显式 api_key 时：优先走功能路由，无 feature 则走全局默认
+    if not api_key and feature:
+        defaults = resolve_feature_llm_runtime(feature)
+    else:
+        defaults = resolve_default_llm_runtime()
     effective_api_key = api_key or defaults["api_key"]
     effective_provider = provider or defaults["provider"]
     effective_model_name = model_name or defaults["model_name"]
