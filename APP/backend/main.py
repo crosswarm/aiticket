@@ -145,6 +145,20 @@ for name in uvicorn_loggers:
 
 app = FastAPI()
 
+_PROCESS_STARTED_AT = time.time()
+
+@app.get("/api/liveness", include_in_schema=False)
+def liveness():
+    """Watchdog 专用：不进 ChromaDB、不进 worker queue，只证明 uvicorn 在响应。"""
+    return {"ok": True, "pid": os.getpid(), "uptime_s": int(time.time() - _PROCESS_STARTED_AT)}
+
+import resource as _resource
+@app.get("/api/fd_health", include_in_schema=False)
+def fd_health():
+    """报告本进程 fd 软/硬上限；配合外部 lsof 统计实际使用数。"""
+    soft, hard = _resource.getrlimit(_resource.RLIMIT_NOFILE)
+    return {"ok": True, "rlimit_soft": soft, "rlimit_hard": hard, "pid": os.getpid()}
+
 # Custom exception handler to return 400 instead of 422 for validation errors
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request, exc):
@@ -4661,31 +4675,27 @@ async def precompute_replies(
     _precompute_running[lock_key] = _time_pc2.time()
 
     def _run_precompute(keys: list, proj_key: str, lk: str):
-        import threading as _th2
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        _max_conc = int(os.environ.get("PRECOMPUTE_MAX_CONCURRENT", "2"))
         success = 0
         failed = 0
+
+        def _worker_for(_k):
+            return board_service.generate_reply_content(
+                _k, force=False, user_id="precompute",
+                project_key=proj_key, force_pass_gate1=True,
+            )
+
         try:
-            for k in keys[:200]:
-                _result: dict = {}
-                def _worker(_k=k):
+            with _TPE(max_workers=_max_conc, thread_name_prefix="precompute") as _pool:
+                _futs = {_pool.submit(_worker_for, k): k for k in keys[:200]}
+                for fut, k in _futs.items():
                     try:
-                        _result['data'] = board_service.generate_reply_content(
-                            _k, force=False, user_id="precompute",
-                            project_key=proj_key, force_pass_gate1=True,
-                        )
+                        fut.result(timeout=150)
+                        success += 1
                     except Exception as _e:
-                        _result['error'] = str(_e)
-                _t = _th2.Thread(target=_worker, daemon=True)
-                _t.start()
-                _t.join(timeout=150)
-                if _t.is_alive():
-                    print(f"[Precompute] {k}: timeout 150s, skipping")
-                    failed += 1
-                elif 'error' in _result:
-                    print(f"[Precompute] {k}: {_result['error']}")
-                    failed += 1
-                else:
-                    success += 1
+                        print(f"[Precompute] {k}: {_e}")
+                        failed += 1
         finally:
             _precompute_running.pop(lk, None)
             print(f"[Precompute] done lock={lk} success={success} failed={failed}")
@@ -5832,6 +5842,12 @@ async def startup_event():
     import anyio
     # 默认 total_tokens=40，提到 64 以支持更多并发 handler 线程（每线程 ~8MB stack）
     anyio.to_thread.current_default_thread_limiter().total_tokens = 64
+    # 限制 torch/BLAS 内部线程数为 1，防止多线程并发调用 encode() 时 OpenMP 死锁
+    try:
+        import torch as _torch
+        _torch.set_num_threads(1)
+    except Exception:
+        pass
     _reap_zombie_running_tasks()
     _threading.Thread(target=_kb_startup_sync_and_warn, daemon=True).start()
 
