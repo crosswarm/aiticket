@@ -75,9 +75,10 @@ window.ScopeSwitcher = (function () {
   function _triggerText(scope) {
     var pk = scope.project_key || "MYPROJECT";
     var mods = scope.domain_modules || [];
-    if (mods.length === 0) return pk + " · 全部模块";
-    if (mods.length === 1) return pk + " · " + mods[0];
-    return pk + " · " + mods[0] + "+" + (mods.length - 1);
+    var pkLabel = pk === "ALL" || pk === "" ? "全部项目" : pk;
+    if (mods.length === 0) return pkLabel + " · 全部模块";
+    if (mods.length === 1) return pkLabel + " · " + mods[0];
+    return pkLabel + " · " + mods[0] + "+" + (mods.length - 1);
   }
 
   function _renderTriggerLabel() {
@@ -223,11 +224,13 @@ window.ScopeSwitcher = (function () {
       var projs = (data.projects || []).sort(function (a, b) {
         return a.name.localeCompare(b.name);
       });
-      _projectOptions = projs.map(function (p) {
-        return { value: p.key, label: p.name };
-      });
+      _projectOptions = [{ value: "ALL", label: "全部项目" }].concat(
+        projs.map(function (p) {
+          return { value: p.key, label: p.name };
+        }),
+      );
     } catch (e) {
-      _projectOptions = [];
+      _projectOptions = [{ value: "ALL", label: "全部项目" }];
     }
 
     var searchEl = document.getElementById("ss-project-search");
@@ -240,11 +243,22 @@ window.ScopeSwitcher = (function () {
     var cur = _projectOptions.find(function (o) {
       return o.value === currentKey;
     });
-    if (cur && searchEl) searchEl.value = cur.label + " (" + cur.value + ")";
+    if (cur && searchEl)
+      searchEl.value =
+        cur.value === "ALL" ? cur.label : cur.label + " (" + cur.value + ")";
     if (cur) _modalProject = { key: cur.value, name: cur.label };
 
     _renderProjectList("");
-    _fetchModules(currentKey);
+    if (currentKey === "ALL") {
+      _allModules = [];
+      var modListEl = document.getElementById("ss-modules-list");
+      if (modListEl) {
+        modListEl.innerHTML =
+          '<div style="font-size:13px;color:#94a3b8;text-align:center;padding:8px">全部项目不限模块</div>';
+      }
+    } else {
+      _fetchModules(currentKey);
+    }
   }
 
   function _filterProjects(q) {
@@ -268,50 +282,67 @@ window.ScopeSwitcher = (function () {
         '<div style="padding:8px 12px;font-size:13px;color:#94a3b8">无匹配项目</div>';
       return;
     }
-    listEl.innerHTML = opts
-      .map(function (o) {
-        var isSel = _modalProject && o.value === _modalProject.key;
-        var bg = isSel ? "#eef2ff" : "#fff";
-        var color = isSel ? "#6366f1" : "#334155";
-        var weight = isSel ? "600" : "400";
-        var safeVal = (o.value || "").replace(/'/g, "\\'");
-        var safeLbl = (o.label || "").replace(/'/g, "\\'");
-        return (
-          "<div onclick=\"ScopeSwitcher._selectProject('" +
-          safeVal +
-          "','" +
-          safeLbl +
-          "')\"" +
-          ' style="padding:7px 12px;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;background:' +
-          bg +
-          ";color:" +
-          color +
-          ";font-weight:" +
-          weight +
-          '"' +
-          " onmouseenter=\"this.style.background='#f8fafc'\" onmouseleave=\"this.style.background='" +
-          bg +
-          "'\">" +
-          "<span>" +
-          _escHtml(o.label) +
-          "</span>" +
-          '<span style="font-size:11px;color:#94a3b8;margin-left:8px">' +
-          _escHtml(o.value) +
-          "</span>" +
-          "</div>"
-        );
-      })
-      .join("");
+    var html = "";
+    opts.forEach(function (o, idx) {
+      var isAll = o.value === "ALL";
+      var isSel = _modalProject && o.value === _modalProject.key;
+      var bg = isSel ? "#eef2ff" : isAll ? "#f8f7ff" : "#fff";
+      var color = isSel ? "#6366f1" : isAll ? "#4f46e5" : "#334155";
+      var weight = isSel || isAll ? "600" : "400";
+      var safeVal = (o.value || "").replace(/'/g, "\\'");
+      var safeLbl = (o.label || "").replace(/'/g, "\\'");
+      var extra = isAll ? " border-bottom:1px solid #e2e8f0;" : "";
+      html +=
+        "<div onclick=\"ScopeSwitcher._selectProject('" +
+        safeVal +
+        "','" +
+        safeLbl +
+        "')\"" +
+        ' style="padding:7px 12px;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;background:' +
+        bg +
+        ";color:" +
+        color +
+        ";font-weight:" +
+        weight +
+        ";" +
+        extra +
+        '"' +
+        " onmouseenter=\"this.style.background='" +
+        (isAll ? "#ede9fe" : "#f8fafc") +
+        "'\" onmouseleave=\"this.style.background='" +
+        bg +
+        "'\">" +
+        "<span>" +
+        _escHtml(o.label) +
+        "</span>" +
+        (isAll
+          ? '<span style="font-size:11px;color:#a5b4fc;margin-left:8px">全部</span>'
+          : '<span style="font-size:11px;color:#94a3b8;margin-left:8px">' +
+            _escHtml(o.value) +
+            "</span>") +
+        "</div>";
+    });
+    listEl.innerHTML = html;
   }
 
   function _selectProject(key, label) {
     _modalProject = { key: key, name: label };
     _modalModules = [];
     var searchEl = document.getElementById("ss-project-search");
-    if (searchEl) searchEl.value = label + " (" + key + ")";
+    if (searchEl)
+      searchEl.value = key === "ALL" ? label : label + " (" + key + ")";
     var listEl = document.getElementById("ss-project-list");
     if (listEl) listEl.innerHTML = "";
-    _fetchModules(key);
+    if (key === "ALL") {
+      _allModules = [];
+      var modListEl = document.getElementById("ss-modules-list");
+      if (modListEl) {
+        modListEl.innerHTML =
+          '<div style="font-size:13px;color:#94a3b8;text-align:center;padding:8px">全部项目不限模块</div>';
+      }
+    } else {
+      _fetchModules(key);
+    }
   }
 
   /* ── modules ── */
