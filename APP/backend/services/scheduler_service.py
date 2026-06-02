@@ -223,6 +223,9 @@ class SchedulerService:
         logger.info(f"[Scheduler] 执行任务: {schedule['id']} ({task_type})")
 
         # 更新 last_run（先保存，防止重入）
+        # Fix C2: 保存执行前旧值，失败时在 finally 里还原，
+        # 避免 cooldown 从失败时刻起算锁死重试（月报 600h≈25天）
+        _prev_last_run = schedule.get("last_run")
         schedule["last_run"] = now.isoformat()
         _save_schedule(schedule)
 
@@ -260,6 +263,12 @@ class SchedulerService:
                     fresh["last_error"] = error_msg
                 elif "last_error" in fresh:
                     del fresh["last_error"]
+                # Fix C2: 失败时还原 last_run，让 cooldown/catchup 可在下一 tick 重试
+                if status == "failed":
+                    if _prev_last_run is not None:
+                        fresh["last_run"] = _prev_last_run
+                    else:
+                        fresh.pop("last_run", None)
                 run_record = {"ts": now.isoformat(), "status": status, "duration_s": duration_s}
                 runs = fresh.get("recent_runs", [])
                 runs.append(run_record)

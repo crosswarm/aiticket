@@ -177,10 +177,18 @@ conclusion/analysis/
 APP/backend/logs/
 APP/data/sqlite/
 APP/data/chroma/
+APP/data/_sync_staging/
+APP/data/exports/
+APP/data/kb_source/
+APP/data/reply_trainer/
+APP/data/ui_rules/
+APP/data/guide_templates/
 data/_sync_staging/
 data/chroma/
 data/kb_source/
 data_cache/
+# Editor / tooling scratch (not project content)
+.claude/hooks/.claude/
 
 # Binaries — never commit archives or executables
 *.tar.gz
@@ -229,3 +237,11 @@ APP/backend/board_ai_cache.json
 
 # Phase 2 终轮 · 旧 data/ 重命名后遗留
 data.legacy.*/
+
+# Runtime products (added 2026-05-31 housekeeping)
+APP/backend/data/chroma/
+APP/backend/data/jobmaster/
+APP/backend/data/audits/
+APP/backend/data/retrieval_logs/
+APP/data/retrieval_logs/
+.understand-anything/
