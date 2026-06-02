@@ -17,13 +17,27 @@ import time
 BACKEND = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, os.path.abspath(BACKEND))
 
-from vector_store import VectorStore
+from _chroma_paths import open_ticket_vector_store
 from jira_cache_service import get_jira_cache_service
 
 
 def run(limit: int = 0, dry_run: bool = False):
     print("[RebuildIssuesV2] 开始全量重建 issues 向量集合（含 description）...")
-    vs = VectorStore()
+    vs = open_ticket_vector_store(allow_download=True)
+
+    # 自检：确认路径和 embedding 维度
+    ef = vs.embedding_func
+    if ef is not None:
+        try:
+            dim = len(ef(["test"])[0])
+            print(f"[RebuildIssuesV2] persist_directory={vs.persist_directory}  embedding_dim={dim}")
+            assert dim == 384, f"embedding 维度 {dim} != 384，终止"
+        except AssertionError:
+            raise
+        except Exception as e:
+            print(f"[RebuildIssuesV2] ⚠️ 维度自检跳过: {e}")
+    else:
+        print(f"[RebuildIssuesV2] persist_directory={vs.persist_directory}  embedding_func=None")
     svc = get_jira_cache_service()
 
     start_at = 0

@@ -1,7 +1,9 @@
 gates:
   completeness:
     enabled: true
-    scope_filter: []
+    scope_filter:
+      projects: ["流程中心", "消息中心"]
+      customer_problem_types: ["bug", "客开", "需求问题", "实施问题", "数据问题"]
     agent: kb_fact
     auto_inquiry_max_per_ticket: 2
     llm_provider: local
@@ -15,12 +17,12 @@ gates:
 
   reuse:
     enabled: true
-    composite_threshold: 0.85
+    composite_threshold: 0.83
     min_adopted_count: 3
     score_weights:
-      similarity: 0.40
-      adoption_signal: 0.30
-      recency: 0.15
+      similarity: 0.475
+      adoption_signal: 0.375
+      recency: 0.0
       version_match: 0.15
 
   specificity:

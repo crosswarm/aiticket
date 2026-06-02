@@ -1421,31 +1421,53 @@
                             <div id="re-basis-high-sim-list" class="space-y-1"></div>
                         </div>
                         <!-- 相似工单 60-79% -->
+                        <!-- 相似工单 60-79%（默认收起） -->
                         <div id="re-basis-mid-sim-row" class="hidden">
-                            <div class="flex items-center gap-1 mb-1">
-                                <span class="text-xs font-medium" style="color:#a16207;">相似工单</span>
-                                <span class="text-xs px-1 rounded" style="background:#fef3c7;color:#a16207;">60–79%</span>
-                            </div>
-                            <div id="re-basis-mid-sim-list" class="space-y-1"></div>
+                            <details>
+                                <summary style="cursor:pointer;outline:none;list-style:none;display:flex;align-items:center;gap:4px;margin-bottom:4px;">
+                                    <span style="font-size:10px;color:#a16207;transition:transform 0.15s;">▶</span>
+                                    <span class="text-xs font-medium" style="color:#a16207;">相似工单</span>
+                                    <span class="text-xs px-1 rounded" style="background:#fef3c7;color:#a16207;">60–79%</span>
+                                </summary>
+                                <div id="re-basis-mid-sim-list" class="space-y-1" style="padding-left:14px;"></div>
+                            </details>
                         </div>
-                        <!-- KB 命中（带分数） -->
+                        <!-- KB 命中（默认收起） -->
                         <div id="re-basis-kb-row" class="hidden">
-                            <div class="flex items-center gap-1 mb-1">
-                                <span class="text-xs font-medium" style="color:#0891b2;">知识库命中</span>
-                            </div>
-                            <div id="re-kb-list" class="space-y-1"></div>
+                            <details>
+                                <summary style="cursor:pointer;outline:none;list-style:none;display:flex;align-items:center;gap:4px;margin-bottom:4px;">
+                                    <span style="font-size:10px;color:#0891b2;transition:transform 0.15s;">▶</span>
+                                    <span class="text-xs font-medium" style="color:#0891b2;">知识库命中</span>
+                                </summary>
+                                <div id="re-kb-list" class="space-y-1" style="padding-left:14px;"></div>
+                            </details>
                         </div>
-                        <!-- 回复策略 -->
+                        <!-- 回复策略（默认收起） -->
                         <div id="re-basis-strategy-row" class="hidden">
-                            <div class="text-xs font-medium mb-1" style="color:var(--ds-text-secondary,#475569);">回复策略</div>
-                            <div id="re-basis-strategy" class="text-xs leading-relaxed" style="color:var(--ds-text-secondary,#475569);white-space:pre-wrap;"></div>
+                            <details>
+                                <summary style="cursor:pointer;outline:none;list-style:none;display:flex;align-items:center;gap:4px;margin-bottom:4px;">
+                                    <span style="font-size:10px;color:#475569;transition:transform 0.15s;">▶</span>
+                                    <span class="text-xs font-medium" style="color:var(--ds-text-secondary,#475569);">回复策略</span>
+                                </summary>
+                                <div id="re-basis-strategy" class="text-xs leading-relaxed" style="color:var(--ds-text-secondary,#475569);white-space:pre-wrap;padding-left:14px;"></div>
+                            </details>
                         </div>
+                        <style>
+                          #re-basis-mid-sim-row > details > summary > span:first-child,
+                          #re-basis-kb-row > details > summary > span:first-child,
+                          #re-basis-strategy-row > details > summary > span:first-child { display:inline-block; }
+                          #re-basis-mid-sim-row > details[open] > summary > span:first-child,
+                          #re-basis-kb-row > details[open] > summary > span:first-child,
+                          #re-basis-strategy-row > details[open] > summary > span:first-child { transform: rotate(90deg); }
+                          #re-reply-basis details > summary::-webkit-details-marker { display:none; }
+                        </style>
                         <!-- 5段网关分析 -->
                         <div id="re-gateway-panel" class="hidden">
                             <div class="text-xs font-medium mb-1" style="color:var(--ds-text-secondary,#475569)">5段网关分析</div>
-                            <div id="re-gateway-badges" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:5px;"></div>
+                            <div id="re-gateway-badges" style="display:none;"></div>
                             <div id="re-gateway-action" class="hidden" style="font-size:11px;padding:5px 8px;border-radius:6px;border:1px solid;"></div>
                             <div id="re-gateway-decision" class="hidden" style="margin-top:4px;font-size:11px;padding:4px 8px;border-radius:5px;background:#f8fafc;border:1px solid #e2e8f0;line-height:1.6;"></div>
+                            <div id="re-gateway-details" class="hidden" style="margin-top:6px;display:flex;flex-direction:column;gap:4px;"></div>
                         </div>
                         <!-- 信息不足标签 -->
                         <div id="re-basis-info-insufficient" class="hidden flex items-center gap-2 p-2 rounded-lg" style="background:#fef3c7;border:1px solid #fcd34d;">
@@ -7422,22 +7444,33 @@ ${_colDecision(byKey)}
             basis.classList.remove('hidden');
             // 兜底：若缓存命中分支没回填 reply_gateway，主动查 gate-log
             if (!data.reply_gateway || !data.reply_gateway.gates) {
-                const _ik = data.issue_key || currentIssueKey || '';
-                if (_ik) {
-                    try {
-                        const _r = await fetch(`${API_BASE}/api/board/gate-log/${_ik}`);
-                        const _j = await _r.json();
-                        if (_j && _j.has_data && _j.reply_gateway && _j.reply_gateway.gates) {
-                            data.reply_gateway = _j.reply_gateway;
-                            if (!data.reply_gateway.auto_decision && _j.auto_reply_decision) {
-                                data.reply_gateway.auto_decision = {
-                                    composite_confidence: _j.auto_reply_decision.composite_score,
-                                    action: _j.final_action || _j.auto_reply_decision.action,
-                                    blocked_by: _j.auto_reply_decision.blocked_by || [],
-                                };
+                if (data.generation_method === 'reuse_direct') {
+                    // Gate3 直接复用，不产生 gate-log，构造简化展示避免无意义网络请求
+                    data.reply_gateway = {
+                        version: 'v2',
+                        gates: { G3_reuse: { verdict: 'pass', composite_score: data.reuse_score } },
+                        display_cards: [{ type: 'reuse_direct', label: '直接复用历史回复', hint: data.reuse_score ? `${Math.round(data.reuse_score * 100)}%` : '' }],
+                        final_action: 'reuse_direct',
+                        extra_operations: [],
+                    };
+                } else {
+                    const _ik = data.issue_key || currentIssueKey || '';
+                    if (_ik) {
+                        try {
+                            const _r = await fetch(`${API_BASE}/api/board/gate-log/${_ik}`);
+                            const _j = await _r.json();
+                            if (_j && _j.has_data && _j.reply_gateway && _j.reply_gateway.gates) {
+                                data.reply_gateway = _j.reply_gateway;
+                                if (!data.reply_gateway.auto_decision && _j.auto_reply_decision) {
+                                    data.reply_gateway.auto_decision = {
+                                        composite_confidence: _j.auto_reply_decision.composite_score,
+                                        action: _j.final_action || _j.auto_reply_decision.action,
+                                        blocked_by: _j.auto_reply_decision.blocked_by || [],
+                                    };
+                                }
                             }
-                        }
-                    } catch (e) { console.warn('[updateReplyBasis] gate-log fetch failed', e); }
+                        } catch (e) { console.warn('[updateReplyBasis] gate-log fetch failed', e); }
+                    }
                 }
             }
             // 正常回复路径：隐藏信息不足标签
@@ -7598,6 +7631,128 @@ ${_colDecision(byKey)}
                     } else {
                         gwAction.classList.add('hidden');
                     }
+                }
+                // 5段网关详细分析卡片（每个 gate 展示分析依据）
+                const detailsDiv = document.getElementById('re-gateway-details');
+                if (detailsDiv) {
+                    const _pct = v => (v == null) ? '—' : (Math.round(v * 100) + '%');
+                    const _esc = s => String(s == null ? '' : s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+                    const _vColor = {pass:'#10b981',warn:'#d97706',fail:'#dc2626',skipped:'#94a3b8'};
+                    const _card = (title, verdict, bodyHtml, hint, verdictLabel) => {
+                        const c = _vColor[verdict] || '#94a3b8';
+                        const vTxt = verdictLabel || verdict;
+                        const hintHtml = hint ? ` <span style="font-family:monospace;font-size:10px;color:#334155;background:#f1f5f9;border-radius:3px;padding:1px 5px;">${_esc(hint)}</span>` : '';
+                        return `<details style="font-size:11px;border-left:3px solid ${c};background:#fafbfc;border-radius:4px;padding:4px 8px;">
+                          <summary style="cursor:pointer;font-weight:600;color:#334155;outline:none;">${title} <span style="color:${c};margin-left:4px;">[${vTxt}]</span>${hintHtml}</summary>
+                          <div style="margin-top:4px;color:#475569;line-height:1.7;padding-left:4px;">${bodyHtml}</div>
+                        </details>`;
+                    };
+                    const _row = (k, v) => v ? `<div><span style="color:#64748b;">${k}:</span> ${_esc(v)}</div>` : '';
+                    const cards = [];
+                    // G1
+                    const g1 = rg.gates.G1_completeness || {};
+                    {
+                        const v = g1.verdict || 'skipped';
+                        let body = '';
+                        if (g1._legacy_note) body += `<div style="color:#a16207;font-style:italic;">${_esc(g1._legacy_note)}</div>`;
+                        if (g1.error) body += _row('跳过原因', g1.error);
+                        if (g1.insufficient_type) body += _row('不完整类型', g1.insufficient_type);
+                        if ((g1.missing_fields || []).length) body += _row('缺失字段', g1.missing_fields.join('、'));
+                        if (g1.rule_matched) body += _row('命中规则', g1.rule_matched);
+                        if (g1.inquiry_draft) body += `<div style="margin-top:3px;padding:4px 6px;background:#fef3c7;border-radius:3px;"><span style="color:#92400e;font-weight:600">问询草稿:</span> ${_esc(g1.inquiry_draft.slice(0,200))}${g1.inquiry_draft.length>200?'…':''}</div>`;
+                        if (!body) body = '<div style="color:#94a3b8;">信息完整，无追问需求</div>';
+                        cards.push(_card('G1 信息完整性', v, body));
+                    }
+                    // G2
+                    const g2x = rg.gates.G2_classification || {};
+                    {
+                        const v = g2x.verdict || 'skipped';
+                        let body = '';
+                        if (g2x._legacy_note) body += `<div style="color:#a16207;font-style:italic;">${_esc(g2x._legacy_note)}</div>`;
+                        if (g2x.ticket_project_from_key) body += _row('工单号项目', g2x.ticket_project_from_key);
+                        if (g2x.predicted_project_from_chroma) body += _row('相似工单多数派', `${g2x.predicted_project_from_chroma}（vote ratio ${_pct(g2x.chroma_vote_ratio)}）`);
+                        if (g2x.predicted_module_from_llm) body += _row('LLM 预测模块', g2x.predicted_module_from_llm);
+                        if (g2x.matched_rule_id) body += _row('命中规则', g2x.matched_rule_id);
+                        if (g2x.final_project_decision) body += _row('最终项目判定', g2x.final_project_decision);
+                        if (g2x.transfer_to) body += _row('建议移交至', `${g2x.transfer_to}${g2x.transferee_display ? '（'+g2x.transferee_display+'）' : (g2x.transferee?'（'+g2x.transferee+'）':'')}`);
+                        if (g2x.confidence != null) {
+                            const cv = (g2x.chroma_vote_ratio||0), rs = (g2x.rule_match_score||0), ls = (g2x.llm_match_score||0);
+                            body += `<div style="margin-top:3px;padding:3px 6px;background:#eff6ff;border-radius:3px;color:#1e40af;font-family:monospace;font-size:10px;">置信度 = 0.5×chroma(${cv.toFixed(2)}) + 0.3×rule(${rs.toFixed(2)}) + 0.2×llm(${ls.toFixed(2)}) = <b>${_pct(g2x.confidence)}</b></div>`;
+                        }
+                        if (!body) body = '<div style="color:#94a3b8;">未执行</div>';
+                        const g2hint = g2x.final_project_decision || g2x.ticket_project_from_key || '';
+                        cards.push(_card('G2 项目分类', v, body, g2hint));
+                    }
+                    // G3
+                    const g3 = rg.gates.G3_reuse || {};
+                    {
+                        const v = g3.verdict || 'skipped';
+                        let body = '';
+                        if (g3._legacy_note) body += `<div style="color:#a16207;font-style:italic;">${_esc(g3._legacy_note)}</div>`;
+                        if (g3.candidate_key) {
+                            const summary = g3.candidate_summary ? `<div style="margin-top:2px;color:#64748b;font-size:10px;">${_esc(g3.candidate_summary.slice(0,120))}${g3.candidate_summary.length>120?'…':''}</div>` : '';
+                            body += `<div><span style="color:#64748b;">主复用工单:</span> <a href="https://jira.example.com/browse/${g3.candidate_key}" target="_blank" style="color:#2563eb;font-family:monospace;font-weight:600">${g3.candidate_key}</a>${summary}</div>`;
+                        }
+                        if (g3.composite_score != null) body += _row('综合相似度', _pct(g3.composite_score));
+                        if (g3.reuse_strategy) {
+                            const stratMap = {direct:'直接复用（高置信，参考微调）',reference:'参考复用（中置信，作为示例）',skip:'不复用（低置信）'};
+                            body += _row('复用策略', stratMap[g3.reuse_strategy] || g3.reuse_strategy);
+                        }
+                        if (g3.downgrade_reason) {
+                            body += `<div style="margin-top:4px;padding:4px 8px;background:#fef2f2;border:1px solid #fecaca;border-radius:4px;color:#b91c1c;font-size:11px;">⬇ 降级原因: <b>${_esc(g3.downgrade_reason)}</b></div>`;
+                        }
+                        if (!body) body = '<div style="color:#94a3b8;">无历史相似工单可复用</div>';
+                        cards.push(_card('G3 历史复用', v, body, g3.candidate_key || ''));
+                    }
+                    // G4
+                    const g4 = rg.gates.G4_specificity || {};
+                    {
+                        const v = g4.verdict || 'skipped';
+                        let body = '';
+                        if (g4._legacy_note) body += `<div style="color:#a16207;font-style:italic;">${_esc(g4._legacy_note)}</div>`;
+                        if (g4.level) {
+                            const lvMap = {high:'高（≥3条证据）',medium:'中（2条证据）',low:'低（1条证据）',none:'无证据'};
+                            body += _row('证据强度', lvMap[g4.level] || g4.level);
+                        }
+                        if (g4.kb_evidence_count != null) body += _row('KB 命中数', g4.kb_evidence_count);
+                        if ((g4.evidence_items || []).length) {
+                            const items = g4.evidence_items.map(it => {
+                                let sc = '';
+                                if (it.score != null) {
+                                    const fmt = (it.score >= 0 && it.score <= 1) ? _pct(it.score) : it.score.toFixed(1);
+                                    sc = ` <span style="color:#64748b;">(${fmt})</span>`;
+                                }
+                                const src = it.source ? ` <span style="color:#94a3b8;font-size:10px;">${_esc(it.source)}</span>` : '';
+                                return `<li>${_esc(it.name)}${sc}${src}</li>`;
+                            }).join('');
+                            body += `<div style="margin-top:3px;"><span style="color:#64748b;">KB/工单依据:</span><ul style="margin:2px 0 0 18px;padding:0;">${items}</ul></div>`;
+                        }
+                        if ((g4.weak_points || []).length) body += _row('弱证据条目', g4.weak_points.join('、'));
+                        if (!body) body = '<div style="color:#94a3b8;">无知识库命中信息</div>';
+                        const g4lvLabel = {high:'高',medium:'中',low:'低',none:'无'}[g4.level] || '';
+                        cards.push(_card('G4 回复具体性', v, body, '', g4lvLabel || undefined));
+                    }
+                    // G5
+                    const g5 = rg.gates.G5_supervisor || {};
+                    {
+                        const v = g5.verdict || 'skipped';
+                        let body = '';
+                        if (g5.score != null) body += _row('监督评分', _pct(g5.score));
+                        if (g5.step_safety) {
+                            const ssMap = {safe:'安全',risky:'有风险',unsafe:'不安全'};
+                            body += _row('操作安全等级', ssMap[g5.step_safety] || g5.step_safety);
+                        }
+                        if ((g5.risk_flags || []).length) {
+                            const flagMap = {hallucination:'幻觉',evidence_mismatch:'证据不匹配',over_specific:'过度具体',user_intent_drift:'偏离用户意图',unsafe_operation:'危险操作'};
+                            body += _row('风险标签', g5.risk_flags.map(f => flagMap[f] || f).join('、'));
+                        }
+                        if (g5.provider_used) body += _row('监督模型', g5.provider_used);
+                        if (g5.rationale) body += `<div style="margin-top:3px;padding:4px 6px;background:#f1f5f9;border-radius:3px;"><span style="color:#475569;font-weight:600">综合判断:</span> ${_esc(g5.rationale)}</div>`;
+                        if (!body) body = '<div style="color:#94a3b8;">未执行</div>';
+                        cards.push(_card('G5 监督审计', v, body));
+                    }
+                    detailsDiv.innerHTML = cards.join('');
+                    detailsDiv.classList.remove('hidden');
                 }
                 // auto_decision: composite_confidence + action + blocked_by
                 const adDiv = document.getElementById('re-gateway-decision');
@@ -10528,6 +10683,77 @@ ${_colDecision(byKey)}
     </div>
   </div>
 </div>
+
+<!-- Quick KB Note Modal (Alt+N) -->
+<div id="kb-quick-note-modal" class="fixed inset-0 z-[80] hidden flex items-center justify-center" style="background:rgba(0,0,0,0.5)">
+  <div class="bg-white rounded-xl p-6 w-[460px] shadow-2xl">
+    <h3 class="font-semibold mb-3 text-indigo-700">💡 快捷 KB 笔记 <kbd class="ml-2 text-xs text-slate-400 bg-slate-100 px-1 rounded">⌥N</kbd></h3>
+    <div class="mb-2">
+      <label class="text-xs text-slate-500 mb-1 block">话题（如：审批流、流程监控）</label>
+      <input id="kbnote-topic" type="text" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="话题名称" autocomplete="off">
+    </div>
+    <div class="mb-2">
+      <label class="text-xs text-slate-500 mb-1 block">知识点内容 <span class="text-slate-300 ml-1">Ctrl+Enter 提交</span></label>
+      <textarea id="kbnote-content" rows="3" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="输入知识点，将立即写入 product_facts 并重索引"></textarea>
+    </div>
+    <div class="flex gap-2 mt-4 justify-end">
+      <button onclick="closeKbNoteModal()" class="px-4 py-2 text-sm bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">取消</button>
+      <button id="kbnote-submit-btn" onclick="submitKbNote()" class="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors">添加到 KB</button>
+    </div>
+  </div>
+</div>
+<!-- Quick KB Note floating button -->
+<button onclick="openKbNoteModal()" title="快捷 KB 笔记 (⌥N)"
+  class="fixed bottom-6 right-6 z-[75] w-10 h-10 rounded-full bg-indigo-600 text-white shadow-lg hover:bg-indigo-700 active:scale-95 transition-all flex items-center justify-center text-lg"
+  style="opacity:0.85">💡</button>
+
+<script>
+function openKbNoteModal(prefillTopic) {
+  document.getElementById('kb-quick-note-modal').classList.remove('hidden');
+  const topicEl = document.getElementById('kbnote-topic');
+  if (prefillTopic) topicEl.value = prefillTopic;
+  setTimeout(() => (prefillTopic ? document.getElementById('kbnote-content') : topicEl).focus(), 50);
+}
+function closeKbNoteModal() {
+  document.getElementById('kb-quick-note-modal').classList.add('hidden');
+  document.getElementById('kbnote-topic').value = '';
+  document.getElementById('kbnote-content').value = '';
+}
+async function submitKbNote() {
+  const topic = document.getElementById('kbnote-topic').value.trim();
+  const content = document.getElementById('kbnote-content').value.trim();
+  if (!topic) { document.getElementById('kbnote-topic').focus(); return; }
+  if (!content) { document.getElementById('kbnote-content').focus(); return; }
+  const btn = document.getElementById('kbnote-submit-btn');
+  btn.disabled = true; btn.textContent = '写入中...';
+  try {
+    const res = await fetch(`${API_BASE}/api/kb/note`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({topic, content})
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`✅ 已写入 KB [${data.topic}]，${data.indexed} 条已重索引`, 'success');
+      closeKbNoteModal();
+    } else {
+      showToast(data.detail || '写入失败', 'error');
+    }
+  } catch(e) { showToast('请求失败: ' + e.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = '添加到 KB'; }
+}
+document.addEventListener('keydown', function(e) {
+  if (e.altKey && e.code === 'KeyN' && !e.ctrlKey && !e.metaKey) {
+    const tag = document.activeElement?.tagName?.toLowerCase();
+    if (tag === 'input' || tag === 'textarea') return;
+    e.preventDefault();
+    openKbNoteModal();
+  }
+});
+document.getElementById('kbnote-content').addEventListener('keydown', function(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); submitKbNote(); }
+});
+</script>
 
     <script src="/assets/scope-switcher.js"></script>
     <script>ScopeSwitcher.init();</script>
