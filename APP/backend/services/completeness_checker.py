@@ -42,7 +42,12 @@ def check(
         return CompletenessResult(passed=True, gate_enabled=False)
 
     scope_filter = gates_cfg.get("scope_filter", {})
-    allowed_projects = scope_filter.get("projects", [])
+    if isinstance(scope_filter, dict):
+        allowed_projects = scope_filter.get("projects", [])
+    elif isinstance(scope_filter, list):
+        allowed_projects = scope_filter
+    else:
+        allowed_projects = []
     if allowed_projects and project not in allowed_projects:
         return CompletenessResult(passed=True, gate_enabled=True, rule_matched="scope_skip")
 
