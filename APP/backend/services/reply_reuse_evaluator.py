@@ -15,9 +15,9 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 
 # 权重（与 config/reply_gates.yaml score_weights 对应）
 _DEFAULT_WEIGHTS = {
-    "similarity": 0.40,
-    "adoption_signal": 0.30,
-    "recency": 0.15,
+    "similarity": 0.475,
+    "adoption_signal": 0.375,
+    "recency": 0.0,
     "version_match": 0.15,
 }
 
@@ -85,8 +85,9 @@ def _score_example(
     current_module: str,
     weights: dict,
 ) -> dict:
-    # 1. 相似度：search_examples 已给出 score (0-1)
-    sim = float(ex.get("score", 0.0))
+    # 1. 相似度：优先用 sim_score（归一化的 [0,1] 值），fallback 到 score（兼容旧数据）
+    # reply_trainer 返回的 score 已乘以排序权重（最高 ≈2.1），sim_score 是原始值
+    sim = min(max(float(ex.get("sim_score", ex.get("score", 0.0))), 0.0), 1.0)
 
     # 2. 采纳信号
     if ex.get("adopted"):

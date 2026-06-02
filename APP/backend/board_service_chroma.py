@@ -27,7 +27,7 @@ PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__f
 from vector_store import VectorStore
 from search_chroma import SemanticSearchEngine
 from llm_service import LLMService
-from reply_cache_service import get_cached_reply, save_cached_reply
+from reply_cache_service import get_cached_reply, get_cached_reply_entry, save_cached_reply
 from reply_trainer import ReplyTrainer, STYLE_RULES_FILE
 from kb_runtime_service import KnowledgeRuntimeService
 
@@ -2347,6 +2347,38 @@ class BoardService:
                 "word_count": 386
             }
         """
+        # ── 富缓存早期命中：跳过 Gate1/Gate2/AI分析（生成时已通过所有门控）─────────
+        if not force:
+            _early_entry = get_cached_reply_entry(issue_key, {})
+            if _early_entry is not None and "grounded_confidence" in _early_entry:
+                _early_reply = _early_entry.get("reply_content", "")
+                if _early_reply and len(_early_reply) >= 10 and not any(
+                        _early_reply.startswith(p) for p in ("Error:", "模型调用失败:", "LLM 分析失败:")):
+                    print(f"[GenerateReply] 富缓存早期命中，跳过AI分析加载: {issue_key}")
+                    _kb_scored = _early_entry.get("kb_hits_scored") or []
+                    return {
+                        "reply_content": _early_reply,
+                        "solution_content": _early_reply,
+                        "ai_analysis": _early_entry.get("ai_analysis"),
+                        "word_count": len(_early_reply.replace('\n', '').replace(' ', '')),
+                        "cached": True,
+                        "suggested_reply_method": _early_entry.get("suggested_reply_method"),
+                        "suggested_issue_type": _early_entry.get("suggested_issue_type"),
+                        "generation_method": _early_entry.get("generation_method", "cached"),
+                        "kb_sources": [r.get("title", "") for r in _kb_scored],
+                        "kb_evidence_count": len(_kb_scored),
+                        "kb_hits_scored": _kb_scored,
+                        "similar_issues_scored": _early_entry.get("similar_issues_scored") or [],
+                        "examples_used_count": 0,
+                        "style_rules_applied": True,
+                        "grounded_confidence": _early_entry.get("grounded_confidence"),
+                        "reply_strategy": _early_entry.get("reply_strategy") or "",
+                        "reply_gateway": _early_entry.get("reply_gateway"),
+                        "issue_key": issue_key,
+                        "reuse_score": _early_entry.get("reuse_score"),
+                    }
+        # ─────────────────────────────────────────────────────────────────────
+
         # ── Gate 1: 信息完整性检查 ─────────────────────────────────────────────
         if not force_pass_gate1:
             gate1_result = self._run_gate1_completeness(issue_key)
@@ -2416,7 +2448,7 @@ class BoardService:
                     "error": "未找到AI分析结果，请先进行分析"
                 }
 
-        # 3. 检查回复缓存（非强制模式下）
+        # 3. 旧格式 cache entry 检测（非强制模式下）——触发一次性升级到富 entry
         _bad_reply_prefixes = ("Error:", "模型调用失败:", "LLM 分析失败:")
         if not force:
             cached_reply = get_cached_reply(issue_key, ai_analysis)
@@ -2426,109 +2458,8 @@ class BoardService:
             if cached_reply and len(cached_reply) < 10:
                 cached_reply = None
             if cached_reply:
-                print(f"[GenerateReply] 使用缓存的回复内容: {issue_key}")
-                suggested_fields = self._suggest_reply_fields(ai_analysis) if ai_analysis else {}
-                # 即使是缓存路径，也做轻量 Chroma + KB 查询以支撑 grounded_confidence
-                _ana = ai_analysis or {}
-                # file_cache 含 reasoning/reply_strategy_cached，vector_store 不含
-                _file_ana = load_file_cached_analysis(issue_key, PROJECT_ROOT) or {}
-                _cache_query = f"{_ana.get('issue_title', '')} {_ana.get('issue_description', '')}".strip()
-                # fallback: ai_analysis 无 title 时从 Jira 缓存取工单摘要
-                if not _cache_query:
-                    try:
-                        _iss = self._get_issue_from_cache(issue_key) or {}
-                        _cache_query = f"{_iss.get('summary', '')} {_iss.get('description', '')}".strip()[:300]
-                    except Exception:
-                        pass
-                if not _cache_query:
-                    try:
-                        _vs_iss = self.search_engine.vector_store.get_issue_by_key(issue_key) or {}
-                        _cache_query = _vs_iss.get('document', _vs_iss.get('summary', ''))[:300]
-                    except Exception:
-                        pass
-                _cache_sim, _cache_kb, _cache_kb_scored = [], [], []
-                # Try reading pre-computed similar issues stored by a previous fresh call
-                _stored_sim = (_ana.get("similar_issues_cached") or
-                               file_cache.get(issue_key, {}).get("similar_issues_cached") if 'file_cache' in dir() else None)
-                if _stored_sim:
-                    _cache_sim = _stored_sim
-                elif _cache_query:
-                    try:
-                        _sr = self.search_engine.search(_cache_query, top_k=5, min_score=0.6)
-                        _cache_sim = [
-                            {"key": r.get("key", ""), "score": round(float(r.get("score") or 0), 4),
-                             "summary": (r.get("summary") or r.get("content") or "")[:80]}
-                            for r in _sr.get("results", []) if r.get("key", "") != issue_key
-                        ][:5]
-                    except Exception:
-                        pass
-                    try:
-                        _kb_svc = KnowledgeRuntimeService()
-                        _kb_raw = _kb_svc.search_bundle(_cache_query, top_k=5)
-                        _kb_items = (_kb_raw.get("items") if isinstance(_kb_raw, dict) else _kb_raw) or []
-                        _cache_kb = [
-                            {"title": r.get("name", r.get("title", "")),
-                             "score": round(min(1.0, max(0.0, float(r.get("score") or 0) / 100.0)), 4),
-                             "category": r.get("category", "")}
-                            for r in _kb_items
-                        ][:5]
-                        _cache_kb_scored = [
-                            {"title": r.get("name", r.get("title", "")),
-                             "score": round(min(1.0, max(0.0, float(r.get("score") or 0) / 100.0)), 4),
-                             "category": r.get("category", ""), "url": r.get("url", ""),
-                             "text": (r.get("chunk_text") or r.get("summary") or "")[:200]}
-                            for r in _kb_items
-                        ][:5]
-                    except Exception:
-                        pass
-                from services.confidence_calculator import calculate_grounded_confidence as _calc_gc
-                _cached_gc = _calc_gc(
-                    similar_issues_scored=_cache_sim or None,
-                    kb_evidence=_cache_kb or None,
-                    supervisor_score=None,
-                    ai_raw_confidence=_ana.get("confidence"),
-                )
-                _patch_analysis_cache(issue_key,
-                    grounded_confidence_score=_cached_gc.get("score"),
-                    grounded_evidence_status=_cached_gc.get("evidence_status"))
-                _cached_gw = None
-                try:
-                    from services.gate_decision_log import get_recent_decision as _grd
-                    _rec = _grd(issue_key)
-                    if _rec and isinstance(_rec.get("reply_gateway"), dict) and _rec["reply_gateway"].get("gates"):
-                        _cached_gw = _rec["reply_gateway"]
-                        if "auto_decision" not in _cached_gw:
-                            _ard = _rec.get("auto_reply_decision") or {}
-                            if _ard:
-                                _cached_gw["auto_decision"] = {
-                                    "composite_confidence": _ard.get("composite_score"),
-                                    "threshold_hit": _ard.get("action"),
-                                    "action": _rec.get("final_action", ""),
-                                    "decided_by": "auto_reply_decider",
-                                    "blocked_by": list(_rec.get("blocked_by") or []),
-                                }
-                except Exception as _gw_exc:
-                    print(f"[GenerateReply] cache hit gateway hydrate failed: {_gw_exc}")
-                return {
-                    "reply_content": cached_reply,
-                    "solution_content": cached_reply,
-                    "ai_analysis": ai_analysis,
-                    "word_count": len(cached_reply.replace('\n', '').replace(' ', '')),
-                    "cached": True,
-                    "suggested_reply_method": suggested_fields.get('reply_method'),
-                    "suggested_issue_type": suggested_fields.get('issue_type'),
-                    "generation_method": "cached",
-                    "kb_sources": [r.get("title", "") for r in _cache_kb_scored],
-                    "kb_evidence_count": len(_cache_kb_scored),
-                    "kb_hits_scored": _cache_kb_scored,
-                    "similar_issues_scored": _cache_sim or [],
-                    "examples_used_count": 0,
-                    "style_rules_applied": True,
-                    "grounded_confidence": _cached_gc,
-                    "reply_strategy": (_file_ana.get("reply_strategy_cached") or _ana.get("reasoning") or _file_ana.get("reasoning") or ""),
-                    "reply_gateway": _cached_gw,
-                    "issue_key": issue_key,
-                }
+                # 旧 entry（无 grounded_confidence）：fall-through 到完整生成，写回富 entry
+                print(f"[GenerateReply] 旧 cache entry，触发一次性升级: {issue_key}")
 
         # 4. 使用Chroma搜索相似工单
         similar_issues = []
@@ -2742,8 +2673,9 @@ class BoardService:
         except Exception as _e_g3:
             print(f"[Gate3] reuse evaluation error, skipping: {_e_g3}")
 
+        _g3_downgrade_reason: str | None = None  # 非 None 表示 direct 路径被降级，原因写入 G3 gate
         if _reuse_candidate is not None and _reuse_candidate.tier == "direct":
-            # 直接复用：个性化替换后短路返回
+            # 直接复用：个性化替换 → 污染校验 + G5 supervisor → 通过则短路返回，否则降级 llm_blend
             try:
                 from services.reply_personalize import personalize_reply
                 _best_ex = _reuse_candidate.example
@@ -2758,26 +2690,103 @@ class BoardService:
                 print(f"[Gate3] personalize error: {_ep}")
                 _personalized = _reuse_candidate.example.get("reply", "")
 
-            if not force:
-                save_cached_reply(issue_key, ai_analysis, _personalized)
-            suggested_fields = self._suggest_reply_fields(ai_analysis, reply_examples)
-            print(f"[Gate3] {issue_key}: direct reuse (composite={_reuse_candidate.composite_score:.3f})")
-            return {
-                "reply_content": _personalized,
-                "solution_content": _personalized,
-                "ai_analysis": ai_analysis,
-                "word_count": len(_personalized.replace('\n', '').replace(' ', '')),
-                "cached": False,
-                "suggested_reply_method": suggested_fields.get('reply_method'),
-                "suggested_issue_type": suggested_fields.get('issue_type'),
-                "generation_method": "reuse_direct",
-                "specificity_level": _specificity_level,
-                "reuse_score": _reuse_candidate.composite_score,
-                "kb_sources": [],
-                "kb_evidence_count": 0,
-                "examples_used_count": 1,
-                "style_rules_applied": True,
-            }
+            # 污染校验：复用文本与原工单描述高度重叠 → 内容污染
+            import difflib as _difflib
+            _src_desc = (ai_analysis or {}).get("issue_description", "") or ""
+            _pollution_ratio = (
+                _difflib.SequenceMatcher(None, _personalized[:500], _src_desc[:500]).ratio()
+                if _src_desc else 0.0
+            )
+            _polluted = _pollution_ratio > 0.4
+
+            # G5 supervisor 在 direct 路径上强制运行（supervisor 是最后一道质量墙）
+            _sup_g3 = None
+            _sup_g3_failed = False
+            try:
+                from agents.reply_supervisor_agent import supervise as _supervise_g3
+                _sup_g3 = _supervise_g3(
+                    issue_key=issue_key,
+                    issue_title=(ai_analysis or {}).get("issue_title", ""),
+                    issue_description=_src_desc,
+                    generated_reply=_personalized,
+                    kb_evidence=[],
+                    gate_decisions={"reuse": {"tier": "direct", "composite": _reuse_candidate.composite_score}},
+                    main_provider="minimax",
+                )
+                _sup_g3_failed = _sup_g3 is None or (
+                    _sup_g3.supervisor_score is not None and _sup_g3.supervisor_score < 0.6
+                )
+            except Exception as _e_sup3:
+                print(f"[Gate3] supervisor on direct path failed: {_e_sup3}")
+                _sup_g3_failed = True
+
+            _downgrade_reason = None
+            if _polluted:
+                _downgrade_reason = f"pollution_ratio={_pollution_ratio:.2f}"
+            elif _sup_g3_failed:
+                _downgrade_reason = "supervisor_fail"
+
+            if _downgrade_reason:
+                print(f"[Gate3] {issue_key}: downgrade direct→llm_blend ({_downgrade_reason})")
+                _reuse_candidate.tier = "llm_blend"
+                _g3_downgrade_reason = _downgrade_reason
+                # 不短路，继续走完整 5 网关流程
+            else:
+                # 通过验证：短路返回，附带 G5 结果
+                _g3_gateway = None
+                if _sup_g3 is not None:
+                    try:
+                        _g3_gateway = {
+                            "version": "v2",
+                            "gates": {
+                                "G5_supervisor": {
+                                    "verdict": "pass" if (_sup_g3.supervisor_score or 0) >= 0.6 else "warn",
+                                    "score": _sup_g3.supervisor_score,
+                                    "risk_flags": _sup_g3.risk_flags or [],
+                                    "gate_enabled": _sup_g3.gate_enabled,
+                                }
+                            },
+                        }
+                    except Exception:
+                        pass
+                suggested_fields = self._suggest_reply_fields(ai_analysis, reply_examples)
+                print(f"[Gate3] {issue_key}: direct reuse (composite={_reuse_candidate.composite_score:.3f})")
+                _g3_extra = {
+                    "grounded_confidence": None,
+                    "kb_hits_scored": [],
+                    "similar_issues_scored": [],
+                    "reply_strategy": f"Gate3 direct reuse (composite={_reuse_candidate.composite_score:.3f})",
+                    "reply_gateway": _g3_gateway,
+                    "suggested_reply_method": suggested_fields.get('reply_method'),
+                    "suggested_issue_type": suggested_fields.get('issue_type'),
+                    "generation_method": "reuse_direct",
+                    "reuse_score": _reuse_candidate.composite_score,
+                    "downgrade_reason": None,
+                }
+                if not force:
+                    save_cached_reply(issue_key, ai_analysis, _personalized, extra_fields=_g3_extra)
+                return {
+                    "reply_content": _personalized,
+                    "solution_content": _personalized,
+                    "ai_analysis": ai_analysis,
+                    "word_count": len(_personalized.replace('\n', '').replace(' ', '')),
+                    "cached": False,
+                    "suggested_reply_method": suggested_fields.get('reply_method'),
+                    "suggested_issue_type": suggested_fields.get('issue_type'),
+                    "generation_method": "reuse_direct",
+                    "specificity_level": _specificity_level,
+                    "reuse_score": _reuse_candidate.composite_score,
+                    "kb_sources": [],
+                    "kb_evidence_count": 0,
+                    "examples_used_count": 1,
+                    "style_rules_applied": True,
+                    "issue_key": issue_key,
+                    "reply_gateway": _g3_gateway,
+                    "grounded_confidence": None,
+                    "similar_issues_scored": [],
+                    "reply_strategy": f"Gate3 direct reuse (composite={_reuse_candidate.composite_score:.3f})",
+                    "downgrade_reason": None,
+                }
 
         elif _reuse_candidate is not None and _reuse_candidate.tier == "skip":
             # 证据弱：清空范例，只靠 KB evidence
@@ -2853,11 +2862,7 @@ class BoardService:
         # 7. AI 智能推荐字段值（优先从范例历史数据提取，其次关键词匹配）
         suggested_fields = self._suggest_reply_fields(ai_analysis, reply_examples)
 
-        # 7. 保存到缓存（非强制模式下）
-        if not force:
-            save_cached_reply(issue_key, ai_analysis, solution_content)
-        else:
-            print(f"[GenerateReply] 强制重新生成，不保存缓存: {issue_key}")
+        # 缓存在 grounded_conf + gateway 计算完成后写入（见下方 _patch_analysis_cache 之后）
 
         _transfer_pending = getattr(self, '_gate2_transfer_pending', None)
         self._gate2_transfer_pending = None  # reset
@@ -2882,6 +2887,9 @@ class BoardService:
                 generated_reply="",
             )
             self.reply_gateway.inject_g5_from_supervisor(_gw_result, issue_key, _supervisor_result)
+            # 若 direct 路径降级，将原因注入 G3_reuse 以便前端展示
+            if _g3_downgrade_reason and isinstance(_gw_result.get("gates"), dict):
+                _gw_result["gates"].setdefault("G3_reuse", {})["downgrade_reason"] = _g3_downgrade_reason
         except Exception as _e_gw:
             print(f"[Gateway] assembly failed (non-blocking): {_e_gw}")
             _gw_result = {"version": "v2", "gates": {}, "display_cards": [], "final_action": "", "extra_operations": []}
@@ -3005,6 +3013,35 @@ class BoardService:
             grounded_evidence_status=_grounded_conf.get("evidence_status"),
             similar_issues_cached=_sim_cache,
             reply_strategy_cached=_strategy_cache)
+
+        # 写入富 cache entry（含所有展示字段，后续命中时零重算）
+        if not force:
+            _kb_scored_cache = [
+                {"title": item.get("name", item.get("title", "")),
+                 "score": round(min(1.0, max(0.0, float(item.get("score") or 0) / 100.0)), 4),
+                 "category": item.get("category", ""),
+                 "url": item.get("url", ""),
+                 "text": (item.get("chunk_text") or item.get("summary") or "")[:200]}
+                for item in (kb_evidence or [])[:5]
+            ]
+            _sim_scored_cache = [
+                {"key": s.get("key", ""), "score": round(float(s.get("score") or 0), 4),
+                 "summary": (s.get("summary") or s.get("content") or "")[:80]}
+                for s in (similar_issues or [])[:5]
+                if (s.get("score") or 0) >= 0.25
+            ]
+            save_cached_reply(issue_key, ai_analysis, solution_content, extra_fields={
+                "grounded_confidence": _grounded_conf,
+                "kb_hits_scored": _kb_scored_cache,
+                "similar_issues_scored": _sim_scored_cache,
+                "reply_strategy": _strategy_cache,
+                "reply_gateway": locals().get("_gw_result"),
+                "suggested_reply_method": suggested_fields.get('reply_method'),
+                "suggested_issue_type": suggested_fields.get('issue_type'),
+                "generation_method": "llm",
+            })
+        else:
+            print(f"[GenerateReply] 强制重新生成，不保存缓存: {issue_key}")
 
         return {
             "reply_content": solution_content,

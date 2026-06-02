@@ -460,6 +460,77 @@ def get_recent_decision(issue_key: str) -> dict | None:
     return latest
 
 
+def get_reply_gateway_compat(issue_key: str) -> dict | None:
+    """返回 reply_gateway 结构；若历史记录是 legacy gate_decisions 字段则现合成。
+
+    用于回复弹窗"回复依据"区与缓存命中分支：需要 v2 形态的 reply_gateway.gates
+    才能渲染 G1-G5 卡片。
+    """
+    record = get_recent_decision(issue_key)
+    if not record:
+        return None
+    rg = record.get("reply_gateway") or {}
+    if rg.get("gates"):
+        return rg
+    gd = record.get("gate_decisions") or {}
+    if not gd:
+        return None
+
+    def _v(field: str, blocked_verdict: str = "fail") -> str:
+        x = gd.get(field)
+        if x == "passed":
+            return "pass"
+        if x == "blocked":
+            return blocked_verdict
+        return "skipped"
+
+    _legacy_note = "此工单为 v1 时期记录（2026-05-20 前），G2/G3/G4 详情未保存。可触发『重新生成回复』获取完整 v2 分析。"
+    gates = {
+        "G1_completeness": {
+            "verdict": _v("completeness"),
+            "missing_fields": record.get("missing_fields") or [],
+            "_legacy_note": _legacy_note,
+        },
+        "G2_classification": {
+            "verdict": _v("classification"),
+            "_legacy_note": "v1 时期 G2 未启用（reply_gates.yaml classification.enabled=false）",
+        },
+        "G3_reuse": {
+            "verdict": _v("reuse"),
+            "composite_score": record.get("reuse_score"),
+            "_legacy_note": _legacy_note,
+        },
+        "G4_specificity": {
+            "verdict": _v("specificity"),
+            "level": record.get("specificity_level"),
+            "_legacy_note": _legacy_note,
+        },
+        "G5_supervisor": {
+            "verdict": _v("supervisor"),
+            "score": record.get("supervisor_score"),
+            "risk_flags": record.get("risk_flags") or [],
+            "rationale": "（v1 记录无 rationale 字段，详见 risk_flags）" if record.get("risk_flags") else "",
+        },
+    }
+    ard = record.get("auto_reply_decision") or {}
+    auto_decision = {}
+    if ard:
+        auto_decision = {
+            "composite_confidence": ard.get("composite_score"),
+            "threshold_hit": ard.get("action"),
+            "action": record.get("final_action", ""),
+            "decided_by": "auto_reply_decider",
+            "blocked_by": list(record.get("blocked_by") or []),
+        }
+    return {
+        "version": "v1-legacy",
+        "gates": gates,
+        "final_action": record.get("final_action", ""),
+        "auto_decision": auto_decision,
+        "_legacy_synthesized": True,
+    }
+
+
 def get_gate_summary(issue_key: str) -> dict | None:
     """Returns compact gate verdicts for board list mini-badge display."""
     record = get_recent_decision(issue_key)

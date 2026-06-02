@@ -352,7 +352,12 @@ class ReplyGateway:
             examples = reply_examples
             if not examples and self.reply_trainer is not None:
                 try:
-                    examples = self.reply_trainer.search_examples()
+                    _query = (ticket_meta.get("summary") or ticket_meta.get("description") or "")[:500]
+                    examples = self.reply_trainer.search_examples(
+                        _query,
+                        project_key=ticket_meta.get("project", ""),
+                        module=ticket_meta.get("domain_module", ""),
+                    )
                 except Exception as exc:
                     logger.warning("[G3] reply_trainer.search_examples() failed: %s", exc)
                     examples = []
@@ -416,10 +421,18 @@ class ReplyGateway:
 
             # Identify weak points: evidence items with low score
             weak_points = []
-            for item in evidence_list:
+            evidence_items = []
+            for item in evidence_list[:6]:
                 score = item.get("score", item.get("similarity", 1.0))
-                if score < 0.5:
-                    weak_points.append(item.get("name", item.get("chunk_id", "unknown")))
+                name = item.get("name", item.get("title", item.get("chunk_id", "unknown")))
+                source = item.get("source", item.get("kb_path", item.get("issue_key", "")))
+                evidence_items.append({
+                    "name": str(name)[:80],
+                    "score": float(score) if isinstance(score, (int, float)) else None,
+                    "source": str(source)[:80] if source else "",
+                })
+                if isinstance(score, (int, float)) and score < 0.5:
+                    weak_points.append(str(name))
 
             if level == "none":
                 verdict = "fail"
@@ -433,6 +446,7 @@ class ReplyGateway:
                 "level": level,
                 "kb_evidence_count": count,
                 "weak_points": weak_points,
+                "evidence_items": evidence_items,
             }
         except Exception as exc:
             logger.warning("[G4] error: %s", exc)
