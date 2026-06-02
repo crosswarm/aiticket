@@ -16,7 +16,7 @@ BACKEND = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, os.path.abspath(BACKEND))
 
 from config.loader import cfg
-from vector_store import VectorStore
+from _chroma_paths import open_ticket_vector_store
 from jira_service import jira_service
 
 
@@ -33,7 +33,7 @@ def _get_project_keys(project_override: str | None = None) -> list[str]:
 def run_for_project(project_key: str, days: int = 2, dry_run: bool = False) -> int:
     print(f"[IncrementalIndex] [{project_key}] 拉取最近 {days} 天更新的工单...")
 
-    vs = VectorStore()
+    vs = open_ticket_vector_store(allow_download=False)
     jql = f'project = "{project_key}" AND updated >= -{days}d ORDER BY updated DESC'
     try:
         result = jira_service.search_issues_rest_api(jql, start_at=0, max_results=500)
@@ -77,8 +77,17 @@ def run_for_project(project_key: str, days: int = 2, dry_run: bool = False) -> i
 
     print(f"[IncrementalIndex] [{project_key}] 补充写入 {len(to_add)} 条: {[r['key'] for r in to_add[:5]]}")
     if not dry_run:
+        count_before = vs.issues_collection.count()
         vs.batch_add_issues(to_add)
-        print(f"[IncrementalIndex] [{project_key}] 完成")
+        count_after = vs.issues_collection.count()
+        added = count_after - count_before
+        if added < len(to_add):
+            # 可能存在并发写者或 max_seq_id 未修复，但不硬中止（incremental 可重试）
+            print(f"[IncrementalIndex] [{project_key}] ⚠️ 写入验证：before={count_before} "
+                  f"after={count_after} expected+{len(to_add)} actual+{added}。"
+                  f"若持续出现，请运行 fix_chroma_max_seq_id.py --fix")
+        else:
+            print(f"[IncrementalIndex] [{project_key}] 完成（count {count_before}→{count_after}）")
     else:
         print(f"[IncrementalIndex] [{project_key}] dry-run，跳过实际写入")
     return len(to_add)
@@ -102,7 +111,7 @@ def run_for_provider(provider, dry_run: bool = False) -> int:
     indexed in Chroma, and adds only the new ones.
     """
     print(f"[IncrementalIndex] [{provider.name}] 拉取全量工单...")
-    vs = VectorStore()
+    vs = open_ticket_vector_store(allow_download=False)
     try:
         issues = provider.fetch_all()
     except Exception as e:

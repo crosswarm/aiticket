@@ -13,6 +13,7 @@ QCL 守卫：AITICKET_ROLE=qcl 时自动退出（QCL 只读副本，数据由 Mi
 """
 import argparse
 import os
+import subprocess
 import sys
 import time
 
@@ -58,6 +59,20 @@ def main():
     print(f"[seed_projects] 将处理 {len(project_keys)} 个项目：{project_keys}")
     print(f"[seed_projects] 回溯天数：{args.days}，dry_run={args.dry_run}")
     print()
+
+    # ── preflight：修复 max_seq_id（防止新写入被立即 purge）──────────────────
+    # server 模式由 daemon 管理 WAL，跳过直接操作 SQLite
+    if os.environ.get("CHROMA_MODE", "").lower() != "server" and not args.dry_run:
+        print("[seed_projects] preflight: 检查 ChromaDB max_seq_id...")
+        fix_script = os.path.join(os.path.dirname(__file__), "fix_chroma_max_seq_id.py")
+        ret = subprocess.run(
+            [sys.executable, fix_script, "--fix", "--yes"],
+            capture_output=False,
+        )
+        if ret.returncode not in (0, 2):  # 0=已健康 2=已修复，其他=错误
+            print(f"[seed_projects] ❌ max_seq_id 修复失败（exit={ret.returncode}），中止")
+            sys.exit(1)
+    # ──────────────────────────────────────────────────────────────────────────
 
     total_added = 0
     failed = []
