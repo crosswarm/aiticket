@@ -3892,7 +3892,13 @@ def jira_action(request: JiraActionRequest, raw_request: Request):
                 try:
                     ai_original = request.extra.get('ai_original', '')
                     user_final = request.value
-                    adopted = (ai_original == user_final) if ai_original else True
+                    if ai_original:
+                        import difflib as _dl
+                        _sim = _dl.SequenceMatcher(None, ai_original, user_final).ratio()
+                        adopted = _sim >= 0.50
+                        adoption_tier = "direct" if _sim >= 0.85 else "partial" if _sim >= 0.50 else "none"
+                    else:
+                        adopted, adoption_tier = True, "direct"
                     _action_user = get_current_user(raw_request)
                     board_service.reply_trainer.record_feedback(
                         issue_key=request.issue_id,
@@ -3901,6 +3907,7 @@ def jira_action(request: JiraActionRequest, raw_request: Request):
                         ai_original=ai_original,
                         user_final=user_final,
                         adopted=adopted,
+                        adoption_tier=adoption_tier,
                         reply_method=request.custom_fields.get('reply_method', '') if request.custom_fields else '',
                         issue_type=request.custom_fields.get('issue_type_confirmed', '') if request.custom_fields else '',
                         module_l2=request.extra.get('module_l2', '') if request.extra else '',
@@ -4112,8 +4119,8 @@ def trainer_daily_report():
     except Exception:
         modes_count, rmp_keys, topic_count = 0, [], 0
 
-    # 5. 风格规则文件大小
-    rules_file = BACKEND / "data" / "reply_style_rules.md"
+    # 5. 风格规则文件大小（inference 实际读取的 _global.md）
+    rules_file = BACKEND / "data" / "reply_style_rules" / "_global.md"
     rules_chars = rules_file.stat().st_size if rules_file.exists() else 0
 
     # 6. 读取昨日快照做对比；如完全相同则返回 NO_CHANGE
@@ -6337,14 +6344,28 @@ class StartReportTaskRequest(BaseModel):
 @app.post("/api/report/start")
 def start_report_task(request: StartReportTaskRequest):
     """启动报告生成异步任务"""
+    # 若请求未显式传 api_key，按功能路由解析
+    if not request.api_key:
+        feature = "monthly_report" if request.task_type == "monthly" else "weekly_report"
+        llm_rt = resolve_feature_llm_runtime(feature)
+        resolved_api_key = llm_rt["api_key"]
+        resolved_provider = request.provider or llm_rt["provider"]
+        resolved_model = request.model_name or llm_rt["model_name"]
+        resolved_base_url = request.base_url or llm_rt["base_url"]
+    else:
+        resolved_api_key = request.api_key
+        resolved_provider = request.provider
+        resolved_model = request.model_name
+        resolved_base_url = request.base_url
+
     params = {
         "year": request.year,
         "month": request.month,
         "csv_filename": request.csv_filename,
-        "api_key": request.api_key,
-        "provider": request.provider,
-        "model_name": request.model_name,
-        "base_url": request.base_url,
+        "api_key": resolved_api_key,
+        "provider": resolved_provider,
+        "model_name": resolved_model,
+        "base_url": resolved_base_url,
         "force": request.force,
         "project_key": request.project_key,
         "domain_modules": request.domain_modules or None
@@ -6857,14 +6878,19 @@ if _RUN_BG and ENABLE_SCHEDULER:
                 )
                 if result.returncode == 0:
                     if notify_on_complete:
-                        notifier.send_message("📊 周报生成完成\n" + result.stdout[-200:] if result.stdout else "")
+                        notifier.send_message("📊 周报生成完成\n" + (result.stdout[-200:] if result.stdout else ""))
                     logger.info("[Scheduler] Weekly report done")
                 else:
-                    notifier.send_message(f"❌ 周报生成失败\n{result.stderr[-200:]}")
+                    err = (result.stderr or result.stdout or "")[-300:]
+                    notifier.send_message(f"❌ 周报生成失败\n{err}")
                     logger.error(f"[Scheduler] Weekly report failed: {result.stderr[:500]}")
+                    raise RuntimeError(f"weekly_report exit {result.returncode}: {err[:120]}")
+            except RuntimeError:
+                raise
             except Exception as e:
                 logger.error(f"[Scheduler] Weekly report failed: {e}")
                 notifier.send_message(f"❌ 周报生成异常: {e}")
+                raise
 
         register_task_handler("weekly_report", _task_weekly_report)
 

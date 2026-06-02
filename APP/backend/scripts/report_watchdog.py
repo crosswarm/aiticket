@@ -42,43 +42,55 @@ def _notify(message: str):
         print(f"[飞书] 推送失败: {e}")
 
 
-def _run_script(script_path: str, args: list = None) -> tuple:
-    """运行补救脚本，返回 (success, output)"""
+def _run_script(script_path: str, args: list = None, extra_env: dict = None) -> tuple:
+    """运行补救脚本，返回 (success, output)。
+    extra_env: 合并到子进程环境（如 AITICKET_ROLE=mini）。
+    """
     cmd = [PYTHON, script_path] + (args or [])
+    env = {**os.environ, **(extra_env or {})}
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=str(BACKEND_DIR))
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
+                           cwd=str(BACKEND_DIR), env=env)
         return r.returncode == 0, (r.stdout + r.stderr)[-500:]
     except Exception as e:
         return False, str(e)
 
 
 def check_weekly_report() -> dict:
-    """检查本周的周报是否已生成（周日检查）"""
+    """检查上周的周报是否已生成（周一检查）。
+    Fix R4: 从「周日检查」改为「周一检查」，与 daemon cron(0 8 * * 1) 对齐；
+    补跑时传精确 --week-offset -1，避免「补跑成功但生成的是上上周」漂移。
+    """
     today = date.today()
-    if today.weekday() != 6:  # 只在周日检查
-        return {"name": "周报", "status": "skip", "reason": "非周日"}
+    if today.weekday() != 0:  # 只在周一检查（0=Monday）
+        return {"name": "周报", "status": "skip", "reason": "非周一"}
 
-    # 计算本周的日期范围
-    week_start = today - timedelta(days=6)  # 上周一
-    week_end = today - timedelta(days=0)    # 本周日
+    # 计算目标周（上周一到上周日）
+    week_start = today - timedelta(days=7)  # 上周一
+    week_end   = today - timedelta(days=1)  # 上周日
 
     reports_dir = PROJECT_ROOT / "conclusion" / "WeeklyReports"
     if not reports_dir.exists():
         return {"name": "周报", "status": "missing", "reason": "WeeklyReports 目录不存在"}
 
-    # 检查是否有包含本周日期的报告
+    # 幂等检查：目标周开始日期匹配
     expected_pattern = week_start.strftime("%Y-%m-%d")
     found = any(expected_pattern in f.name for f in reports_dir.glob("*.json"))
     if found:
         return {"name": "周报", "status": "ok"}
 
-    # 尝试补跑
-    print("[补救] 周报未生成，尝试补跑...")
-    ok, output = _run_script(str(SCRIPT_DIR / "run_weekly_report.py"))
+    # 尝试补跑：显式传 --week-offset -1 锁定目标周，不依赖 runner 的"当前上周"
+    print(f"[补救] 周报未生成（目标周 {week_start}~{week_end}），尝试补跑...")
+    _env = {**os.environ, "AITICKET_ROLE": "mini"}
+    ok, output = _run_script(
+        str(SCRIPT_DIR / "run_weekly_report.py"),
+        args=["--week-offset", "-1"],
+        extra_env=_env,
+    )
     return {
         "name": "周报",
         "status": "remedied" if ok else "failed",
-        "reason": f"自动补跑{'成功' if ok else '失败'}",
+        "reason": f"自动补跑{'成功' if ok else '失败'}（目标 {week_start}~{week_end}）",
         "detail": output[-200:] if not ok else "",
     }
 
@@ -99,9 +111,11 @@ def check_monthly_report() -> dict:
         return {"name": "月报", "status": "ok"}
 
     print(f"[补救] {last_year}年{last_month}月月报未生成，尝试补跑...")
+    _env = {**os.environ, "AITICKET_ROLE": "mini"}
     ok, output = _run_script(
         str(SCRIPT_DIR / "run_monthly_report.py"),
-        ["--year", str(last_year), "--month", str(last_month), "--force"]
+        args=["--year", str(last_year), "--month", str(last_month), "--force"],
+        extra_env=_env,
     )
     return {
         "name": "月报",

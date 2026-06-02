@@ -828,6 +828,11 @@ class MonthlyReportGenerator:
         self.domain_modules = domain_modules or []
         self.monthly_analyzer = MonthlyAnalyzer(project_key, domain_modules=domain_modules)
         self.yoy_analyzer = YoYAnalyzer()
+        # 代理 MonthlyAnalyzer 的目录属性，供 generate() 内直接使用
+        # Fix C1: MonthlyReportGenerator 自身 __init__ 从未设置这两个属性，
+        # 导致 generate() L990 self.weekly_report_dir 报 AttributeError
+        self.weekly_report_dir = self.monthly_analyzer.weekly_report_dir
+        self.monthly_report_dir = self.monthly_analyzer.monthly_report_dir
 
     def _get_process_labeled_issues(self, df: pd.DataFrame = None, tickets: List[Dict] = None) -> List[Dict]:
         labeled_tickets = [t for t in (tickets or []) if any(
