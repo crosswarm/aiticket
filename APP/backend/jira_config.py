@@ -36,7 +36,14 @@ class JiraConfigParser:
             self.sections[title] = section_content
 
     def _parse_credentials(self, content: str):
-        """Parse username and password from markdown content"""
+        """Parse username and password; env vars take priority over md file."""
+        env_user = os.environ.get('JIRA_USERNAME')
+        env_pass = os.environ.get('JIRA_PASSWORD')
+        if env_user and env_pass:
+            self.username = env_user
+            self.password = env_pass
+            return
+
         username_match = re.search(r'^username:\s*(.+)$', content, re.MULTILINE | re.IGNORECASE)
         password_match = re.search(r'^password:\s*(.+)$', content, re.MULTILINE | re.IGNORECASE)
 

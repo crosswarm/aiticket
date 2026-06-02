@@ -34,6 +34,42 @@ def run(week_offset: int = -1, dry_run: bool = False, project_key: str = "MYPROJ
     csv_path = export_weekly_csv(week_offset, project_key=project_key, domain_modules=domain_modules)
     print(f"  CSV: {csv_path.name}")
 
+    # Step 1b: 验证 CSV 数据量；不足时从 QCL rsync 修复
+    try:
+        with open(csv_path, encoding="utf-8") as _f:
+            _csv_rows = sum(1 for _ in _f) - 1  # 减去 header
+    except Exception:
+        _csv_rows = 0
+    if _csv_rows < 5:
+        print(f"  ⚠️ CSV 数据不足（{_csv_rows} 条），尝试从 QCL rsync 修复...")
+        import subprocess as _sp, re as _re
+        _src_dir = str(csv_path.parent) + "/"
+        _repair = _sp.run(
+            ["rsync", "-avz", "--update", "qcl:/opt/ai-ticket/src/", _src_dir],
+            capture_output=True, text=True, timeout=60,
+        )
+        if _repair.returncode == 0:
+            # Fix M5: 不再 glob+reverse[0]（跨项目字典序可能取错周），
+            # 从原 csv_path 文件名解析目标周 start_date，精确匹配同一周 CSV
+            _m = _re.search(r'周数据-(\d{4}-\d{2}-\d{2})', csv_path.name)
+            _target_start = _m.group(1) if _m else None
+            if _target_start:
+                # 必须匹配 "周数据-{start_date}" 前缀位置，
+                # 避免 start_date 出现在文件名导出时间戳部分而误命中
+                _candidates = [f for f in csv_path.parent.glob("*周数据*.csv")
+                               if f"周数据-{_target_start}" in f.name]
+            else:
+                _candidates = []
+            if _candidates:
+                csv_path = sorted(_candidates)[-1]   # 同一周内取时间戳最新的
+                print(f"  ✅ QCL 修复成功，使用: {csv_path.name}")
+            else:
+                print(f"  ❌ QCL rsync 后仍找不到目标周({_target_start}) CSV，无法生成周报")
+                sys.exit(1)
+        else:
+            print(f"  ❌ QCL rsync 失败（exit {_repair.returncode}）:\n{_repair.stderr[:200]}")
+            sys.exit(1)
+
     # Step 2: 加载 LLM 配置，调用 WeeklyAnalyzer
     print("\n[2/3] 生成分析报告...")
     llm_config_path = BACKEND_DIR / "llm_config.json"

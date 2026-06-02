@@ -145,6 +145,20 @@ for name in uvicorn_loggers:
 
 app = FastAPI()
 
+_PROCESS_STARTED_AT = time.time()
+
+@app.get("/api/liveness", include_in_schema=False)
+def liveness():
+    """Watchdog 专用：不进 ChromaDB、不进 worker queue，只证明 uvicorn 在响应。"""
+    return {"ok": True, "pid": os.getpid(), "uptime_s": int(time.time() - _PROCESS_STARTED_AT)}
+
+import resource as _resource
+@app.get("/api/fd_health", include_in_schema=False)
+def fd_health():
+    """报告本进程 fd 软/硬上限；配合外部 lsof 统计实际使用数。"""
+    soft, hard = _resource.getrlimit(_resource.RLIMIT_NOFILE)
+    return {"ok": True, "rlimit_soft": soft, "rlimit_hard": hard, "pid": os.getpid()}
+
 # Custom exception handler to return 400 instead of 422 for validation errors
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request, exc):
@@ -1660,6 +1674,7 @@ def search_tickets(request: QueryRequest):
     from fastapi.responses import StreamingResponse
     import json
     llm_runtime = resolve_effective_llm_runtime(
+        feature="smart_reply",
         provider=request.model_provider,
         api_key=request.api_key or "",
         model_name=request.model_name,
@@ -1741,6 +1756,7 @@ async def stream_analysis(request: AnalyzeStreamRequest):
     """
     from fastapi.responses import StreamingResponse
     llm_runtime = resolve_effective_llm_runtime(
+        feature="smart_reply",
         provider=request.provider,
         api_key=request.api_key or "",
         model_name=request.model_name,
@@ -2207,6 +2223,7 @@ class GenerateRequirementRequest(BaseModel):
 def start_requirement_generation(request: GenerateRequirementRequest):
     """Start a requirement generation task"""
     llm_runtime = resolve_effective_llm_runtime(
+        feature="spec_gen",
         provider=request.provider,
         api_key=request.api_key or "",
         model_name=request.model_name,
@@ -2451,6 +2468,7 @@ class KBReviewRequest(BaseModel):
 def analyze_kb_file(request: KBAnalyzeRequest):
     """多源知识库分析：返回证据包、章节建议和待确认项"""
     llm_runtime = resolve_effective_llm_runtime(
+        feature="req_analysis",
         provider=request.provider,
         api_key=request.api_key or "",
         model_name=request.model_name,
@@ -2473,6 +2491,7 @@ def analyze_kb_file(request: KBAnalyzeRequest):
 def draft_kb_prd(request: KBDraftRequest):
     """基于知识证据生成 PRD 初稿"""
     llm_runtime = resolve_effective_llm_runtime(
+        feature="spec_gen",
         provider=request.provider,
         api_key=request.api_key or "",
         model_name=request.model_name,
@@ -2520,6 +2539,7 @@ def ask_kb_question(request: KBQuestionRequest, raw_request: Request, _quota=Dep
     """Answer user question from knowledge base"""
     log_api_request(raw_request, _quota, query_text=request.query)
     llm_runtime = resolve_effective_llm_runtime(
+        feature="smart_reply",
         provider=request.provider,
         api_key=request.api_key or "",
         model_name=request.model_name,
@@ -2628,6 +2648,47 @@ def kb_restore_compiled():
     if restored == 0:
         raise HTTPException(status_code=404, detail="无可用备份或备份为空，需重新运行 batch_compile_kb.py")
     return {"ok": True, "restored": restored}
+
+
+@app.post("/api/kb/note")
+def kb_quick_note(req: dict):
+    """快捷 KB 笔记：在 product_facts.md 指定话题下追加一条事实，并立即重索引。"""
+    topic = (req.get("topic") or "").strip()
+    content = (req.get("content") or "").strip()
+    if not topic:
+        raise HTTPException(status_code=422, detail="topic 不能为空")
+    if not content:
+        raise HTTPException(status_code=422, detail="content 不能为空")
+
+    from pathlib import Path as _Path
+    from datetime import datetime as _dt
+
+    facts_path = _Path(__file__).parent / "data" / "product_facts.md"
+    if not facts_path.exists():
+        raise HTTPException(status_code=500, detail="product_facts.md 不存在")
+
+    md_text = facts_path.read_text(encoding="utf-8")
+    date_str = _dt.now().strftime("%Y-%m-%d")
+    new_line = f"- {content}（快捷记录，{date_str}）"
+
+    section_header = f"## {topic}"
+    if section_header in md_text:
+        idx = md_text.index(section_header)
+        eol = md_text.index("\n", idx)
+        md_text = md_text[:eol + 1] + new_line + "\n" + md_text[eol + 1:]
+    else:
+        md_text = md_text.rstrip("\n") + f"\n\n{section_header}\n{new_line}\n"
+
+    facts_path.write_text(md_text, encoding="utf-8")
+
+    n = 0
+    try:
+        from services.search.product_facts_indexer import reindex as _reindex_facts
+        n = _reindex_facts(force=True)
+    except Exception as e:
+        print(f"[kb/note] reindex failed: {e}")
+
+    return {"status": "ok", "topic": topic, "indexed": n}
 
 
 @app.post("/api/kb/lint")
@@ -3878,7 +3939,13 @@ def jira_action(request: JiraActionRequest, raw_request: Request):
                 try:
                     ai_original = request.extra.get('ai_original', '')
                     user_final = request.value
-                    adopted = (ai_original == user_final) if ai_original else True
+                    if ai_original:
+                        import difflib as _dl
+                        _sim = _dl.SequenceMatcher(None, ai_original, user_final).ratio()
+                        adopted = _sim >= 0.50
+                        adoption_tier = "direct" if _sim >= 0.85 else "partial" if _sim >= 0.50 else "none"
+                    else:
+                        adopted, adoption_tier = True, "direct"
                     _action_user = get_current_user(raw_request)
                     board_service.reply_trainer.record_feedback(
                         issue_key=request.issue_id,
@@ -3887,6 +3954,7 @@ def jira_action(request: JiraActionRequest, raw_request: Request):
                         ai_original=ai_original,
                         user_final=user_final,
                         adopted=adopted,
+                        adoption_tier=adoption_tier,
                         reply_method=request.custom_fields.get('reply_method', '') if request.custom_fields else '',
                         issue_type=request.custom_fields.get('issue_type_confirmed', '') if request.custom_fields else '',
                         module_l2=request.extra.get('module_l2', '') if request.extra else '',
@@ -4098,8 +4166,8 @@ def trainer_daily_report():
     except Exception:
         modes_count, rmp_keys, topic_count = 0, [], 0
 
-    # 5. 风格规则文件大小
-    rules_file = BACKEND / "data" / "reply_style_rules.md"
+    # 5. 风格规则文件大小（inference 实际读取的 _global.md）
+    rules_file = BACKEND / "data" / "reply_style_rules" / "_global.md"
     rules_chars = rules_file.stat().st_size if rules_file.exists() else 0
 
     # 6. 读取昨日快照做对比；如完全相同则返回 NO_CHANGE
@@ -4661,31 +4729,27 @@ async def precompute_replies(
     _precompute_running[lock_key] = _time_pc2.time()
 
     def _run_precompute(keys: list, proj_key: str, lk: str):
-        import threading as _th2
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        _max_conc = int(os.environ.get("PRECOMPUTE_MAX_CONCURRENT", "2"))
         success = 0
         failed = 0
+
+        def _worker_for(_k):
+            return board_service.generate_reply_content(
+                _k, force=False, user_id="precompute",
+                project_key=proj_key, force_pass_gate1=True,
+            )
+
         try:
-            for k in keys[:200]:
-                _result: dict = {}
-                def _worker(_k=k):
+            with _TPE(max_workers=_max_conc, thread_name_prefix="precompute") as _pool:
+                _futs = {_pool.submit(_worker_for, k): k for k in keys[:200]}
+                for fut, k in _futs.items():
                     try:
-                        _result['data'] = board_service.generate_reply_content(
-                            _k, force=False, user_id="precompute",
-                            project_key=proj_key, force_pass_gate1=True,
-                        )
+                        fut.result(timeout=150)
+                        success += 1
                     except Exception as _e:
-                        _result['error'] = str(_e)
-                _t = _th2.Thread(target=_worker, daemon=True)
-                _t.start()
-                _t.join(timeout=150)
-                if _t.is_alive():
-                    print(f"[Precompute] {k}: timeout 150s, skipping")
-                    failed += 1
-                elif 'error' in _result:
-                    print(f"[Precompute] {k}: {_result['error']}")
-                    failed += 1
-                else:
-                    success += 1
+                        print(f"[Precompute] {k}: {_e}")
+                        failed += 1
         finally:
             _precompute_running.pop(lk, None)
             print(f"[Precompute] done lock={lk} success={success} failed={failed}")
@@ -5832,6 +5896,12 @@ async def startup_event():
     import anyio
     # 默认 total_tokens=40，提到 64 以支持更多并发 handler 线程（每线程 ~8MB stack）
     anyio.to_thread.current_default_thread_limiter().total_tokens = 64
+    # 限制 torch/BLAS 内部线程数为 1，防止多线程并发调用 encode() 时 OpenMP 死锁
+    try:
+        import torch as _torch
+        _torch.set_num_threads(1)
+    except Exception:
+        pass
     _reap_zombie_running_tasks()
     _threading.Thread(target=_kb_startup_sync_and_warn, daemon=True).start()
 
@@ -5995,12 +6065,17 @@ def resolve_feature_llm_runtime(feature: str, *, exclude_providers: list = None)
 
 def resolve_effective_llm_runtime(
     *,
+    feature: str = "",
     provider: str = "",
     api_key: str = "",
     model_name: str = "",
     base_url: str = "",
 ) -> Dict[str, str]:
-    defaults = resolve_default_llm_runtime()
+    # 无显式 api_key 时：优先走功能路由，无 feature 则走全局默认
+    if not api_key and feature:
+        defaults = resolve_feature_llm_runtime(feature)
+    else:
+        defaults = resolve_default_llm_runtime()
     effective_api_key = api_key or defaults["api_key"]
     effective_provider = provider or defaults["provider"]
     effective_model_name = model_name or defaults["model_name"]
@@ -6321,14 +6396,28 @@ class StartReportTaskRequest(BaseModel):
 @app.post("/api/report/start")
 def start_report_task(request: StartReportTaskRequest):
     """启动报告生成异步任务"""
+    # 若请求未显式传 api_key，按功能路由解析
+    if not request.api_key:
+        feature = "monthly_report" if request.task_type == "monthly" else "weekly_report"
+        llm_rt = resolve_feature_llm_runtime(feature)
+        resolved_api_key = llm_rt["api_key"]
+        resolved_provider = request.provider or llm_rt["provider"]
+        resolved_model = request.model_name or llm_rt["model_name"]
+        resolved_base_url = request.base_url or llm_rt["base_url"]
+    else:
+        resolved_api_key = request.api_key
+        resolved_provider = request.provider
+        resolved_model = request.model_name
+        resolved_base_url = request.base_url
+
     params = {
         "year": request.year,
         "month": request.month,
         "csv_filename": request.csv_filename,
-        "api_key": request.api_key,
-        "provider": request.provider,
-        "model_name": request.model_name,
-        "base_url": request.base_url,
+        "api_key": resolved_api_key,
+        "provider": resolved_provider,
+        "model_name": resolved_model,
+        "base_url": resolved_base_url,
         "force": request.force,
         "project_key": request.project_key,
         "domain_modules": request.domain_modules or None
@@ -6841,14 +6930,19 @@ if _RUN_BG and ENABLE_SCHEDULER:
                 )
                 if result.returncode == 0:
                     if notify_on_complete:
-                        notifier.send_message("📊 周报生成完成\n" + result.stdout[-200:] if result.stdout else "")
+                        notifier.send_message("📊 周报生成完成\n" + (result.stdout[-200:] if result.stdout else ""))
                     logger.info("[Scheduler] Weekly report done")
                 else:
-                    notifier.send_message(f"❌ 周报生成失败\n{result.stderr[-200:]}")
+                    err = (result.stderr or result.stdout or "")[-300:]
+                    notifier.send_message(f"❌ 周报生成失败\n{err}")
                     logger.error(f"[Scheduler] Weekly report failed: {result.stderr[:500]}")
+                    raise RuntimeError(f"weekly_report exit {result.returncode}: {err[:120]}")
+            except RuntimeError:
+                raise
             except Exception as e:
                 logger.error(f"[Scheduler] Weekly report failed: {e}")
                 notifier.send_message(f"❌ 周报生成异常: {e}")
+                raise
 
         register_task_handler("weekly_report", _task_weekly_report)
 

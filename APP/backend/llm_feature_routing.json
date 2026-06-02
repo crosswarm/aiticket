@@ -9,5 +9,8 @@
   "spec_gen": "zhipu",
   "competitive": "minimax",
   "classification": "local",
-  "weekly_report": "minimax"
+  "weekly_report": "minimax",
+  "monthly_report": "zhipu",
+  "reply_supervisor": "zhipu",
+  "reply_confidence_scoring": "minimax"
 }

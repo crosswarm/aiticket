@@ -55,7 +55,17 @@ def run(year: int = None, month: int = None, force: bool = False, dry_run: bool 
     llm_config_path = BACKEND_DIR / "llm_config.json"
     with open(llm_config_path, encoding="utf-8") as f:
         cfg = json.load(f)
-    provider = cfg.get("last_provider", "minimax")
+    # Fix R3: 不再硬走 last_provider(minimax)，改用降级链（zhipu→minimax）
+    # 避免 minimax 429 时无任何兜底
+    try:
+        sys.path.insert(0, str(BACKEND_DIR / "services"))
+        from local_llm_lifecycle import with_fallback_chain
+        provider = with_fallback_chain("monthly_report", ["zhipu", "minimax"])
+        print(f"  LLM 降级链选定: {provider}")
+    except Exception as _lc_err:
+        provider = cfg.get("last_provider", "zhipu")
+        print(f"  with_fallback_chain 不可用({_lc_err})，fallback: {provider}")
+    # 必须按新 provider 重新取 pcfg（含正确的 api_key/base_url/model_name）
     pcfg = cfg.get(provider, {})
 
     # Step 2: 生成月报
