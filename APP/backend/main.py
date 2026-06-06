@@ -569,12 +569,15 @@ def _register_session_keepalives():
                 return False
 
         def _check_codex_proxy():
-            """检查 Codex 代理服务是否可用"""
+            """检查 Codex 代理服务是否可用（密钥/地址从环境变量读取，未配置则跳过）"""
+            codex_key = os.environ.get("CODEX_PROXY_KEY", "")
+            codex_url = os.environ.get("CODEX_PROXY_URL", "")
+            if not codex_key or not codex_url:
+                return False  # 未配置 codex 代理 → 视为不可用，跳过探测
             try:
                 import requests as _req
-                codex_key = "sk-ce7977281140bd93ee8a020b4b63070e5608a112d6a69f86c0722355735e994d"
                 r = _req.post(
-                    "http://104.194.82.46:8080/v1/chat/completions",
+                    codex_url,
                     json={"model": "gpt-4.1-mini", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
                     headers={"Authorization": f"Bearer {codex_key}", "Content-Type": "application/json"},
                     timeout=10,
@@ -585,8 +588,7 @@ def _register_session_keepalives():
                     try:
                         from services.feishu_notifier import get_notifier
                         get_notifier().send_message(
-                            "✅ Codex 代理已恢复！可用 codex exec 跑探索任务\n"
-                            "模型: gpt-5.4 | 地址: 104.194.82.46:8080"
+                            "✅ Codex 代理已恢复"
                         )
                     except Exception:
                         pass
