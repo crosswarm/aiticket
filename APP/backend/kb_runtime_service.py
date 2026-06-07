@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import zipfile
 from collections import Counter
@@ -106,9 +107,10 @@ class KnowledgeRuntimeService:
             or Path("/Volumes/MacMini/Users/cfone/Documents/用友/Docs/iuap-apcom-docs")
         ).resolve()
         self.topic_file = (topic_file or (self.project_root / "APP" / "backend" / "data" / "topic.md")).resolve()
-        self.sqlite_path = (sqlite_path or (self.project_root / "data" / "sqlite" / "kb_chunks.db")).resolve()
-        self.chroma_path = (chroma_path or (self.project_root / "data" / "chroma_kb")).resolve()
-        self.ticket_chroma_path = (ticket_chroma_path or (self.project_root / "APP" / "backend" / "chroma_db")).resolve()
+        self._data_root = Path(os.environ.get("AITICKET_DATA_ROOT") or str(self.project_root / "APP" / "data"))
+        self.sqlite_path = (sqlite_path or (self._data_root / "sqlite" / "kb_chunks.db")).resolve()
+        self.chroma_path = (chroma_path or (self._data_root / "chroma" / "kb")).resolve()
+        self.ticket_chroma_path = (ticket_chroma_path or (self._data_root / "chroma" / "ticket")).resolve()
         self.apcom_cache_path = self.kb_root / "OUTPUT" / "apcom_docs" / "manifest.json"
         self.hybrid_index = KnowledgeHybridIndex(self.sqlite_path, self.chroma_path)
         self.local_builder = KBLocalBuilder(project_root=self.project_root, kb_root=self.kb_root, topic_file=self.topic_file)
@@ -184,7 +186,6 @@ class KnowledgeRuntimeService:
         top_k: int = 20,
         source_kind: str | None = None,
         category: str | None = None,
-        project_key: str | None = None,
         module_boost: list[str] = [],
     ) -> dict[str, Any]:
         query = (query or "").strip()
@@ -203,7 +204,7 @@ class KnowledgeRuntimeService:
                 "relevance_summary": self._build_relevance_summary([]),
             }
 
-        doc_results = self._search_documents(query=query, top_k=top_k, source_kind=source_kind, category=category, project_key=project_key)
+        doc_results = self._search_documents(query=query, top_k=top_k, source_kind=source_kind, category=category)
         ticket_results = []
         if source_kind in (None, "", "ticket_case"):
             ticket_results = self._search_ticket_cases(query, top_k=max(3, top_k // 2))
@@ -243,12 +244,11 @@ class KnowledgeRuntimeService:
         top_k: int,
         source_kind: str | None = None,
         category: str | None = None,
-        project_key: str | None = None,
     ) -> list[dict[str, Any]]:
         expanded_queries = self._expand_query_variants(query)
         hybrid_results = []
         for expanded_query in expanded_queries[:4]:
-            hybrid_results.extend(self.hybrid_index.search(expanded_query, top_k=top_k, source_kind=source_kind, category=category, project_key=project_key))
+            hybrid_results.extend(self.hybrid_index.search(expanded_query, top_k=top_k, source_kind=source_kind, category=category))
         hybrid_results = self._merge_results(hybrid_results)
         if hybrid_results:
             for item in hybrid_results:
@@ -348,10 +348,9 @@ class KnowledgeRuntimeService:
         module_hint: str = "",
         top_k: int = 10,
         llm_config: dict[str, Any] | None = None,
-        project_key: str | None = None,
     ) -> dict[str, Any]:
         query = " ".join(part for part in [summary, module_hint] if part).strip()
-        search_bundle = self.search_bundle(query, top_k=top_k, project_key=project_key)
+        search_bundle = self.search_bundle(query, top_k=top_k)
         evidence = search_bundle["items"]
         topic_ids = self._match_topic_ids(query)
         suggested_sections = self._build_sections(summary, module_hint, evidence)
@@ -430,7 +429,7 @@ class KnowledgeRuntimeService:
             rows = self.hybrid_index.list_by_source_kinds(_PRESERVED_SOURCE_KINDS)
             if not rows:
                 return 0
-            backup_path = self.project_root / "data" / "sqlite" / "kb_compiled_backup.json"
+            backup_path = self._data_root / "sqlite" / "kb_compiled_backup.json"
             backup_path.parent.mkdir(parents=True, exist_ok=True)
             existing: list = []
             if backup_path.exists():
@@ -484,9 +483,8 @@ class KnowledgeRuntimeService:
         module_hint: str = "",
         top_k: int = 10,
         llm_config: dict[str, Any] | None = None,
-        project_key: str | None = None,
     ) -> dict[str, Any]:
-        analysis = self.analyze(summary=summary, module_hint=module_hint, top_k=top_k, llm_config=llm_config, project_key=project_key)
+        analysis = self.analyze(summary=summary, module_hint=module_hint, top_k=top_k, llm_config=llm_config)
         citations = list(dict.fromkeys(item["citation_label"] for item in analysis["evidence"] if item.get("citation_label")))
         todo_items = analysis["open_questions"] or ["需补充接口边界、验收标准和上线约束。"]
         markdown = self._build_rule_based_prd(summary, module_hint, analysis, citations, todo_items)
@@ -511,9 +509,8 @@ class KnowledgeRuntimeService:
         draft_markdown: str,
         module_hint: str = "",
         top_k: int = 10,
-        project_key: str | None = None,
     ) -> dict[str, Any]:
-        analysis = self.analyze(summary=summary, module_hint=module_hint, top_k=top_k, project_key=project_key)
+        analysis = self.analyze(summary=summary, module_hint=module_hint, top_k=top_k)
         coverage_gaps = [section for section in analysis["suggested_sections"] if section not in draft_markdown]
         unsupported_claims = []
         for line in draft_markdown.splitlines():
@@ -547,12 +544,11 @@ class KnowledgeRuntimeService:
         provider: str = "gemini",
         model_name: str = "",
         base_url: str = "",
-        project_key: str | None = None,
     ) -> dict[str, Any]:
         # 优先查 kb_compiled 综合解析条目
         compiled_hits = []
         try:
-            compiled_hits = self.hybrid_index.search(query, top_k=2, source_kind='kb_compiled', project_key=project_key)
+            compiled_hits = self.hybrid_index.search(query, top_k=2, source_kind='kb_compiled')
         except Exception:
             pass
 
@@ -562,7 +558,7 @@ class KnowledgeRuntimeService:
         else:
             raw_k = 8
 
-        search_bundle = self.search_bundle(query, top_k=raw_k, project_key=project_key)
+        search_bundle = self.search_bundle(query, top_k=raw_k)
         items = compiled_hits + (search_bundle["items"][:raw_k])
         results = items
         if not results:
@@ -883,12 +879,18 @@ class KnowledgeRuntimeService:
             # Use source_path (KB/公式/...) so domain SQL LIKE '%/公式/%' matches correctly
             _src_path = raw.get("source_path", _src_rel)
             _converted_path = raw.get("converted_path", "")
-            # Layer2-1: 读取 converted_path 的 mtime 用于增量去重
+            # Layer2-1: 读取 source_path 的 mtime 用于增量去重
+            # 使用 source_path（原始源文件）而非 converted_path（每次 sync 重新生成会导致 mtime 始终变化）
+            # source_path / converted_path 均可能是相对路径（相对 project_root），需解析为绝对路径
             _mtime: str | None = None
-            if _converted_path:
+            _src_for_mtime = raw.get("source_path", "") or _converted_path
+            if _src_for_mtime:
                 try:
                     import os as _os
-                    _mtime = str(int(_os.path.getmtime(_converted_path)))
+                    _mp = Path(_src_for_mtime)
+                    if not _mp.is_absolute():
+                        _mp = self.project_root / _mp
+                    _mtime = str(int(_os.path.getmtime(_mp)))
                 except Exception:
                     pass
             item = {
@@ -1309,18 +1311,20 @@ class KnowledgeRuntimeService:
         }
 
     def _load_item_text(self, item: dict[str, Any]) -> str:
-        # 优先使用完整路径（本地 builder 保留的 converted_path / source_path）
-        source_path = self._resolve_project_path(item.get("converted_path") or item.get("source_path") or "")
-        if source_path.exists():
-            return self._extract_text(source_path)
-        fallback_path = self._resolve_project_path(item.get("source_path") or "")
-        if fallback_path.exists():
-            return self._extract_text(fallback_path)
-        # slim_items 经过 _MANIFEST_ITEM_KEYS 过滤后只剩 source_rel_path，
-        # 必须作为最后 fallback，否则 rebuild 时所有条目都因为空文本被跳过
-        rel_path = self._resolve_project_path(item.get("source_rel_path") or "")
-        if rel_path.exists():
-            return self._extract_text(rel_path)
+        # 逐个候选路径尝试：converted_path / source_path（本地 builder 保留）→ source_rel_path
+        # （slim_items 经 _MANIFEST_ITEM_KEYS 过滤后只剩 source_rel_path）。
+        # 关键修复：必须先判空再 resolve，且用 is_file() 而非 exists()。
+        # 否则 _resolve_project_path("") 返回 Path("")（==Path(".")），Path(".").exists()=True，
+        # 会对当前目录提取空串并提前 return，使 source_rel_path 分支变死代码 → document-match
+        # 条目 KB 正文恒空 → reply 生成时 LLM 看不到正文只能反问客户（G5 红根因）。
+        for raw in (item.get("converted_path"), item.get("source_path"), item.get("source_rel_path")):
+            if not (raw and str(raw).strip()):
+                continue
+            p = self._resolve_project_path(raw)
+            if p.exists() and p.is_file():
+                text = self._extract_text(p)
+                if text.strip():
+                    return text
         return ""
 
     def _resolve_project_path(self, raw_path: str) -> Path:
