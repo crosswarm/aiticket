@@ -298,7 +298,7 @@ class AIAnalysisWorker:
         similar_issues = self.vector_store.search_similar_issues(
             query=query,
             top_k=1,
-            min_score=0.92  # 更严格的阈值
+            min_score=0.78  # 路径③工单相似度阈值（deployable 默认 MiniLM 标定；bge 启用时改 0.70）
         )
         if similar_issues:
             best = similar_issues[0]
@@ -422,7 +422,7 @@ class AIAnalysisWorker:
                 similar = self.vector_store.search_similar_issues(
                     query=f"{issue.summary} {issue.description}",
                     top_k=3,
-                    min_score=0.6,
+                    min_score=0.6,  # deployable 默认 MiniLM 标定（bge 启用时改 0.55）
                 )
                 analysis["similar_issues"] = [s["issue_key"] for s in similar]
             except Exception as e:
@@ -486,7 +486,7 @@ class AIAnalysisWorker:
                         similar = self.vector_store.search_similar_issues(
                             query=f"{issue.summary} {issue.description}",
                             top_k=3,
-                            min_score=0.6
+                            min_score=0.6  # deployable 默认 MiniLM 标定（bge 启用时改 0.55）
                         )
                         analysis['similar_issues'] = [s['issue_key'] for s in similar]
                     except Exception as e:
@@ -518,7 +518,7 @@ class AIAnalysisWorker:
                 similar = self.vector_store.search_similar_issues(
                     query=f"{issue.summary} {issue.description}",
                     top_k=3,
-                    min_score=0.6
+                    min_score=0.6  # deployable 默认 MiniLM 标定（bge 启用时改 0.55）
                 )
                 all_similar.extend(similar)
             except Exception as e:
@@ -608,18 +608,17 @@ class AIAnalysisWorker:
         """基于规则的降级分析"""
         text = f"{issue.summary} {issue.description}".lower()
         
-        # 团队判断（从 deployment.yaml module_taxonomy 加载，不再硬编码）
-        from config.loader import cfg
-        _taxonomy = cfg("module_taxonomy") or []
+        # 团队判断
         team_keywords = {
-            m["team"]: m.get("keywords", [])
-            for m in _taxonomy if m.get("team") and m.get("keywords")
+            '财务组': ['财务', '报销', '发票', '付款', '预算', '成本'],
+            '人力组': ['人力', '考勤', '薪酬', '招聘', '绩效', '员工'],
+            '基础架构组': ['服务器', '数据库', '中间件', '部署', 'k8s', 'docker'],
+            '云平台-流程中心': ['流程', '审批', '工作流', 'bpm', '工作项']
         }
-        _default_team = _taxonomy[0]["team"] if _taxonomy and _taxonomy[0].get("team") else ""
-
-        team_scores = {team: sum(1 for k in keywords if k in text)
+        
+        team_scores = {team: sum(1 for k in keywords if k in text) 
                       for team, keywords in team_keywords.items()}
-        recommended_team = max(team_scores, key=team_scores.get) if team_scores and max(team_scores.values()) > 0 else _default_team
+        recommended_team = max(team_scores, key=team_scores.get) if max(team_scores.values()) > 0 else '云平台-流程中心'
         
         # 角色判断
         role_keywords = {
@@ -645,17 +644,16 @@ class AIAnalysisWorker:
         }
     
     def _save_and_notify(self, issue_key: str, analysis: Dict, issue_title: str = "", issue_description: str = ""):
-        """保存结果并触发回调"""
-        # 写入向量缓存（如果可用）
-        vector_cached = False
-        try:
-            self.vector_store.cache_analysis(issue_key, analysis, summary=issue_title)
-            vector_cached = True
-        except Exception as e:
-            print(f"[AIWorker] 向量缓存失败: {e}")
+        """保存结果并触发回调。file 是权威源，chroma 是派生索引。"""
+        # 1. 先写文件缓存（权威源，带 fcntl.flock + quality gate）
+        file_ok = self._file_cache_analysis(issue_key, analysis, issue_title=issue_title, issue_description=issue_description)
 
-        # 无论向量缓存是否成功，都保存到文件缓存（确保持久化）
-        self._file_cache_analysis(issue_key, analysis, issue_title=issue_title, issue_description=issue_description)
+        # 2. 文件写成功后再同步 chroma（派生索引），失败不影响持久化
+        if file_ok:
+            try:
+                self.vector_store.cache_analysis(issue_key, analysis, summary=issue_title)
+            except Exception as e:
+                print(f"[AIWorker] chroma 派生索引同步失败（文件缓存已持久化）: {e}")
 
         # 触发回调
         for callback in self.callbacks:
@@ -664,44 +662,56 @@ class AIAnalysisWorker:
             except Exception as e:
                 print(f"[Callback Error] {e}")
 
-    def _file_cache_analysis(self, issue_key: str, analysis: Dict, issue_title: str = "", issue_description: str = ""):
-        """文件缓存分析结果（向量存储不可用时）"""
-        # 使用PROJECT_ROOT确保路径正确
+    def _file_cache_analysis(self, issue_key: str, analysis: Dict, issue_title: str = "", issue_description: str = "") -> bool:
+        """文件缓存分析结果（权威源）。返回 True=写入成功 False=失败。"""
+        import fcntl
         cache_dir = os.path.join(BASE_DIR, "data_cache")
         os.makedirs(cache_dir, exist_ok=True)
         cache_file = os.path.join(cache_dir, "analysis_cache.json")
+        lock_file = f"{cache_file}.lock"
         temp_file = f"{cache_file}.tmp"
 
         try:
-            # 读取现有缓存
-            cache = {}
-            if os.path.exists(cache_file):
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    raw = f.read().strip()
-                if raw:
-                    try:
-                        cache = json.loads(raw)
-                    except json.JSONDecodeError:
-                        print(f"[AIWorker] 文件缓存损坏，重建缓存文件: {cache_file}")
+            with open(lock_file, "w") as _lf:
+                fcntl.flock(_lf.fileno(), fcntl.LOCK_EX)
+                try:
+                    # 读取现有缓存
+                    cache = {}
+                    if os.path.exists(cache_file):
+                        with open(cache_file, 'r', encoding='utf-8') as f:
+                            raw = f.read().strip()
+                        if raw:
+                            try:
+                                cache = json.loads(raw)
+                            except json.JSONDecodeError:
+                                print(f"[AIWorker] 文件缓存损坏，重建缓存文件: {cache_file}")
 
-            # 添加新分析结果
-            entry = {**analysis, 'cached_at': datetime.now().isoformat(), 'cache_type': 'file'}
-            # Backfill title/description if provided and not already in analysis
-            if issue_title and not entry.get('issue_title'):
-                entry['issue_title'] = issue_title
-            if issue_description and not entry.get('issue_description'):
-                entry['issue_description'] = issue_description[:1000]
-            # Soft validation: warn when title is missing
-            if not entry.get('issue_title'):
-                print(f"[Cache] WARN: issue_title missing for {issue_key}, confidence={entry.get('confidence')}")
-            cache[issue_key] = entry
+                    # 构造新 entry
+                    entry = {**analysis, 'cached_at': datetime.now().isoformat(), 'cache_type': 'file'}
+                    if issue_title and not entry.get('issue_title'):
+                        entry['issue_title'] = issue_title
+                    if issue_description and not entry.get('issue_description'):
+                        entry['issue_description'] = issue_description[:1000]
 
-            # 原子写入，避免中途中断留下空文件
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(cache, f, ensure_ascii=False, indent=2)
-            os.replace(temp_file, cache_file)
+                    # Quality gate：防止 Jira 403 / 抖动覆盖已有真实 title
+                    existing = cache.get(issue_key, {})
+                    _, reason, entry = _cache_quality_gate(issue_key, entry, existing)
+                    if reason == "title_preserved":
+                        print(f"[Cache] {issue_key}: quality gate 保留原有 issue_title（新数据为空，可能 Jira 403）")
+                    if not entry.get('issue_title'):
+                        print(f"[Cache] BLOCKED: {issue_key} no issue_title after quality gate (likely Jira 403), skipping write. confidence={entry.get('confidence')}")
+                        return False
 
-            print(f"[AIWorker] {issue_key} 分析结果已保存到文件缓存")
+                    cache[issue_key] = entry
+
+                    # 原子写入
+                    with open(temp_file, 'w', encoding='utf-8') as f:
+                        json.dump(cache, f, ensure_ascii=False, indent=2)
+                    os.replace(temp_file, cache_file)
+                    print(f"[AIWorker] {issue_key} 分析结果已保存到文件缓存")
+                    return True
+                finally:
+                    fcntl.flock(_lf.fileno(), fcntl.LOCK_UN)
         except Exception as e:
             if os.path.exists(temp_file):
                 try:
@@ -709,26 +719,133 @@ class AIAnalysisWorker:
                 except OSError:
                     pass
             print(f"[AIWorker] 文件缓存失败: {e}")
+            return False
+
+
+def _cache_quality_gate(issue_key: str, new_entry: dict, existing: dict) -> tuple:
+    """缓存写入质量门。返回 (allow, reason, merged_entry)。
+    reason: "new_entry" | "title_preserved" | "normal"
+    防止 Jira 403 / 网络抖动导致的空 title 覆盖已有真实数据。
+    """
+    if not existing:
+        return True, "new_entry", new_entry
+    if existing.get("issue_title") and not new_entry.get("issue_title"):
+        new_entry = dict(new_entry)
+        new_entry["issue_title"] = existing["issue_title"]
+        new_entry["issue_description"] = (
+            new_entry.get("issue_description") or existing.get("issue_description") or ""
+        )
+        new_entry["_preserved_from_regression"] = True
+        return True, "title_preserved", new_entry
+    return True, "normal", new_entry
 
 
 def _patch_analysis_cache(issue_key: str, **patch_fields) -> None:
     """Atomically write one or more fields to an existing analysis_cache entry."""
+    import fcntl
     cache_file = os.path.join(BASE_DIR, "data_cache", "analysis_cache.json")
+    lock_file = f"{cache_file}.lock"
     temp_file = f"{cache_file}.tmp"
-    try:
-        cache = {}
-        if os.path.exists(cache_file):
-            raw = open(cache_file, encoding="utf-8").read().strip()
-            if raw:
-                cache = json.loads(raw)
-        if issue_key not in cache:
-            return
-        cache[issue_key].update(patch_fields)
-        with open(temp_file, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False, indent=2)
-        os.replace(temp_file, cache_file)
-    except Exception as e:
-        print(f"[Cache] _patch_analysis_cache failed for {issue_key}: {e}")
+    with open(lock_file, "w") as _lf:
+        fcntl.flock(_lf.fileno(), fcntl.LOCK_EX)
+        try:
+            cache = {}
+            if os.path.exists(cache_file):
+                raw = open(cache_file, encoding="utf-8").read().strip()
+                if raw:
+                    cache = json.loads(raw)
+            if issue_key not in cache:
+                return
+            # Quality gate：不允许 patch 将 issue_title 清空
+            if "issue_title" in patch_fields and not patch_fields["issue_title"] and cache[issue_key].get("issue_title"):
+                print(f"[Cache] _patch_analysis_cache BLOCKED: attempt to clear issue_title for {issue_key}")
+                patch_fields = {k: v for k, v in patch_fields.items() if k != "issue_title"}
+            cache[issue_key].update(patch_fields)
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+            os.replace(temp_file, cache_file)
+        except Exception as e:
+            print(f"[Cache] _patch_analysis_cache failed for {issue_key}: {e}")
+        finally:
+            fcntl.flock(_lf.fileno(), fcntl.LOCK_UN)
+
+
+def start_audit_cache_drift() -> None:
+    """启动 analysis_cache 漂移审计（异步，非阻塞）。"""
+    import threading as _thr
+    def _run():
+        try:
+            _audit_cache_drift_once()
+        except Exception as e:
+            print(f"[CacheAudit] 审计失败（非致命）: {e}")
+    _thr.Thread(target=_run, daemon=True, name="cache-audit").start()
+
+
+def _audit_cache_drift_once() -> dict:
+    """同步扫描 analysis_cache.json，找出 title 为空但有 confidence 的可疑 entry。"""
+    from datetime import date
+    cache_file = os.path.join(BASE_DIR, "data_cache", "analysis_cache.json")
+    audit_dir = os.path.join(BASE_DIR, "data", "audits")
+    os.makedirs(audit_dir, exist_ok=True)
+    audit_file = os.path.join(audit_dir, f"cache_drift_{date.today().isoformat()}.json")
+
+    if not os.path.exists(cache_file):
+        return {"status": "no_cache_file"}
+
+    with open(cache_file, "r", encoding="utf-8") as f:
+        cache = json.load(f)
+
+    suspects = [
+        {"issue_key": k, "cached_at": v.get("cached_at"), "confidence": v.get("confidence"),
+         "_preserved": v.get("_preserved_from_regression", False)}
+        for k, v in cache.items()
+        if not v.get("issue_title") and v.get("confidence") is not None
+    ]
+
+    result = {
+        "run_at": datetime.now().isoformat(),
+        "total_entries": len(cache),
+        "suspect_count": len(suspects),
+        "suspects": suspects[:50],
+    }
+    with open(audit_file, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    if suspects:
+        print(f"[CacheAudit] {len(suspects)} 个可疑 entry（title 空 + 有 confidence），详见 {audit_file}")
+        try:
+            from services.feishu_notifier import get_notifier
+            get_notifier().send_message(
+                f"⚠️ [CacheAudit] analysis_cache 发现 {len(suspects)} 个可疑条目（title 空 + 有 confidence），"
+                f"可能为 Jira 403 污染残余。详见 data/audits/{os.path.basename(audit_file)}"
+            )
+        except Exception:
+            pass
+    else:
+        print(f"[CacheAudit] 全部 {len(cache)} 条 entry 无可疑，audit clean")
+
+    return result
+
+
+# ── 工单意图关键词（确定性零 LLM，用于 G4 回复风格的意图维度）────────────────────
+_INTENT_INQUIRY_KW = ('能不能', '能否', '是否支持', '是否可以', '是否能', '是否有',
+                      '有没有', '可以吗', '可行吗', '支持吗')
+_INTENT_HOWTO_KW = ('如何', '怎么', '怎样', '步骤', '在哪', '哪里', '怎么办', '怎么处理', '怎么解决')
+_INTENT_GUIDE_KW = ('方案', '指导', '实现方式')  # 要详细步骤/方案的逃逸词（"方案"已覆盖"客开方案/解决方案"）
+
+
+def _apply_intent_cap(level: str, title: str) -> str:
+    """工单意图封顶：纯咨询/可行性类工单(命中 INQUIRY、非 how-to、非要方案)即便证据强(high)，
+    也降到 medium 给「思路+关键节点」而非堆详细步骤；其它一律维持质量分 level。
+    设计取舍：title-only 分类(描述引入假阳性)；how-to 不升档(弱证据安全红线，绝不逼出步骤)；
+    GUIDE 逃逸修「能不能做+给我方案」这类含 inquiry 词但要详细方案的工单(如 LCZX-63363)。"""
+    if level != "high" or not title:
+        return level
+    if (any(k in title for k in _INTENT_INQUIRY_KW)
+            and not any(k in title for k in _INTENT_HOWTO_KW)
+            and not any(k in title for k in _INTENT_GUIDE_KW)):
+        return "medium"
+    return level
 
 
 class BoardService:
@@ -755,8 +872,9 @@ class BoardService:
             self._issue_repo = None
         self._bg_provider_refresh_running = False
 
-        # 使用绝对路径确保一致性（demo 沙箱走 DEMO_RUNTIME_DIR）
-        persist_dir = os.path.join(BASE_DIR, "chroma_db")
+        # 使用绝对路径确保一致性（demo 沙箱走 DEMO_RUNTIME_DIR；主站走 AITICKET_DATA_ROOT/chroma/ticket）
+        persist_dir = os.path.join(BASE_DIR, "chroma_db") if os.environ.get("DEMO_RUNTIME_DIR") else \
+            os.path.join(os.environ.get("AITICKET_DATA_ROOT") or os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../data")), "chroma", "ticket")
 
         self.vector_store = VectorStore(persist_directory=persist_dir, api_key=api_key, allow_download=allow_download)
         self.search_engine = SemanticSearchEngine(api_key=api_key, allow_download=allow_download)
@@ -797,6 +915,9 @@ class BoardService:
 
         # 分析状态内存缓存（用于前端轮询）
         self.analysis_status = {}  # issue_key -> status
+        # rule_engine 降级结果的上次重提时间（防止每次刷新都入队）
+        # 启动时预填：file cache 里已有 rule_engine 的 key 标记为"刚提交"，防止重启即爆发
+        self._rule_engine_last_submitted: dict = self._init_rule_engine_timestamps()
         self.jira_cache_service = None
         self._last_board_fetch_meta = self._build_fetch_meta()
         self._board_fetch_prefer_proxy = os.environ.get("BOARD_FETCH_PREFER_PROXY", "false").lower() == "true"
@@ -977,6 +1098,31 @@ class BoardService:
 
         return ["jira_direct", "jira_proxy", "local_cache"]
 
+    def _init_rule_engine_timestamps(self) -> dict:
+        """启动时预填 rule_engine 限流表，防止重启即爆发打 LLM。"""
+        import time as _t
+        result = {}
+        try:
+            cache_file = os.path.join(BASE_DIR, "data_cache", "analysis_cache.json")
+            if os.path.exists(cache_file):
+                import fcntl
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                    try:
+                        raw = f.read().strip()
+                    finally:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                if raw:
+                    cache = json.loads(raw)
+                    now = _t.time()
+                    for key, val in cache.items():
+                        if val.get('model_used') == 'rule_engine':
+                            result[key] = now  # 标记为"刚提交"，30分钟内不重复入队
+        except Exception as e:
+            print(f"[BoardService] _init_rule_engine_timestamps 失败（非致命）: {e}")
+        print(f"[BoardService] 启动预填 rule_engine 限流表: {len(result)} 条")
+        return result
+
     def _build_fetch_meta(
         self,
         data_source: str = "jira_direct",
@@ -1009,6 +1155,7 @@ class BoardService:
         jql: str,
         jira_client: Optional[JiraService] = None,
         force: bool = False,
+        project_key: str = "",
     ) -> Tuple[List[JiraIssue], Dict[str, Any]]:
         """按当前有效顺序获取看板工单，并在直连异常时触发代理优先降级。
 
@@ -1047,7 +1194,7 @@ class BoardService:
                 issues = client.load_board_cache()
                 if issues:
                     print(f"[BoardService] 快路径: 使用{cache_age:.0f}s前的缓存 ({len(issues)}条), 后台刷新Jira")
-                    self._background_refresh_cache(jql, client)
+                    self._background_refresh_cache(jql, client, project_key=project_key)
                     return issues, self._build_fetch_meta(
                         data_source="local_cache_fast",
                         cache_timestamp=cache_info.get("timestamp"),
@@ -1083,14 +1230,25 @@ class BoardService:
                 proxy_result = self.jira_cache_service.search_issues(jql, 0, 500)
                 proxy_payload, proxy_error = self._extract_cache_service_payload(proxy_result)
                 if proxy_payload is not None:
-                    issues = client.parse_search_response(proxy_payload)
-                    print(f"[BoardService] 通过 Mini代理 获取 {len(issues)} 条工单")
-                    if issues:
-                        client.save_board_cache(issues)
-                    return issues, self._build_fetch_meta(
-                        data_source="jira_proxy",
-                        jira_error="; ".join(errors) if errors else None,
+                    # 检测 issueTable HTML 形态（mini_proxy 偶发返回错误格式）
+                    _is_issue_table = (
+                        "issueTable" in proxy_payload
+                        or (proxy_payload.get("issues") and isinstance(proxy_payload["issues"], list)
+                            and len(proxy_payload["issues"]) > 0
+                            and not proxy_payload["issues"][0].get("fields"))
                     )
+                    if _is_issue_table:
+                        errors.append("jira_proxy: returned issueTable HTML format, skipping")
+                        print("[BoardService] Mini代理返回 issueTable 格式，跳过（字段缺失）")
+                    else:
+                        issues = client.parse_search_response(proxy_payload)
+                        print(f"[BoardService] 通过 Mini代理 获取 {len(issues)} 条工单")
+                        if issues:
+                            client.save_board_cache(issues)
+                        return issues, self._build_fetch_meta(
+                            data_source="jira_proxy",
+                            jira_error="; ".join(errors) if errors else None,
+                        )
 
                 errors.append(f"jira_cache_service: {proxy_error}")
                 print(f"[BoardService] Mini代理获取失败: {proxy_error}")
@@ -1138,7 +1296,6 @@ class BoardService:
                     )
                 errors.append(f"jira_service_fallback: {fallback.get('error', 'unknown')}")
 
-
         return [], self._build_fetch_meta(
             data_source="unavailable",
             jira_error="; ".join(errors) if errors else None,
@@ -1163,7 +1320,7 @@ class BoardService:
 
         threading.Thread(target=_refresh, daemon=True).start()
 
-    def _background_refresh_cache(self, jql: str, client):
+    def _background_refresh_cache(self, jql: str, client, project_key: str = ""):
         """后台线程刷新Jira缓存，不阻塞响应。"""
         if getattr(self, '_bg_refresh_running', False):
             return  # 已有后台刷新在运行
@@ -1230,7 +1387,7 @@ class BoardService:
 
     def _build_jql(
         self,
-        project_key: str = None,
+        project_key: str = "LCZX",
         assignee: str = "currentUser()",
         created_start: str = "",
         created_end: str = "",
@@ -1244,7 +1401,7 @@ class BoardService:
         构建JQL查询语句
 
         Args:
-            project_key: 项目Key，默认 MYPROJECT
+            project_key: 项目Key，默认 LCZX
             assignee: 经办人，默认 currentUser()，"ALL" 表示查询全部
             created_start: 创建时间开始 (YYYY-MM-DD)
             created_end: 创建时间结束 (YYYY-MM-DD)
@@ -1256,15 +1413,14 @@ class BoardService:
         Returns:
             完整的JQL查询语句
         """
-        if not project_key:
-            from config.loader import cfg
-            project_key = cfg("instance", "primary_project_key") or None
         conditions = []
         if project_key and project_key != "ALL":
             conditions.append(f"project = {project_key}")
 
-        # 默认只查未解决的工单
+        # 默认只查未解决的工单；status 排除通用终态 + LCZX 中文自定义非客服可操作状态
+        # "关闭"/"废弃" 因 resolution 未被设置而漏入；"研发已完成"/"完成待确认" 无直接回复转换
         conditions.append("resolution = Unresolved")
+        conditions.append('status not in ("Closed", "Resolved", "Done", "关闭", "废弃", "研发已完成", "完成待确认")')
 
         # 经办人条件（ALL表示查询全部）
         if assignee and assignee != "ALL":
@@ -1293,15 +1449,19 @@ class BoardService:
             conditions.append(f'cf[10906] = "{resolution_method}"')
 
         # 用户领域模块过滤（cf[10123] = 领域模块 cascading select）
+        # 指定具体项目时，同时包含领域模块为空的工单（跨项目转入的工单往往未设置目标模块）
         if domain_modules:
             quoted = ", ".join(f'"{m}"' for m in domain_modules)
-            conditions.append(f"cf[10123] in ({quoted})")
+            if project_key and project_key != "ALL":
+                conditions.append(f'(cf[10123] in ({quoted}) OR cf[10123] is EMPTY)')
+            else:
+                conditions.append(f"cf[10123] in ({quoted})")
 
         return " AND ".join(conditions) + " ORDER BY due ASC, updated DESC"
 
     def get_board_data(
         self,
-        project_key: str = None,
+        project_key: str = "LCZX",
         assignee: str = "currentUser()",
         created_start: str = "",
         created_end: str = "",
@@ -1325,7 +1485,7 @@ class BoardService:
         6. 支持多维度筛选条件（创建时间、标签、问题类型等）
 
         Args:
-            project_key: 项目Key，默认 MYPROJECT
+            project_key: 项目Key，默认 LCZX
             assignee: 经办人，默认 currentUser()，"ALL" 表示查询全部
             created_start: 创建时间开始 (YYYY-MM-DD)
             created_end: 创建时间结束 (YYYY-MM-DD)
@@ -1354,7 +1514,7 @@ class BoardService:
             domain_modules=domain_modules
         )
         print(f"[BoardService] JQL: {jql}")
-        issues, fetch_meta = self._fetch_board_issues(jql, jira_client=jira_client, force=force)
+        issues, fetch_meta = self._fetch_board_issues(jql, jira_client=jira_client, force=force, project_key=project_key)
         self._last_board_fetch_meta = fetch_meta
         _t1 = _time.time()
         print(f"[BoardService] Step1 Jira获取: {_t1-_t0:.2f}s ({len(issues)}条)")
@@ -1403,9 +1563,10 @@ class BoardService:
                         meta = result['metadatas'][i]
                         # 检查过期
                         expires_at = datetime.fromisoformat(meta.get('expires_at', '2000-01-01'))
+                        analysis = self.vector_store._meta_to_analysis(meta)
                         if now > expires_at:
-                            continue
-                        chroma_cache[key] = self.vector_store._meta_to_analysis(meta)
+                            analysis['stale'] = True  # 标记但保留，与 get_cached_analysis 语义一致
+                        chroma_cache[key] = analysis
             except Exception as e:
                 print(f"[BoardService] ChromaDB批量查询失败: {e}")
 
@@ -1414,15 +1575,26 @@ class BoardService:
             for issue_dict in columns[col_name]:
                 issue_key = issue_dict['key']
 
-                cached = chroma_cache.get(issue_key) or file_cache.get(issue_key)
+                _chroma = chroma_cache.get(issue_key)
+                _file   = file_cache.get(issue_key)
+                # 若 Chroma 只有 rule_engine 降级结果而 file_cache 有真实 LLM 结果，优先用 file_cache
+                if _chroma and _chroma.get('model_used') == 'rule_engine' and _file and _file.get('model_used') != 'rule_engine':
+                    cached = _file
+                else:
+                    cached = _chroma or _file
                 is_rule_engine = cached and cached.get('model_used') == 'rule_engine'
 
                 if cached and not is_rule_engine:
                     issue_dict['ai_analysis'] = cached
                     issue_dict['ai_status'] = 'completed'
+                elif cached and is_rule_engine:
+                    # rule_engine 降级结果：立即显示（不转"分析中"），后台限流重提 LLM
+                    issue_dict['ai_analysis'] = cached
+                    issue_dict['ai_status'] = 'completed'
+                    not_analyzed_issues.append(issue_dict)  # 加入后台重提列表，但 UI 不显示 spinner
                 else:
-                    # 未分析 或 仅有规则引擎降级结果 → 重新提交LLM分析队列
-                    issue_dict['ai_analysis'] = cached if is_rule_engine else None
+                    # 无任何缓存 → 真正的"分析中"
+                    issue_dict['ai_analysis'] = None
                     issue_dict['ai_status'] = 'analyzing'
                     not_analyzed_issues.append(issue_dict)
 
@@ -1471,6 +1643,17 @@ class BoardService:
             if current_status == 'analyzing':
                 skipped += 1
                 continue
+
+            # rule_engine 降级结果限流：30 分钟内不重复提交，防止每次刷新都入队
+            import time as _time_mod
+            is_re_issue = issue_dict.get('ai_analysis', {}) and \
+                issue_dict.get('ai_analysis', {}).get('model_used') == 'rule_engine'
+            if is_re_issue:
+                last_t = self._rule_engine_last_submitted.get(issue_key, 0)
+                if _time_mod.time() - last_t < 1800:
+                    skipped += 1
+                    continue
+                self._rule_engine_last_submitted[issue_key] = _time_mod.time()
 
             try:
                 # 创建JiraIssue对象（使用正确的字段名）
@@ -1605,7 +1788,7 @@ class BoardService:
           - this_week 是汇总列: 本周到期（今天/明天/本周其他）都要归属
           - today / tomorrow 是细分列: 只有当天/明天到期才归属
           - 互斥关系: overdue / next_week / future / no_date 之间互斥
-        MYPROJECT-61748 (今天到期) → ["today", "this_week"] 两列都显示。
+        LCZX-61748 (今天到期) → ["today", "this_week"] 两列都显示。
         """
         due = self._parse_due_date(issue.due_date)
         if due is None:
@@ -1823,9 +2006,9 @@ class BoardService:
 
         Returns:
             {
-                "MYPROJECT-12345": {"status": "completed", "analysis": {...}},
-                "MYPROJECT-12346": {"status": "analyzing"},
-                "MYPROJECT-12347": {"status": "not_analyzed"}
+                "LCZX-12345": {"status": "completed", "analysis": {...}},
+                "LCZX-12346": {"status": "analyzing"},
+                "LCZX-12347": {"status": "not_analyzed"}
             }
         """
         updates = {}
@@ -2123,7 +2306,7 @@ class BoardService:
         批量移动工单
 
         Args:
-            moves: 移动列表 [{"issue_key": "MYPROJECT-123", "target_board": "done"}, ...]
+            moves: 移动列表 [{"issue_key": "LCZX-123", "target_board": "done"}, ...]
             sync_jira: 是否同步到Jira
 
         Returns:
@@ -2322,10 +2505,37 @@ class BoardService:
             print(f"[Get Move History Error] {e}")
             return []
 
+    @staticmethod
+    def _strip_internal_ticket_citations(text: str) -> tuple:
+        """剥离回复文本中的内部工单号引用（如 LCZX-59198）。
+        客户端回复不应暴露内部 Jira key；此类引用通常是 LLM 幻觉产物。
+        返回 (cleaned_text, stripped: bool)。
+        """
+        import re as _re
+        _TICKET_PATTERN = _re.compile(r'[A-Z]{2,}-\d{3,}')
+        if not _TICKET_PATTERN.search(text):
+            return text, False
+        # 按句/从句边界（，。；\n）拆分，丢弃含工单号的从句
+        _CLAUSE_SEP = _re.compile(r'([，。；\n])')
+        parts = _CLAUSE_SEP.split(text)
+        cleaned_parts = []
+        stripped = False
+        i = 0
+        while i < len(parts):
+            chunk = parts[i]
+            sep = parts[i + 1] if i + 1 < len(parts) else ""
+            if _TICKET_PATTERN.search(chunk):
+                stripped = True  # 丢弃含工单号的从句（含其后紧跟的分隔符）
+            else:
+                cleaned_parts.append(chunk)
+                if sep:
+                    cleaned_parts.append(sep)
+            i += 2
+        return "".join(cleaned_parts).strip(), stripped
+
     def generate_reply_content(self, issue_key: str, force: bool = False,
                                user_id: str = "", project_key: str = "",
-                               force_pass_gate1: bool = False,
-                               force_pass_gate2: bool = False) -> Dict:
+                               gate_mode: str = "decide_and_execute") -> Dict:
         """
         基于AI分析结果生成智能回复内容
 
@@ -2352,8 +2562,9 @@ class BoardService:
             _early_entry = get_cached_reply_entry(issue_key, {})
             if _early_entry is not None and "grounded_confidence" in _early_entry:
                 _early_reply = _early_entry.get("reply_content", "")
+                _rich_bad_prefixes = ("Error:", "模型调用失败:", "LLM 分析失败:", "您好！工单标题", "您好！您提交的工单标题", "工单标题和描述均为空")
                 if _early_reply and len(_early_reply) >= 10 and not any(
-                        _early_reply.startswith(p) for p in ("Error:", "模型调用失败:", "LLM 分析失败:")):
+                        _early_reply.startswith(p) for p in _rich_bad_prefixes):
                     print(f"[GenerateReply] 富缓存早期命中，跳过AI分析加载: {issue_key}")
                     _kb_scored = _early_entry.get("kb_hits_scored") or []
                     return {
@@ -2380,17 +2591,15 @@ class BoardService:
         # ─────────────────────────────────────────────────────────────────────
 
         # ── Gate 1: 信息完整性检查 ─────────────────────────────────────────────
-        if not force_pass_gate1:
-            gate1_result = self._run_gate1_completeness(issue_key)
-            if gate1_result is not None:
-                return gate1_result
+        gate1_result = self._run_gate1_completeness(issue_key, gate_mode=gate_mode)
+        if gate1_result is not None:
+            return gate1_result
         # ─────────────────────────────────────────────────────────────────────
 
         # ── Gate 2: 分类正确性检查 ─────────────────────────────────────────────
-        if not force_pass_gate2:
-            gate2_result = self._run_gate2_classification(issue_key)
-            if gate2_result is not None:
-                return gate2_result
+        gate2_result = self._run_gate2_classification(issue_key, gate_mode=gate_mode)
+        if gate2_result is not None:
+            return gate2_result
         # ─────────────────────────────────────────────────────────────────────
 
         # Gate 4 具体度等级 —— 在 KB 证据填充后更新，这里先初始化默认值
@@ -2399,57 +2608,107 @@ class BoardService:
         # 获取AI分析结果
         ai_analysis = None
 
-        # 1. 从向量缓存获取（优先非规则引擎结果）
-        _rule_engine_fallback = None
+        # 1. 从向量缓存获取（跳过规则引擎降级结果，避免缓存垃圾内容）
         try:
             cached = self.vector_store.get_cached_analysis(issue_key)
-            if cached:
-                if cached.get('model_used') != 'rule_engine':
-                    ai_analysis = cached
-                else:
-                    _rule_engine_fallback = cached
+            if cached and cached.get('model_used') != 'rule_engine':
+                ai_analysis = cached
         except Exception as e:
             print(f"[GenerateReply] 向量缓存获取失败: {e}")
 
-        # 2. 从文件缓存获取（优先非规则引擎结果，保留规则引擎作兜底）
+        # 2. 从文件缓存获取（同样跳过规则引擎降级结果）
         if not ai_analysis:
             file_cached = load_file_cached_analysis(issue_key, PROJECT_ROOT)
-            if file_cached:
-                if file_cached.get('model_used') != 'rule_engine':
-                    ai_analysis = file_cached
-                elif not _rule_engine_fallback:
-                    _rule_engine_fallback = file_cached
-
-        # 2b. 无真实AI分析时，允许使用规则引擎降级结果（demo/no-LLM 场景）
-        if not ai_analysis and _rule_engine_fallback:
-            ai_analysis = _rule_engine_fallback
+            if file_cached and file_cached.get('model_used') != 'rule_engine':
+                ai_analysis = file_cached
 
         if not ai_analysis:
-            # 无 AI 分析时，尝试从看板缓存获取工单信息，直接走训练器
-            issue_info = self._get_issue_from_cache(issue_key)
-            if issue_info:
-                ai_analysis = {
-                    'issue_title': issue_info.get('summary', ''),
-                    'issue_description': issue_info.get('description', ''),
-                    'problem_analysis': '',
-                    'solution_suggestion': '',
-                    'functionality_impact': '',
-                    'recommended_team': '',
-                    'recommended_role': '',
-                    'confidence': 0,
-                }
-                print(f"[GenerateReply] 无AI分析，使用工单原始信息走训练器: {issue_key}")
-            else:
-                return {
-                    "reply_content": "",
-                    "solution_content": "",
-                    "ai_analysis": None,
-                    "word_count": 0,
-                    "error": "未找到AI分析结果，请先进行分析"
-                }
+            # force 模式下先尝试实时补分析，再回落到原始信息
+            if force:
+                try:
+                    print(f"[GenerateReply] force=True 且无AI分析，触发实时分析: {issue_key}")
+                    _fresh = self.force_analyze(issue_key)
+                    if _fresh and not _fresh.get("error"):
+                        ai_analysis = self.vector_store.get_cached_analysis(issue_key)
+                        if not ai_analysis:
+                            file_cached2 = load_file_cached_analysis(issue_key, PROJECT_ROOT)
+                            ai_analysis = file_cached2
+                except Exception as _e_fa:
+                    print(f"[GenerateReply] 实时分析失败(继续): {_e_fa}")
+
+            if not ai_analysis:
+                # 无 AI 分析时，尝试从看板缓存获取工单信息，直接走训练器
+                issue_info = self._get_issue_from_cache(issue_key)
+                if issue_info:
+                    ai_analysis = {
+                        'issue_title': issue_info.get('summary', ''),
+                        'issue_description': issue_info.get('description', ''),
+                        'problem_analysis': '',
+                        'solution_suggestion': '',
+                        'functionality_impact': '',
+                        'recommended_team': '',
+                        'recommended_role': '',
+                        'confidence': 0,
+                    }
+                    print(f"[GenerateReply] 无AI分析，使用工单原始信息走训练器: {issue_key}")
+                else:
+                    # 最后兜底：从向量库读取原始工单文本（12k+ 条，不依赖 Jira session）
+                    try:
+                        _vs_issue = self.search_engine.vector_store.get_issue_by_key(issue_key) or {}
+                        if _vs_issue.get('summary') or _vs_issue.get('document'):
+                            ai_analysis = {
+                                'issue_title': _vs_issue.get('summary', ''),
+                                'issue_description': _vs_issue.get('document', ''),
+                                'problem_analysis': '',
+                                'solution_suggestion': '',
+                                'functionality_impact': '',
+                                'recommended_team': '',
+                                'recommended_role': '',
+                                'confidence': 0,
+                            }
+                            print(f"[GenerateReply] 无AI分析+无缓存，向量库兜底: {issue_key}")
+                    except Exception as _e_vs:
+                        print(f"[GenerateReply] 向量库回落失败: {_e_vs}")
+                    if not ai_analysis:
+                        return {
+                            "reply_content": "",
+                            "solution_content": "",
+                            "ai_analysis": None,
+                            "word_count": 0,
+                            "error": "未找到AI分析结果，请先进行分析"
+                        }
+
+        # 2b. ai_analysis 存在但 issue_title 为空时补全标题/描述。
+        # 根因修复(LCZX-63723 召回失败)：向量缓存(get_cached_analysis,步骤1)可能存有 title 空 +
+        # functionality_impact="未知，工单信息完全为空" 的垃圾 entry（某次空工单分析写入），其优先级高于
+        # 文件 analysis_cache 富 entry，导致步骤2(load_file_cached_analysis)被短路跳过、富文本拿不到 →
+        # query 落到 functionality_impact 垃圾 → bge 召回一批无关工单(score~0.35)。
+        # 文件 analysis_cache entry 的 title 受 _patch_analysis_cache quality gate 保护（不会被空分析清空），
+        # 是可靠富文本源；故先用文件富 entry 兜底，再退向量库（向量库对视图外/未索引工单会 miss）。
+        if ai_analysis and not (ai_analysis.get('issue_title') or '').strip():
+            try:
+                _file_rich = load_file_cached_analysis(issue_key, PROJECT_ROOT)
+                if _file_rich and (_file_rich.get('issue_title') or '').strip():
+                    ai_analysis = dict(ai_analysis)
+                    ai_analysis['issue_title'] = _file_rich.get('issue_title', '')
+                    ai_analysis['issue_description'] = ai_analysis.get('issue_description') or _file_rich.get('issue_description', '')
+                    print(f"[GenerateReply] 向量缓存 title 空，文件富缓存补全: {issue_key} → '{ai_analysis['issue_title'][:40]}'")
+            except Exception as _e_file:
+                print(f"[GenerateReply] 文件富缓存补全失败(继续): {_e_file}")
+        if ai_analysis and not (ai_analysis.get('issue_title') or '').strip():
+            try:
+                _vs_sup = self.search_engine.vector_store.get_issue_by_key(issue_key) or {}
+                if _vs_sup.get('summary') or _vs_sup.get('document'):
+                    ai_analysis = dict(ai_analysis)
+                    ai_analysis['issue_title'] = _vs_sup.get('summary', '')
+                    ai_analysis['issue_description'] = ai_analysis.get('issue_description') or _vs_sup.get('document', '')
+                    print(f"[GenerateReply] ai_analysis 空标题，向量库补全: {issue_key} → '{ai_analysis['issue_title'][:40]}'")
+            except Exception as _e_sup:
+                print(f"[GenerateReply] 向量库补全失败(继续): {_e_sup}")
 
         # 3. 旧格式 cache entry 检测（非强制模式下）——触发一次性升级到富 entry
-        _bad_reply_prefixes = ("Error:", "模型调用失败:", "LLM 分析失败:")
+        _template_reply_prefixes = ("您好！工单标题", "您好！您提交的工单标题", "工单标题和描述均为空")
+        _bad_reply_prefixes = ("Error:", "模型调用失败:", "LLM 分析失败:") + _template_reply_prefixes
         if not force:
             cached_reply = get_cached_reply(issue_key, ai_analysis)
             if cached_reply and any(cached_reply.startswith(p) for p in _bad_reply_prefixes):
@@ -2467,6 +2726,13 @@ class BoardService:
             # 构建查询：使用当前工单的标题和描述
             _ana = ai_analysis or {}
             query = f"{_ana.get('issue_title', '')} {_ana.get('issue_description', '')}".strip()
+            # 如果 ai_analysis 没有 title/description（force=True 时 LLM 返回的是 functionality_impact），用功能影响描述补充
+            # 但过滤"工单信息完全为空/未知"占位垃圾（63723 根因之二）：垃圾占位值当 query 会召回一批无关工单
+            # (score~0.35) 并误导 LLM 引用，比 query 空(不召回)更糟 → 垃圾值跳过，让后续看板/向量库 fallback 接手
+            if not query:
+                _fi = (_ana.get('functionality_impact', '') or '')[:300]
+                if _fi and '工单信息完全为空' not in _fi and not _fi.lstrip().startswith('未知'):
+                    query = _fi
             # 4a-early: ai_analysis 无 title 时提前从 Jira 缓存补充（4b 的完整逻辑在下方，这里只取 query 用）
             if not query:
                 try:
@@ -2481,11 +2747,11 @@ class BoardService:
                 except Exception:
                     pass
             if query.strip():
-                search_results = self.search_engine.search(query, top_k=5, min_score=0.7)
+                search_results = self.search_engine.search(query, top_k=5, min_score=0.25)
                 similar_issues = search_results.get('results', [])
                 # 过滤掉当前工单
                 similar_issues = [r for r in similar_issues if r.get('key') != issue_key]
-                # MS-3: 关键词后置降权 — query 核心词不命中则 score ×0.5
+                # MS-3: 关键词后置降权 — query 核心词不命中则 score ×0.7
                 import re as _re_ms3
                 _kw_stop = {"使用", "操作", "配置", "如何", "怎么", "问题", "设置", "方案", "说明", "功能", "系统"}
                 _kw_tokens = [t for t in _re_ms3.findall(r'[一-鿿]{2,}', query) if t not in _kw_stop]
@@ -2494,7 +2760,9 @@ class BoardService:
                         _haystack = (((_r.get('summary') or _r.get('display_summary') or '') + ' ' +
                                       (_r.get('content') or _r.get('full_text') or ''))).lower()
                         if not any(t in _haystack for t in _kw_tokens):
-                            _r['score'] = round(_r.get('score', 0) * 0.5, 4)
+                            _r['score'] = round(_r.get('score', 0) * 0.7, 4)
+                # 过滤 MS-3 降权后低于阈值的结果，保证 LLM 引用与前端证据一致
+                similar_issues = [r for r in similar_issues if (r.get('score') or 0) >= 0.25]
                 print(f"[GenerateReply] 找到 {len(similar_issues)} 个相似工单作为参考")
         except Exception as e:
             print(f"[GenerateReply] 搜索相似工单失败: {e}")
@@ -2507,23 +2775,83 @@ class BoardService:
                 ai_analysis['issue_description'] = issue_info.get('description', '')
                 print(f"[GenerateReply] AI缓存缺标题，从看板补充: {ai_analysis['issue_title'][:50]}")
             else:
-                pass  # 看板缓存 miss，暂无标题
+                # 看板缓存也没有（工单不在当前视图中）→ 通过 mini_proxy 从 Jira 实时拉取
+                try:
+                    import os as _os_fb
+                    import requests as _requests_fb
+                    mini_port = int(_os_fb.environ.get("MINI_PROXY_PORT", "5001"))
+                    jira_resp = _requests_fb.get(
+                        f"http://127.0.0.1:{mini_port}/proxy/jira/issue/{issue_key}",
+                        timeout=10,
+                    )
+                    if jira_resp.status_code == 200:
+                        jira_data = jira_resp.json()
+                        if jira_data.get("status") == "success":
+                            fields = jira_data.get("data", {}).get("fields", {})
+                            ai_analysis['issue_title'] = fields.get('summary', '')
+                            ai_analysis['issue_description'] = (fields.get('description', '') or '')[:1000]
+                            print(f"[GenerateReply] 看板缓存miss，从Jira实时拉取: {ai_analysis['issue_title'][:50]}")
+                except Exception as fb_err:
+                    print(f"[GenerateReply] Jira实时拉取标题失败: {fb_err}")
 
         # 4d. 注入部署模式（公有云/私有云/专属云）+ 产品版本
-        # 优先从看板缓存取，缓存 miss 时通过 Jira API 实时拉取 customfield_13529
+        # 始终用当前工单的部署模式覆盖 ai_analysis，防止 G3 复用路径将历史分析的 deploy_mode 继承到当前工单
+        # （复用分析来自私有化工单，当前工单可能是 yonsuite 公有云，若不覆盖则公有云限制失效）
+        try:
+            _issue_meta = self._get_issue_from_cache(issue_key)
+            if _issue_meta:
+                _dm = _issue_meta.get('deploy_mode', '') if isinstance(_issue_meta, dict) else getattr(_issue_meta, 'deploy_mode', '')
+                _pv = _issue_meta.get('product_version', '') if isinstance(_issue_meta, dict) else getattr(_issue_meta, 'product_version', '')
+                if _dm:
+                    ai_analysis['deploy_mode'] = _dm
+                if _pv:
+                    ai_analysis['product_version'] = _pv
+        except Exception:
+            pass
+
+        # 看板缓存 miss：回退到 Jira API 实时拉取产品版本字段
         if not ai_analysis.get('deploy_mode'):
+            _pv_raw = ""
+            # 优先尝试 mini 代理
             try:
-                _issue_meta = self._get_issue_from_cache(issue_key)
-                if _issue_meta:
-                    _dm = _issue_meta.get('deploy_mode', '') if isinstance(_issue_meta, dict) else getattr(_issue_meta, 'deploy_mode', '')
-                    _pv = _issue_meta.get('product_version', '') if isinstance(_issue_meta, dict) else getattr(_issue_meta, 'product_version', '')
-                    if _dm:
-                        ai_analysis['deploy_mode'] = _dm
-                    if _pv:
-                        ai_analysis['product_version'] = _pv
+                import os as _os_dm
+                import requests as _req_dm
+                _mini_port = int(_os_dm.environ.get("MINI_PROXY_PORT", "5001"))
+                _jira_r = _req_dm.get(
+                    f"http://127.0.0.1:{_mini_port}/proxy/jira/issue/{issue_key}",
+                    params={"fields": "customfield_13529,summary"},
+                    timeout=5,
+                )
+                if _jira_r.status_code == 200:
+                    _jd = _jira_r.json()
+                    if _jd.get("status") == "success":
+                        _f = _jd.get("data", {}).get("fields", {})
+                        _pv_raw = _f.get("customfield_13529", "") or ""
+                        if isinstance(_pv_raw, dict):
+                            _pv_raw = _pv_raw.get("value", "") or ""
             except Exception:
                 pass
-
+            # 代理不可用时直接调 JiraService
+            if not _pv_raw:
+                try:
+                    _ji, _ji_status, _ji_err = jira_service.get_issue_full(issue_key)
+                    if not _ji_err:
+                        _pv_raw = (_ji.get("fields", {}).get("customfield_13529") or "")
+                        if isinstance(_pv_raw, dict):
+                            _pv_raw = _pv_raw.get("value", "") or ""
+                    elif _ji_err == "auth_expired":
+                        print(f"[GenerateReply] Jira 认证失败，跳过产品版本获取: {issue_key}")
+                except Exception:
+                    pass
+            if _pv_raw:
+                ai_analysis['product_version'] = _pv_raw
+                _pv_low = _pv_raw.lower()
+                if "公有云" in _pv_raw or "yonsuite" in _pv_low:
+                    ai_analysis['deploy_mode'] = '公有云'
+                elif "专属云" in _pv_raw:
+                    ai_analysis['deploy_mode'] = '专属云'
+                else:
+                    ai_analysis['deploy_mode'] = '私有化'
 
         if ai_analysis.get('deploy_mode'):
             print(f"[GenerateReply] 部署模式: {ai_analysis['deploy_mode']} 产品版本: {(ai_analysis.get('product_version',''))[:40]}")
@@ -2604,13 +2932,32 @@ class BoardService:
             # 按 score 降序排列，取 top 4（让 B 路高分命中有机会挤掉 A 路低分噪声）
             kb_evidence.sort(key=lambda x: x.get('score', 0), reverse=True)
             kb_evidence = kb_evidence[:4]
+            # 回填 KB 正文：search_bundle 的 document-match item 只带 name+summary，raw_content/chunk_text 为空，
+            # 导致 reply prompt 的"资料i正文"段为空、LLM 无正文可引 → 反问客户（G5 红根因）。
+            # 必须走 get_content(content_id) 回填，不能 _load_item_text(item)——item 已被 _MANIFEST_ITEM_KEYS
+            # slim 掉 converted_path/source_path，直接读仍空。在 specificity 计算前回填，确保 G4 基于真实正文。
+            for _ev in kb_evidence:
+                if (_ev.get('raw_content') or _ev.get('chunk_text') or '').strip():
+                    continue  # 已有正文（chunk-match 等）跳过
+                _cid = _ev.get('content_id')
+                if not _cid:
+                    continue
+                try:
+                    _full = kb_service.get_content(_cid)
+                    _body = ((_full or {}).get('raw_content', '') or '')
+                    if _body.strip():
+                        _ev['raw_content'] = _body[:1500]
+                except Exception as _e_bf:
+                    print(f"[GenerateReply] KB正文回填失败 {_cid}: {_e_bf}")
             if kb_evidence:
-                print(f"[GenerateReply] KB搜索 query='{kb_query[:60]}' keywords='{keyword_query[:40]}' category='{module_category}' → 命中 {len(kb_evidence)} 条: {[i.get('name') for i in kb_evidence]}")
+                _filled = sum(1 for i in kb_evidence if (i.get('raw_content') or i.get('chunk_text') or '').strip())
+                print(f"[GenerateReply] KB搜索 query='{kb_query[:60]}' keywords='{keyword_query[:40]}' category='{module_category}' → 命中 {len(kb_evidence)} 条(含正文{_filled}): {[i.get('name') for i in kb_evidence]}")
         except Exception as e:
             print(f"[GenerateReply] KB搜索失败(降级到无KB模式): {e}")
 
-        # ── Gate 4: 操作具体度检查 ────────────────────────────────────────────
-        _specificity_level = self._compute_specificity_level(kb_evidence)
+        # ── Gate 4: 操作具体度检查（含工单意图封顶，title 取自 ai_analysis）──────
+        _specificity_level = self._compute_specificity_level(
+            kb_evidence, title=(ai_analysis or {}).get("issue_title", ""))
         try:
             import yaml as _yaml
             _g4_cfg = _yaml.safe_load(open(PROJECT_ROOT / "config" / "reply_gates.yaml"))
@@ -2637,6 +2984,15 @@ class BoardService:
             }
         # ─────────────────────────────────────────────────────────────────────
 
+        # 5b. 补充工单评论作为低优先级参考资料（其他人员意见）
+        try:
+            _comment_ev = self._fetch_comment_evidence(issue_key, max_comments=3)
+            if _comment_ev:
+                print(f"[GenerateReply] 评论参考 {issue_key}: +{len(_comment_ev)} 条")
+                kb_evidence = kb_evidence + _comment_ev
+        except Exception as _e_ce:
+            print(f"[GenerateReply] 评论获取跳过: {_e_ce}")
+
         # 6. 搜索用户历史回复范例（训练器）
         reply_examples = []
         try:
@@ -2646,7 +3002,7 @@ class BoardService:
                 # project_key: 优先使用 API 层传入的归属（含 user.current_project），
                 # 未传时退回 issue_key 前缀推断
                 _proj_key = project_key or (issue_key.split("-")[0].upper() if "-" in issue_key else "")
-                reply_examples = self.reply_trainer.search_examples(query, top_k=3, module=module_category or "", project_key=_proj_key)
+                reply_examples = self.reply_trainer.search_examples(query, top_k=8, module=module_category or "", project_key=_proj_key)
                 if reply_examples:
                     print(f"[GenerateReply] 找到 {len(reply_examples)} 个回复范例")
         except Exception as e:
@@ -2669,6 +3025,10 @@ class BoardService:
                 reply_examples=reply_examples,
                 current_product_version=_product_version_g3,
                 current_module=module_category or "",
+                current_issue_key=issue_key,
+                current_query_text=query or "",
+                current_deploy_mode=(ai_analysis or {}).get("deploy_mode", "")
+                or _issue_info_g3.get("deploy_mode", ""),
             )
         except Exception as _e_g3:
             print(f"[Gate3] reuse evaluation error, skipping: {_e_g3}")
@@ -2712,6 +3072,7 @@ class BoardService:
                     kb_evidence=[],
                     gate_decisions={"reuse": {"tier": "direct", "composite": _reuse_candidate.composite_score}},
                     main_provider="minimax",
+                    deploy_mode=(ai_analysis or {}).get("deploy_mode", ""),
                 )
                 _sup_g3_failed = _sup_g3 is None or (
                     _sup_g3.supervisor_score is not None and _sup_g3.supervisor_score < 0.6
@@ -2725,11 +3086,24 @@ class BoardService:
                 _downgrade_reason = f"pollution_ratio={_pollution_ratio:.2f}"
             elif _sup_g3_failed:
                 _downgrade_reason = "supervisor_fail"
+            else:
+                # Layer 1 公有云客开 direct 出口网：personalize 后的复用文本若仍含
+                # 客开建议且当前为公有云工单 → downgrade 到 llm_blend（带公有云 guard 重写，
+                # 不删词避免语义破碎）。Layer 3 已在源头隔离，此处为纵深防御兜底。
+                try:
+                    from services.reply_reuse_evaluator import (
+                        reply_suggests_custom_dev, is_public_cloud,
+                    )
+                    if is_public_cloud((ai_analysis or {}).get("deploy_mode", "")) \
+                            and reply_suggests_custom_dev(_personalized):
+                        _downgrade_reason = "cloud_custom_dev_violation"
+                except Exception as _e_cloud:
+                    print(f"[Gate3] cloud policy check error: {_e_cloud}")
 
             if _downgrade_reason:
                 print(f"[Gate3] {issue_key}: downgrade direct→llm_blend ({_downgrade_reason})")
                 _reuse_candidate.tier = "llm_blend"
-                _g3_downgrade_reason = _downgrade_reason
+                _g3_downgrade_reason = _downgrade_reason  # 透出给后续 gateway 组装
                 # 不短路，继续走完整 5 网关流程
             else:
                 # 通过验证：短路返回，附带 G5 结果
@@ -2763,6 +3137,9 @@ class BoardService:
                     "reuse_score": _reuse_candidate.composite_score,
                     "downgrade_reason": None,
                 }
+                _personalized, _cite_stripped = self._strip_internal_ticket_citations(_personalized)
+                if _cite_stripped:
+                    print(f"[CitationGuard] {issue_key}: stripped internal ticket refs from direct reuse reply")
                 if not force:
                     save_cached_reply(issue_key, ai_analysis, _personalized, extra_fields=_g3_extra)
                 return {
@@ -2798,6 +3175,40 @@ class BoardService:
         # 7. 生成解决方案内容（始终用 LLM，即使无 KB 证据/范例也可基于 ai_analysis + product_facts 生成）
         solution_content = self._generate_styled_reply(ai_analysis, similar_issues, reply_examples, kb_evidence, module_category=module_category, user_id=user_id, specificity_level=_specificity_level)
 
+        # ── LLM 输出验证：检测空工单模板回复，回退到富缓存 ───────────────────────
+        _EMPTY_TICKET_PREFIXES = (
+            "您好！工单标题", "您好！当前工单标题", "您好！您提交的工单标题",
+            "工单标题和描述均为空", "工单信息缺失", "当前工单标题和描述",
+        )
+        if solution_content and any(solution_content.startswith(p) for p in _EMPTY_TICKET_PREFIXES):
+            print(f"[CacheLeak] {issue_key}: LLM 输出为空工单模板，说明 analysis_cache title 仍为空，尝试富缓存回退")
+            try:
+                from services.feishu_notifier import get_notifier
+                get_notifier().send_message(f"⚠️ [CacheLeak] {issue_key} LLM 输出为空工单模板 — write-path quality gate 可能漏网，请检查 analysis_cache 该 entry")
+            except Exception:
+                pass
+            from reply_cache_service import get_cached_reply_entry as _gce
+            _fb_entry = _gce(issue_key, {}) or {}
+            _fb_reply = _fb_entry.get("reply_content", "")
+            if _fb_reply and len(_fb_reply) >= 10 and not any(_fb_reply.startswith(p) for p in _EMPTY_TICKET_PREFIXES):
+                print(f"[GenerateReply] 富缓存回退成功，使用历史回复: {issue_key} ({len(_fb_reply)}字)")
+                solution_content = _fb_reply
+            else:
+                print(f"[GenerateReply] 富缓存无可用回退: {issue_key}，返回错误状态")
+                return {
+                    "reply_content": "",
+                    "solution_content": "",
+                    "ai_analysis": ai_analysis,
+                    "word_count": 0,
+                    "error": "工单数据不足（Jira 403 或字段缺失），请检查工单内容或稍后重试",
+                }
+        # ────────────────────────────────────────────────────────────────────
+
+        # CitationGuard：剥离 LLM 生成回复中的内部工单号引用（覆盖 llm_blend + KB 路径）
+        solution_content, _sol_cite_stripped = self._strip_internal_ticket_citations(solution_content or "")
+        if _sol_cite_stripped:
+            print(f"[CitationGuard] {issue_key}: stripped internal ticket refs from generated reply")
+
         # ── Gate 5: 独立监督审计 + 多维加权 Auto-Reply 决策 ──────────────────
         _supervisor_result = None
         _auto_reply_decision = None
@@ -2817,6 +3228,7 @@ class BoardService:
                 kb_evidence=kb_evidence or [],
                 gate_decisions={"completeness": {}, "specificity": {"level": _specificity_level}},
                 main_provider="minimax",
+                deploy_mode=ai_analysis.get("deploy_mode", ""),
             )
         except Exception as _e_g5:
             print(f"[Gate5] supervisor error, skipping: {_e_g5}")
@@ -2849,6 +3261,7 @@ class BoardService:
                     is_key_customer=_is_vip_g5,
                     reuse_matched=_reuse_matched_g5,
                     risk_flags=_supervisor_result.risk_flags or [],
+                    specificity_level=_specificity_level,
                 )
                 print(
                     f"[Gate5] {issue_key}: supervisor={_supervisor_result.supervisor_score if _supervisor_result.supervisor_score is not None else 'llm_failed'} "
@@ -2885,6 +3298,7 @@ class BoardService:
                 kb_evidence=kb_evidence,
                 reply_examples=reply_examples,
                 generated_reply="",
+                specificity_level=_specificity_level,  # B: 显示对齐 — gateway G4 level 用 board 真实 level
             )
             self.reply_gateway.inject_g5_from_supervisor(_gw_result, issue_key, _supervisor_result)
             # 若 direct 路径降级，将原因注入 G3_reuse 以便前端展示
@@ -3082,6 +3496,8 @@ class BoardService:
             } if _auto_reply_decision else None,
             "transfer_to": _transfer_pending,
             "pending_approval_id": locals().get("_pending_approval_id_g"),
+            "final_action": locals().get("_final_action_g", ""),
+            "blocked_by": (_auto_reply_decision.blocked_by if _auto_reply_decision else []),
             "similar_issues_scored": [
                 {
                     "key": s.get("key", ""),
@@ -3089,7 +3505,7 @@ class BoardService:
                     "summary": ((s.get("summary") or s.get("content") or "")[:80]),
                 }
                 for s in (similar_issues or [])[:5]
-                if (s.get("score") or 0) >= 0.6
+                if (s.get("score") or 0) >= 0.25
             ],
             "is_key_customer": _is_vip_g5,
             "reply_strategy": (
@@ -3100,15 +3516,15 @@ class BoardService:
         }
 
     def _analyze_attachment_images(self, issue_key: str, max_images: int = 2) -> str:
-        """图片附件视觉分析（暂不支持，返回空串）。"""
-        return ""
-
-    def _analyze_attachment_images_impl(self, issue_key: str, max_images: int = 2) -> str:
-        """保留原始实现供未来通过直连 Jira API 恢复，当前未调用。"""
+        """
+        下载工单的图片附件并用 GLM-5V-Turbo 做视觉分析，返回自然语言描述。
+        失败或无图片时返回空串；不阻塞主流程。
+        """
         import base64 as _b64
         import json as _json
         import os as _os
         try:
+            # 1. 通过 mini_proxy 拿附件列表（与 /api/board/issue-detail 相同路径）
             mini_proxy_port = int(_os.environ.get("MINI_PROXY_PORT", "5001"))
             try:
                 resp = requests.get(
@@ -3393,10 +3809,13 @@ class BoardService:
         # 构建 user prompt
         user_parts = []
 
-        # KB知识库证据（主要内容来源）
-        if kb_evidence:
+        # KB知识库证据 + 工单评论（分组显示，评论优先级略低）
+        _kb_items = [x for x in (kb_evidence or []) if x.get("source_type") != "comment"]
+        _comment_items = [x for x in (kb_evidence or []) if x.get("source_type") == "comment"]
+
+        if _kb_items:
             user_parts.append("## 知识库参考资料（请基于这些资料给出具体方案）")
-            for i, item in enumerate((kb_evidence or [])[:4], 1):
+            for i, item in enumerate(_kb_items[:4], 1):
                 content = (item.get('raw_content') or item.get('chunk_text', ''))[:1500]
                 name = item.get('name', '')
                 summary = item.get('summary', '')
@@ -3405,16 +3824,32 @@ class BoardService:
                     user_parts.append(f"摘要：{summary}")
                 user_parts.append(f"正文：{content}")
 
+        if _comment_items:
+            user_parts.append("\n## 工单评论参考（其他人员对此问题的意见，优先级低于官方资料）")
+            for i, item in enumerate(_comment_items[:3], 1):
+                body = (item.get('raw_content') or '')[:500]
+                author = item.get('author', '评论者')
+                created = item.get('created', '')
+                date_str = f" ({created})" if created else ""
+                user_parts.append(f"\n### 评论{i} · {author}{date_str}")
+                user_parts.append(body)
+
         # 范例（风格参考）— Fix 3: 区分修改版本 (金样本) 和直接采纳版本
         if reply_examples:
             _modified = [ex for ex in reply_examples if ex.get('is_modified') or not ex.get('adopted')]
             _adopted = [ex for ex in reply_examples if ex.get('adopted') and not ex.get('is_modified')]
 
             if _modified:
-                user_parts.append("\n## 用户修改过的回复范例 (请特别学习这些修改, 它们代表用户期望的回复标准)")
+                user_parts.append("\n## 用户修改过的回复范例（AI草稿→人工修改对比，请学习差距在哪里）")
                 for i, ex in enumerate(_modified[:2], 1):
                     user_parts.append(f"\n### 修改范例 {i}: {ex.get('summary', '')}")
-                    user_parts.append(ex.get('reply', '')[:400])
+                    _ai_orig = ex.get('ai_original', '').strip()
+                    _human = ex.get('reply', '').strip()
+                    if _ai_orig and _ai_orig != _human:
+                        user_parts.append(f"【AI草稿】{_ai_orig[:300]}")
+                        user_parts.append(f"【人工修改】{_human[:400]}")
+                    else:
+                        user_parts.append(_human[:400])
 
             if _adopted:
                 user_parts.append("\n## 直接采纳的回复范例 (风格参考)")
@@ -3514,40 +3949,98 @@ class BoardService:
         # 回退到模板
         return self._build_detailed_solution(ai_analysis, similar_issues)
 
-    def _compute_specificity_level(self, kb_evidence: list) -> str:
+    def _compute_specificity_level(self, kb_evidence: list, title: str = "") -> str:
         """
-        基于 KB 证据质量计算输出具体度等级。
-        返回 "high" | "medium" | "low" | "none"
+        基于 KB 证据质量计算输出具体度等级，再按工单意图(title)封顶。
+        返回 "high" | "medium" | "low" | "none"。title 默认空 → 退化为纯质量(向后兼容)。
         """
         if not kb_evidence:
             return "none"
 
-        # 对每条证据打分，取最高分
+        # 相关性折扣目标分（可配）：每条证据的"内在质量分"按其与工单的相关性(score)折扣，
+        # 防止高质量但话题无关的 KB 被计为强证据（badcase LCZX-63461）。
+        # 局限：embedding(MiniLM) 对话题无关但向量高分的情形折扣不到位，
+        # 该残余由 G5 evidence_mismatch(LLM 判) + require_no_risk_flags 兜底，Phase3 bge 根治。
+        try:
+            import yaml as _y_sp
+            _sp_cfg = (_y_sp.safe_load(open(PROJECT_ROOT / "config" / "reply_gates.yaml")) or {}) \
+                .get("gates", {}).get("specificity", {})
+            _rel_target = float(_sp_cfg.get("relevance_target", 0.72))
+        except Exception:
+            _rel_target = 0.72
+
+        # 对每条证据打分，取最高分（质量分 × 相关性权重）
         best_score = 0.0
         for item in kb_evidence:
             step_density = float(item.get("step_density", 0.0))
             source_tier = float(item.get("source_tier", 1))
             completeness = float(item.get("completeness", 1.0))
             # 加权综合分：步骤密度 0.5 + 来源层级归一化 0.3 + 完整性 0.2
-            score = (step_density * 0.5 + (source_tier / 3.0) * 0.3 + completeness * 0.2)
+            quality = (step_density * 0.5 + (source_tier / 3.0) * 0.3 + completeness * 0.2)
+            # 相关性折扣：score≥target 不折扣，低于则线性衰减（缺 score 默认不折扣）
+            rel = float(item.get("score", 1.0) or 1.0)
+            rel_weight = max(0.0, min(1.0, rel / _rel_target)) if _rel_target > 0 else 1.0
+            score = quality * rel_weight
             if score > best_score:
                 best_score = score
 
         if best_score >= 0.60:
-            return "high"
+            level = "high"
         elif best_score >= 0.35:
-            return "medium"
+            level = "medium"
         elif best_score >= 0.10:
-            return "low"
+            level = "low"
         else:
-            return "none"
+            level = "none"
+        # 工单意图封顶：纯咨询/可行性类 high→medium（给思路不堆步骤），见 _apply_intent_cap
+        return _apply_intent_cap(level, title)
 
-    def _run_gate1_completeness(self, issue_key: str) -> Optional[Dict]:
+    def _fetch_comment_evidence(self, issue_key: str, max_comments: int = 3) -> list:
+        """从 Jira 获取工单评论，格式化为低优先级 KB 证据条目。"""
+        try:
+            import requests as _req_ce
+            _js = jira_service
+            url = f"{_js.base_url}/rest/api/2/issue/{issue_key}?fields=comment"
+            resp = _req_ce.get(
+                url,
+                headers=_js.headers,
+                cookies=_js.cookies if _js.cookies else None,
+                verify=_js.ssl_verify,
+                timeout=5,
+                proxies=_js.proxies,
+            )
+            if not resp.ok:
+                return []
+            raw_comments = resp.json().get("fields", {}).get("comment", {}).get("comments", [])
+            evidence = []
+            for c in raw_comments:
+                body = (c.get("body") or "").strip()
+                if len(body) < 20:
+                    continue
+                author = (c.get("author") or {}).get("displayName", "评论者")
+                created = (c.get("created") or "")[:10]
+                evidence.append({
+                    "name": f"评论 · {author}",
+                    "score": 0.40,
+                    "source_type": "comment",
+                    "raw_content": body[:800],
+                    "source": issue_key,
+                    "author": author,
+                    "created": created,
+                })
+                if len(evidence) >= max_comments:
+                    break
+            return evidence
+        except Exception:
+            return []
+
+    def _run_gate1_completeness(self, issue_key: str, gate_mode: str = "decide_and_execute") -> Optional[Dict]:
         """
         运行 Gate 1 信息完整性检查。
         返回 None 表示通过（可继续生成回复）；
         返回 dict 表示拦截（直接作为 generate_reply_content 返回值）。
         """
+        execute = (gate_mode != "decide_only")
         try:
             import yaml
             from pathlib import Path as _Path
@@ -3561,6 +4054,9 @@ class BoardService:
 
         # 从缓存拿工单信息
         issue_info = self._get_issue_from_cache(issue_key)
+        if issue_info is None:
+            print(f"[Gate1] {issue_key} 不在缓存中，跳过完整性检查")
+            return None
         project = ""
         description = ""
         issue_type_confirmed = ""
@@ -3590,10 +4086,27 @@ class BoardService:
         if result.passed:
             return None
 
+        # decide_only: record what would happen but don't execute
+        if not execute:
+            try:
+                from services import gate_decision_log as _gdl1_dry
+                _gdl1_dry.log_gate_decision(
+                    issue_key=issue_key,
+                    gate_decisions={"completeness": "would_block", "classification": "skipped",
+                                    "reuse": "skipped", "specificity": "skipped", "supervisor": "skipped"},
+                    missing_fields=result.missing_fields,
+                    final_action="would_return",
+                    operation_steps=[f"[decide_only] G1 detected missing: {', '.join(result.missing_fields)}"],
+                )
+            except Exception:
+                pass
+            return None
+
         # 拦截 — 自动退回支持（填解决方案 + 退回支持 transition）
         _g1_ok, _g1_steps = self._gate1_auto_return_to_support(
             issue_key, result.missing_fields, result.inquiry_draft,
             insufficient_type=result.insufficient_type,
+            gate_mode=gate_mode,
         )
         try:
             from services import gate_decision_log as _gdl1
@@ -3627,7 +4140,7 @@ class BoardService:
             }},
         }
 
-    def _gate1_auto_return_to_support(self, issue_key: str, missing_fields: list, inquiry_draft: str, insufficient_type: str = "") -> tuple:
+    def _gate1_auto_return_to_support(self, issue_key: str, missing_fields: list, inquiry_draft: str, insufficient_type: str = "", gate_mode: str = "decide_and_execute") -> tuple:
         """
         Gate 1 自动退回：填解决方案 + 选「退回支持」+ 触发 Jira transition。
         上限 2 次/ticket（防误判反复退回）。计数记录在 data/gate1_inquiry_log.json。
@@ -3635,7 +4148,7 @@ class BoardService:
         """
         import json as _json
         from pathlib import Path as _Path
-        log_path = _Path(PROJECT_ROOT) / "data" / "gate1_inquiry_log.json"
+        log_path = _Path(os.environ.get("AITICKET_DATA_ROOT") or os.path.join(str(_Path(PROJECT_ROOT)), "APP", "data")) / "gate1_inquiry_log.json"
         try:
             log: dict = _json.loads(log_path.read_text()) if log_path.exists() else {}
         except Exception:
@@ -3654,38 +4167,42 @@ class BoardService:
         ]
         try:
             from datetime import datetime as _dt
-            _custom_fields = {
-                "solution": inquiry_draft,
-                "reply_method": "退回支持",
-            }
-            if insufficient_type == "invalid_description":
-                _custom_fields["issue_type_confirmed"] = "无效问题"
-            result = jira_service.reply_and_close_via_transition(
-                issue_id=issue_key,
-                comment=inquiry_draft,
-                custom_fields=_custom_fields,
-                ai_fields=None,
+            from services import decision_executor as _g1_de
+            _extra_ops = [{"type": "return_to_support", "payload": {
+                "inquiry_draft": inquiry_draft,
+                "custom_fields": {
+                    "solution": inquiry_draft,
+                    "reply_method": "退回支持",
+                    **({"issue_type_confirmed": "无效问题"} if insufficient_type == "invalid_description" else {}),
+                },
+            }}]
+            _exec_result = _g1_de.execute(
+                issue_key, "auto_returned", _extra_ops, gate_mode, self,
+                getattr(self, "jira_service", None),
             )
-            ok = result.get("success", False)
+            ok = _exec_result.success and not _exec_result.skipped
+            if _exec_result.skipped:
+                print(f"[Gate1] {issue_key}: executor skipped: {_exec_result.error}")
+            elif not ok:
+                print(f"[Gate1] {issue_key}: executor failed: {_exec_result.error}")
             if ok:
                 entry["count"] = entry.get("count", 0) + 1
                 entry["last_sent"] = _dt.now().isoformat()
                 log[issue_key] = entry
                 log_path.write_text(_json.dumps(log, ensure_ascii=False, indent=2))
-                print(f"[Gate1] {issue_key}: auto_return sent (count={entry['count']})")
-            else:
-                print(f"[Gate1] {issue_key}: reply_and_close failed: {result.get('message')}")
+                print(f"[Gate1] {issue_key}: auto_return via executor (count={entry['count']})")
             return ok, operation_steps
         except Exception as e:
             print(f"[Gate1] {issue_key}: auto_return error: {e}")
             return False, operation_steps
 
-    def _run_gate2_classification(self, issue_key: str) -> Optional[Dict]:
+    def _run_gate2_classification(self, issue_key: str, gate_mode: str = "decide_and_execute") -> Optional[Dict]:
         """
         运行 Gate 2 分类正确性检查。
         返回 None 表示通过（继续生成回复）；
         返回 dict 表示需要迁移或有迁移建议（直接作为 generate_reply_content 返回值）。
         """
+        execute = (gate_mode != "decide_only")
         try:
             from services.classifier_service import classify_issue
             issue_info = self._get_issue_from_cache(issue_key) or {}
@@ -3717,14 +4234,54 @@ class BoardService:
         }
 
         if result.confidence >= 0.92 and result.predicted_project and result.predicted_project != current_project:
-            # 高置信度误分类 → 尝试 auto-move
+            if not execute:
+                try:
+                    from services import gate_decision_log as _gdl2_dry
+                    _gdl2_dry.log_gate_decision(
+                        issue_key=issue_key,
+                        gate_decisions={"completeness": "skipped", "classification": "would_block",
+                                        "reuse": "skipped", "specificity": "skipped", "supervisor": "skipped"},
+                        final_action="would_move",
+                        operation_steps=[f"[decide_only] G2 would move to {result.predicted_project} (conf={result.confidence:.2f})"],
+                    )
+                except Exception:
+                    pass
+                return None
+            # 高置信度误分类 → 经 decision_executor 路由 auto-move
             auto_moved = False
             try:
                 target_board = self._gate2_find_target_board(result.predicted_project, confidence=result.confidence)
                 if target_board:
-                    move_result = self.move_issue_to_board(issue_key, target_board, sync_jira=True)
-                    auto_moved = move_result.get("success", False)
-                    if auto_moved:
+                    from services import decision_executor as _g2_de
+                    # autoexecute 路由监督门：supervisor_score >= 0.8 且无 evidence_mismatch/hallucination
+                    _g2_op_type = "move_jira"
+                    if gate_mode == "decide_and_autoexecute":
+                        try:
+                            from services import gate_decision_log as _g2_gdl
+                            _g2_recent = _g2_gdl.get_recent_decision(issue_key)
+                            _g2_sup = float((_g2_recent or {}).get("supervisor_score") or 0.0)
+                            _g2_risk = set((_g2_recent or {}).get("risk_flags") or [])
+                            _g2_routing_risk = {"evidence_mismatch", "hallucination"}
+                            if _g2_sup < 0.8 or (_g2_risk & _g2_routing_risk):
+                                _g2_op_type = "notify"
+                                print(f"[Gate2] {issue_key}: routing guard failed "
+                                      f"(sup={_g2_sup:.2f}, routing_risk={_g2_risk & _g2_routing_risk}), notify")
+                        except Exception as _g2_eg:
+                            _g2_op_type = "notify"
+                            print(f"[Gate2] routing guard check error: {_g2_eg}, degrading to notify")
+                    _g2_extra_ops = [{"type": _g2_op_type, "target": target_board, "payload": {
+                        "predicted_project": result.predicted_project,
+                        "confidence": result.confidence,
+                    }}]
+                    _g2_exec = _g2_de.execute(
+                        issue_key, "auto_moved" if _g2_op_type == "move_jira" else "notify",
+                        _g2_extra_ops, gate_mode, self,
+                        getattr(self, "jira_service", None),
+                    )
+                    auto_moved = _g2_exec.success and not _g2_exec.skipped and _g2_op_type == "move_jira"
+                    if _g2_exec.skipped:
+                        print(f"[Gate2] {issue_key}: executor skipped: {_g2_exec.error}")
+                    elif auto_moved:
                         self._gate2_record_move(
                             issue_key, current_project, result.predicted_project,
                             result.confidence, result.reasoning, target_board
@@ -3732,7 +4289,7 @@ class BoardService:
                         print(f"[Gate2] {issue_key}: auto-moved {current_project} → {result.predicted_project} (board={target_board})")
                         self._gate2_notify_move(issue_key, current_project, result.predicted_project, result.confidence)
                     else:
-                        print(f"[Gate2] {issue_key}: move_issue_to_board failed: {move_result.get('error')}")
+                        print(f"[Gate2] {issue_key}: executor failed: {_g2_exec.error}")
             except Exception as e:
                 print(f"[Gate2] auto-move error: {e}")
 
@@ -4163,7 +4720,7 @@ class BoardService:
                 parts.append(f'text ~ "{tok}"')
         return ' '.join(parts)
 
-    def run_automation_rule(self, rule_id: str, dry_run: bool = False) -> Dict:
+    def run_automation_rule(self, rule_id: str, dry_run: bool = False, jira_client=None) -> Dict:
         """执行自动化规则：JQL 查询匹配工单 → 去重 → 执行动作"""
         config = self._load_board_config()
         rule = None
@@ -4199,25 +4756,40 @@ class BoardService:
         jql = " AND ".join(jql_parts) + " ORDER BY created DESC"
 
         try:
-            from services.user_session_pool import pick_jira_service_for_bg
-            jira = pick_jira_service_for_bg("automation_rule")
-            if jira is None:
-                return {"success": False, "error": "strict 模式：无活跃用户会话，跳过自动化规则执行"}
+            if jira_client is not None:
+                jira = jira_client
+            else:
+                from services.user_session_pool import pick_jira_service_for_bg
+                jira = pick_jira_service_for_bg("automation_rule")
+                if jira is None:
+                    return {"success": False, "error": "strict 模式：无活跃用户会话，跳过自动化规则执行"}
             result_data = jira.search_issues(jql, max_results=200)
             if "error" in result_data:
                 err_msg = str(result_data['error'])
-                # 会话失效检测
-                if '401' in err_msg or 'Unauthorized' in err_msg:
+                if '401' in err_msg or '403' in err_msg or 'Unauthorized' in err_msg or 'Forbidden' in err_msg:
                     self._update_rule_stats(config, rule, 0, 0, 0, "session_expired")
-                    return {"success": False, "error": "Jira 会话已过期，请先在看板页面刷新会话"}
+                    return {"success": False, "error": "Jira 会话已过期或无权限，请先在看板页面刷新会话后重试"}
                 return {"success": False, "error": f"Jira 查询失败: {err_msg}"}
             raw_issues = result_data.get("issues", [])
         except Exception as e:
             err_msg = str(e)
-            if '401' in err_msg or 'Unauthorized' in err_msg:
+            if '401' in err_msg or '403' in err_msg or 'Unauthorized' in err_msg or 'Forbidden' in err_msg:
                 self._update_rule_stats(config, rule, 0, 0, 0, "session_expired")
-                return {"success": False, "error": "Jira 会话已过期，请先在看板页面刷新会话"}
+                return {"success": False, "error": "Jira 会话已过期或无权限，请先在看板页面刷新会话后重试"}
             return {"success": False, "error": f"Jira 查询失败: {e}"}
+
+        # 是否重点客户：JQL 无法直接过滤，在内存中后置筛选
+        if conds.get("is_key_customer"):
+            from services.customer_priority_tagger import is_key_customer as _is_key_cond
+            _want_vip = conds["is_key_customer"] == "yes"
+            _filtered = []
+            for _iss in raw_issues:
+                _craw = (_iss.get("fields") or {}).get("customfield_10725", [])
+                _cname = _craw[0] if isinstance(_craw, list) and _craw else (_craw or "")
+                if _is_key_cond(str(_cname)) == _want_vip:
+                    _filtered.append(_iss)
+            raw_issues = _filtered
+            print(f"[Automation] is_key_customer={conds['is_key_customer']} 筛选后: {len(raw_issues)} 条")
 
         # 2. 去重：排除已处理过的工单
         processed_keys = set(rule.get("processed_keys", []))
@@ -4238,8 +4810,8 @@ class BoardService:
                 skipped_dedup += 1
                 continue
 
-            # 通用去重：已处理过的 key（非 dry_run 模式才检查）
-            if not dry_run and key in processed_keys:
+            # 通用去重：已处理过的 key（dry_run 也检查，保证试运行结果与真实执行一致）
+            if key in processed_keys:
                 skipped_dedup += 1
                 continue
 
@@ -4276,12 +4848,15 @@ class BoardService:
         # 3. 正式执行
         executed = 0
         errors = 0
-        from services.user_session_pool import pick_jira_service_for_bg
-        jira = pick_jira_service_for_bg("automation_rule_execute")
-        if jira is None:
-            result["success"] = False
-            result["error"] = "strict 模式：无活跃用户会话，跳过执行步骤"
-            return result
+        if jira_client is None:
+            from services.user_session_pool import pick_jira_service_for_bg
+            jira = pick_jira_service_for_bg("automation_rule_execute")
+            if jira is None:
+                result["success"] = False
+                result["error"] = "strict 模式：无活跃用户会话，跳过执行步骤"
+                return result
+        else:
+            jira = jira_client
 
         _comment_text = action.get("comment_text", "").strip()
         for item in matched:
@@ -4365,6 +4940,103 @@ class BoardService:
         result["errors"] = errors
         print(f"[Automation] 规则 '{rule['name']}' 执行完成: 匹配{len(matched)}, 去重跳过{skipped_dedup}, 成功{executed}, 失败{errors}")
         return result
+
+    def reset_rule_processed_keys(self, rule_id: str) -> dict:
+        config = self._load_board_config()
+        rule = next((r for r in config.get("automation_rules", []) if r["id"] == rule_id), None)
+        if not rule:
+            return {"success": False, "error": "规则不存在"}
+        cleared = len(rule.get("processed_keys", []))
+        rule["processed_keys"] = []
+        self.save_board_config(config)
+        return {"success": True, "cleared": cleared}
+
+    def preview_automation_rule(self, rule_data: dict, jira_client=None) -> dict:
+        """用表单条件预跑 dry-run，不保存规则，返回匹配数量和样例。"""
+        conds = rule_data.get("conditions", {})
+        action = rule_data.get("action", {})
+        if isinstance(action, str):
+            action_type = action
+        else:
+            action_type = action.get("type", "assign")
+
+        jql_parts = ['issuetype = "支持问题"', "resolution = Unresolved"]
+        if conds.get("project"):
+            jql_parts.append(f'project = {conds["project"]}')
+        if conds.get("customer_issue_type"):
+            jql_parts.append(f'cf[10402] = "{conds["customer_issue_type"]}"')
+        if conds.get("assignee"):
+            jql_parts.append(f'assignee = "{conds["assignee"]}"')
+        if conds.get("keywords"):
+            kw_jql = self._build_keywords_jql(conds["keywords"])
+            if kw_jql:
+                jql_parts.append(f"({kw_jql})")
+        if conds.get("due_within"):
+            from datetime import timedelta
+            _delta = {"4h": 0, "1d": 1, "3d": 3, "5d": 5}
+            days = _delta.get(conds["due_within"], 0)
+            cutoff = (datetime.now().date() + timedelta(days=days)).strftime("%Y-%m-%d") + " 23:59"
+            jql_parts.append("cf[11919] is not EMPTY")
+            jql_parts.append(f'cf[11919] <= "{cutoff}"')
+        jql = " AND ".join(jql_parts) + " ORDER BY created DESC"
+
+        try:
+            if jira_client is not None:
+                jira = jira_client
+            else:
+                from services.user_session_pool import pick_jira_service_for_bg
+                jira = pick_jira_service_for_bg("rule_preview")
+                if jira is None:
+                    return {"success": False, "error": "strict 模式：无活跃用户会话"}
+            result_data = jira.search_issues(jql, max_results=200)
+            if "error" in result_data:
+                err_msg = str(result_data["error"])
+                if '401' in err_msg or '403' in err_msg or 'Unauthorized' in err_msg or 'Forbidden' in err_msg:
+                    return {"success": False, "error": "Jira 会话已过期，请刷新看板后重试"}
+                return {"success": False, "error": f"Jira 查询失败: {err_msg}"}
+            raw_issues = result_data.get("issues", [])
+        except Exception as e:
+            return {"success": False, "error": f"Jira 查询失败: {e}"}
+
+        # is_key_customer 后置筛选
+        if conds.get("is_key_customer"):
+            from services.customer_priority_tagger import is_key_customer as _is_key_prev
+            _want_vip = conds["is_key_customer"] == "yes"
+            raw_issues = [
+                _i for _i in raw_issues
+                if _is_key_prev(str(((_i.get("fields") or {}).get("customfield_10725") or [""])[0]
+                                   if isinstance((_i.get("fields") or {}).get("customfield_10725"), list)
+                                   else (_i.get("fields") or {}).get("customfield_10725") or "")) == _want_vip
+            ]
+
+        action_params = rule_data.get("action_params", {}) or {}
+        if isinstance(action, dict):
+            action_params = {**action, **action_params}
+        if action_type == "assign":
+            would_do = f"分配给 {action_params.get('assign_to', action_params.get('assignee', '?'))}"
+        elif action_type == "move_project":
+            would_do = f"移动到 {action_params.get('target_project','?')}/{action_params.get('target_module','?')}"
+        else:
+            preview = (action_params.get("comment_text") or "")[:20]
+            would_do = f"回复并关闭: {preview}..."
+
+        samples = []
+        for iss in raw_issues[:5]:
+            fields = iss.get("fields", {})
+            assignee_obj = fields.get("assignee") or {}
+            samples.append({
+                "key": iss.get("key", ""),
+                "summary": (fields.get("summary", "") or "")[:50],
+                "assignee": assignee_obj.get("name", "") if isinstance(assignee_obj, dict) else "",
+            })
+
+        return {
+            "success": True,
+            "jql": jql,
+            "matched": len(raw_issues),
+            "would_do": would_do,
+            "samples": samples,
+        }
 
     def _update_rule_stats(self, config, rule, matched, executed, errors, status=None):
         """更新规则执行统计并持久化"""

@@ -70,11 +70,13 @@ def generate_by_module(req: GenerateByModuleRequest, raw_request: Request, _quot
 def module_coverage(module: str, raw_request: Request):
     """查询某模块在 KB / 样例 中的覆盖度，供调用方判断该模块能否使用智能回复。"""
     try:
+        import os
         import sqlite3
         from pathlib import Path
 
         base = Path(__file__).resolve().parent.parent
-        db_path = base.parent.parent / "data" / "sqlite" / "kb_chunks.db"
+        _data_root = Path(os.environ.get("AITICKET_DATA_ROOT") or str(base.parent.parent / "APP" / "data"))
+        db_path = _data_root / "sqlite" / "kb_chunks.db"
 
         # KB 文档覆盖
         kb_total = kb_module = 0
@@ -163,7 +165,8 @@ def refine_reply(req: RefineRequest, raw_request: Request, _quota=Depends(requir
         }
 
         try:
-            specificity = bs._compute_specificity_level(kb_evidence)
+            specificity = bs._compute_specificity_level(
+                kb_evidence, title=ai_analysis.get("issue_title", ""))
         except Exception:
             specificity = "normal"
 

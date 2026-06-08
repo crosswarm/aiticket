@@ -1,0 +1,12 @@
+{
+  "_README": "可选：启用 bge-base-zh-v1.5（中文检索质量显著优于默认 MiniLM）。本仓默认走 MiniLM（384 维，零额外模型下载、无需重建索引）。要切 bge：① 把本文件复制为同目录 embedding.json；② 重建向量索引到 _v2 集合（见下）；③ 重启服务。回滚=删除 embedding.json 改回默认 + 重启。",
+  "_WARNING": "切 bge 前必须重建索引！bge 是 768 维、MiniLM 是 384 维，维度不匹配会导致召回直接失效。collection_suffix=_v2 是为了和现网 MiniLM 的 v1 集合蓝绿隔离，可随时回滚。bge-base-zh-v1.5 首次加载约下载 400MB 模型。",
+  "_REINDEX": "重建命令（在 APP/backend 下，已激活 venv）：AITICKET_EMBED_MODEL=BAAI/bge-base-zh-v1.5 AITICKET_CHROMA_COLLECTION_SUFFIX=_v2 python scripts/incremental_issues_index.py --rebuild  （KB 侧同理重跑其 reindex 脚本）。",
+
+  "model_name": "BAAI/bge-base-zh-v1.5",
+  "kb_model_name": "BAAI/bge-base-zh-v1.5",
+  "dim": 768,
+  "query_instruction": "为这个句子生成表示以用于检索相关文章：",
+  "normalize": true,
+  "collection_suffix": "_v2"
+}

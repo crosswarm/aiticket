@@ -45,6 +45,8 @@ class ReplyGateway:
         kb_evidence: list = None,
         reply_examples: list = None,
         generated_reply: str = "",
+        routing_enabled: bool = True,
+        specificity_level: str = None,
     ) -> dict:
         """
         Parameters
@@ -57,6 +59,8 @@ class ReplyGateway:
         kb_evidence     : 调用方预取的 KB 证据列表（供 G4/G5 使用）
         reply_examples  : 调用方预取的历史回复样例列表（供 G3 使用）
         generated_reply : 将要发送的回复正文（供 G5 审计使用）
+        routing_enabled : True=Jira 路径（G2 做项目分类/移交）；False=外部非 Jira 路径
+                          （G2 降级为纯领域识别，不做项目移交，不依赖工单号格式）
 
         Returns
         -------
@@ -78,7 +82,8 @@ class ReplyGateway:
                 gates["G2_classification"] = _skipped_gate()
             else:
                 gates["G2_classification"] = self._run_g2(
-                    issue_key, ai_analysis, ticket_meta
+                    issue_key, ai_analysis, ticket_meta,
+                    routing_enabled=routing_enabled,
                 )
         else:
             gates["G2_classification"] = _skipped_gate()
@@ -97,7 +102,7 @@ class ReplyGateway:
             if g1_failed:
                 gates["G4_specificity"] = _skipped_gate()
             else:
-                gates["G4_specificity"] = self._run_g4(kb_evidence)
+                gates["G4_specificity"] = self._run_g4(kb_evidence, ticket_meta, generated_reply, specificity_level=specificity_level)
         else:
             gates["G4_specificity"] = _skipped_gate()
 
@@ -233,13 +238,18 @@ class ReplyGateway:
             return {**defaults, "verdict": "skipped", "error": str(exc)}
 
     def _run_g2(
-        self, issue_key: str, ai_analysis: dict, ticket_meta: dict
+        self, issue_key: str, ai_analysis: dict, ticket_meta: dict,
+        *, routing_enabled: bool = True
     ) -> dict:
         defaults = _g2_defaults()
         try:
             cfg = self._load_gate_cfg("classification")
             if not cfg.get("enabled", True):
                 return {**defaults, "verdict": "skipped"}
+
+            # 外部非 Jira 路径：降级为纯领域识别，不依赖工单号格式，不做项目移交。
+            if not routing_enabled:
+                return self._run_g2_domain_only(ai_analysis, ticket_meta)
 
             routing = self._load_routing_rules()
             ticket_project = issue_key.split("-")[0] if "-" in issue_key else ""
@@ -315,7 +325,7 @@ class ReplyGateway:
             target_differs = bool(transfer_to) and transfer_to != ticket_project
             if confidence >= 0.70 and matched_rule and target_differs:
                 verdict = "fail"
-            elif 0.50 <= confidence < 0.70:
+            elif 0.50 <= confidence < 0.70 and target_differs:
                 verdict = "warn"
             else:
                 verdict = "pass"
@@ -341,6 +351,32 @@ class ReplyGateway:
             logger.warning("[G2] error: %s", exc)
             return {**defaults, "verdict": "skipped", "error": str(exc)}
 
+    def _run_g2_domain_only(self, ai_analysis: dict, ticket_meta: dict) -> dict:
+        """外部非 Jira 路径的 G2：仅做领域识别用于 KB 召回路由，不做项目分类/移交。
+
+        - 不调用 _chroma_vote（其内部 key.split("-") 对外部 id 会塌空桶）；
+        - 不匹配 gate2_routing（含 Jira 项目编码与转交人），不产生 transfer/move_jira；
+        - 仅取 LLM 预测领域（domain_module/category）作为下游 KB 召回的路由提示；
+        - verdict 恒为 pass（无项目移交语义），所有 transfer 字段置空。
+        """
+        defaults = _g2_defaults()
+        domain_module = (
+            ai_analysis.get("domain_module", "")
+            or ai_analysis.get("category", "")
+            or ticket_meta.get("domain_module", "")
+        )
+        # 领域置信度：有 LLM 领域识别记 1.0，否则 0.0（低置信→下游走全量产品 KB，不路由）
+        llm_match_score = 1.0 if domain_module else 0.0
+        return {
+            **defaults,
+            "verdict": "pass",
+            "confidence": round(0.2 * llm_match_score, 4),
+            "predicted_module_from_llm": domain_module,
+            "domain_module": domain_module,
+            "llm_match_score": llm_match_score,
+            "routing_enabled": False,
+        }
+
     def _run_g3(self, reply_examples: list, ticket_meta: dict) -> dict:
         defaults = _g3_defaults()
         try:
@@ -361,6 +397,14 @@ class ReplyGateway:
                 except Exception as exc:
                     logger.warning("[G3] reply_trainer.search_examples() failed: %s", exc)
                     examples = []
+
+            # Filter denylist tickets
+            _exclude = set(cfg.get("exclude_tickets") or [])
+            if _exclude and examples:
+                before = len(examples)
+                examples = [e for e in examples if e.get("issue_key") not in _exclude]
+                if len(examples) < before:
+                    logger.debug("[G3] excluded %d denylist ticket(s): %s", before - len(examples), _exclude)
 
             from services.reply_reuse_evaluator import evaluate_reuse
 
@@ -383,11 +427,25 @@ class ReplyGateway:
             tier_map = {"direct": "direct", "llm_blend": "reference", "skip": "skip"}
             reuse_strategy = tier_map.get(candidate.tier, "skip")
 
-            # warn if score is low but still present
-            if candidate.composite_score < 0.60:
-                verdict = "warn"
+            fix_v2 = cfg.get("fix_v2", False)
+            if fix_v2:
+                # 三态语义（fix_v2）：
+                #   warn   → 候选达标，注入 LLM 提示词
+                #   skipped → 候选存在但不够好，封印不注入（UI 仍可显示供调试）
+                #   pass   → 无推荐（在 candidate is None 分支已处理）
+                min_sim_blend = float(cfg.get("min_similarity_blend", 0.70))
+                composite_threshold = float(cfg.get("composite_threshold", 0.83))
+                sim = candidate.score_breakdown.get("similarity", 0.0)
+                if sim >= min_sim_blend and candidate.composite_score >= composite_threshold:
+                    verdict = "warn"
+                else:
+                    verdict = "skipped"
             else:
-                verdict = "pass"
+                # 原逻辑保留（fix_v2=False 时行为不变，支持一行回滚）
+                if candidate.composite_score < 0.60:
+                    verdict = "warn"
+                else:
+                    verdict = "pass"
 
             return {
                 "verdict": verdict,
@@ -400,7 +458,7 @@ class ReplyGateway:
             logger.warning("[G3] error: %s", exc)
             return {**defaults, "verdict": "skipped", "error": str(exc)}
 
-    def _run_g4(self, kb_evidence: list) -> dict:
+    def _run_g4(self, kb_evidence: list, ticket_meta: dict = None, generated_reply: str = "", specificity_level: str = None) -> dict:
         defaults = _g4_defaults()
         try:
             cfg = self._load_gate_cfg("specificity")
@@ -410,7 +468,11 @@ class ReplyGateway:
             evidence_list = kb_evidence or []
             count = len(evidence_list)
 
-            if count >= 3:
+            # B 显示对齐：优先用 board 传入的 quality+intent level(单一真相源)；
+            # 未传时回退证据数量(向后兼容直接调用方/旧测试)
+            if specificity_level:
+                level = specificity_level
+            elif count >= 3:
                 level = "high"
             elif count == 2:
                 level = "medium"
@@ -441,12 +503,28 @@ class ReplyGateway:
             else:
                 verdict = "pass"
 
+            # Secondary check: how-to question vs. operational detail in reply
+            detail_flag = None
+            if verdict == "pass" and ticket_meta and generated_reply:
+                _q = (ticket_meta.get("summary", "") + " " + ticket_meta.get("description", "")).lower()
+                _how_to_kw = ["如何", "怎么", "怎样", "步骤", "操作方法", "如何配置", "怎么配置",
+                               "如何设置", "怎么设置", "如何实现", "如何操作", "不知道如何"]
+                is_how_to = any(kw in _q for kw in _how_to_kw)
+                if is_how_to:
+                    _step_kw = ["第一步", "第二步", "第三步", "1.", "2.", "①", "②", "③",
+                                "步骤如下", "操作如下", "具体步骤", "操作步骤", "以下步骤"]
+                    has_steps = any(kw in (generated_reply or "") for kw in _step_kw)
+                    if not has_steps:
+                        verdict = "warn"
+                        detail_flag = "how_to_steps_missing"
+
             return {
                 "verdict": verdict,
                 "level": level,
                 "kb_evidence_count": count,
                 "weak_points": weak_points,
                 "evidence_items": evidence_items,
+                "detail_flag": detail_flag,
             }
         except Exception as exc:
             logger.warning("[G4] error: %s", exc)
@@ -475,6 +553,7 @@ class ReplyGateway:
                 kb_evidence=kb_evidence or [],
                 gate_decisions={},
                 main_provider="minimax",
+                deploy_mode=ai_analysis.get("deploy_mode", ""),
             )
 
             if not result.gate_enabled:

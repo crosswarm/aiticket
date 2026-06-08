@@ -24,17 +24,25 @@ _PROVIDER_ISOLATION: dict = {
 
 
 def _get_llm_for_gate(node_key: str, main_provider: str) -> str:
-    """返回监督 LLM provider：优先用 reply_gates.yaml 中配置的 agent，否则回退隔离策略。"""
+    """返回监督 LLM provider：优先读 llm_feature_routing.json reply_supervisor key，避免 local 超时。
+
+    兼容降级链 list 配置（如 ["zhipu","local"]）：取首个非 local 的 provider。
+    历史教训：本函数曾把 list 原样当 provider 名返回 → "No API Key provided" → G5 全 llm_failed。
+    """
     try:
-        from services.pipeline_config_manager import PipelineConfigManager as _PCM
-        agent_cfg = _PCM(_GATES_YAML).resolve_agent(node_key)
-        if agent_cfg and agent_cfg.get("llm_feature_key"):
-            # agent 已配置，用其 feature_key 的 fallback chain
-            from services.local_llm_lifecycle import with_fallback_chain, daytime_chain
-            feat = agent_cfg["llm_feature_key"]
-            return with_fallback_chain(feat, daytime_chain(feat))
+        routing_file = _PROJECT_ROOT / "llm_feature_routing.json"
+        routing = json.loads(routing_file.read_text(encoding="utf-8"))
+        feature_val = routing.get("reply_supervisor") or routing.get("_default", "zhipu")
+        if isinstance(feature_val, list):
+            feature_provider = next((p for p in feature_val if p and p != "local"),
+                                    feature_val[0] if feature_val else "")
+        else:
+            feature_provider = feature_val
+        if feature_provider and feature_provider != "local":
+            logger.debug("[_get_llm_for_gate] using feature routing: reply_supervisor → %s", feature_provider)
+            return feature_provider
     except Exception as exc:
-        logger.debug("[_get_llm_for_gate] agent lookup failed for %s: %s", node_key, exc)
+        logger.debug("[_get_llm_for_gate] feature routing lookup failed: %s", exc)
     return _pick_supervisor_provider(main_provider)
 
 
@@ -58,6 +66,7 @@ def supervise(
     kb_evidence: list[dict],
     gate_decisions: dict,
     main_provider: str = "minimax",
+    deploy_mode: str = "",
 ) -> SupervisorResult:
     """
     调用独立 LLM 对生成回复进行质量审计。
@@ -69,24 +78,35 @@ def supervise(
 
     provider = _get_llm_for_gate("supervisor", main_provider)
 
-    # 构造证据摘要（最多 3 条，每条 300 字符）
+    # 构造证据摘要（最多 4 条，每条 800 字符）—— 与 reply 生成端 kb_evidence[:4]×1500 对齐（R3）。
+    # 原 [:3]×300 让 supervisor 只看到约 1/5 的证据，结构性无法核实 reply 引用的证据出处/幻觉，
+    # 扩窗后 G5 能基于与 reply LLM 同量级的证据判断 hallucination/evidence_mismatch。
     evidence_parts = []
-    for i, item in enumerate((kb_evidence or [])[:3], 1):
-        text = (item.get("chunk_text") or item.get("raw_content") or "")[:300]
+    for i, item in enumerate((kb_evidence or [])[:4], 1):
+        text = (item.get("chunk_text") or item.get("raw_content") or "")[:800]
         name = item.get("name", f"资料{i}")
         evidence_parts.append(f"[资料{i}] {name}: {text}")
     evidence_summary = "\n".join(evidence_parts) or "（无知识库证据）"
 
+    _deploy_hint = ""
+    if deploy_mode:
+        _deploy_hint = f"部署模式：{deploy_mode}"
+        if "公有云" in str(deploy_mode) or "yonsuite" in str(deploy_mode).lower():
+            _deploy_hint += "（⚠️ 公有云客开受限：回复不得建议联系客开/客户化开发/二次开发，违者标 cloud_custom_dev）"
+        _deploy_hint += "\n"
+
     prompt = (
         "你是一个独立的回复质量审计员，请评估以下客服回复的质量。\n\n"
         f"工单标题：{issue_title[:200]}\n"
-        f"工单描述：{issue_description[:400]}\n\n"
+        f"工单描述：{issue_description[:400]}\n"
+        f"{_deploy_hint}\n"
         f"知识库证据：\n{evidence_summary}\n\n"
         f"待审回复：\n{generated_reply[:800]}\n\n"
         "请从以下维度评分，返回纯 JSON（不加代码块标记）：\n"
         "1. supervisor_score：综合质量分 0.0-1.0\n"
         "2. risk_flags：问题标签数组，可选值：hallucination（幻觉）/ evidence_mismatch（与证据不符）/ "
-        "over_specific（过度具体化）/ user_intent_drift（偏离用户意图）/ version_conflict（版本冲突）\n"
+        "over_specific（过度具体化）/ user_intent_drift（偏离用户意图）/ version_conflict（版本冲突）/ "
+        "cloud_custom_dev（公有云工单却建议走客开）\n"
         "3. evidence_coverage：知识库证据覆盖率 0.0-1.0\n"
         "4. step_safety：步骤安全性 safe / risky / unsafe\n"
         "5. rationale：简短审计说明（50字以内）\n\n"
@@ -110,8 +130,8 @@ def supervise(
         from llm_service import LLMService
         llm = LLMService()
         _pcfg = _load_provider_cfg(provider)
-        # reasoning models (MiniMax-M2.7, DeepSeek-R1) need ≥1500 tokens to clear their think block
-        max_tok = 1500 if provider in ("minimax", "local") else 512
+        # reasoning models (MiniMax-M2.7, DeepSeek-R1) need ≥4096 tokens to clear their think block
+        max_tok = 4096 if provider in ("minimax", "local") else 1500
         raw = llm.call_llm(prompt, api_key=_pcfg["api_key"], provider=provider, model_name=_pcfg["model_name"], base_url=_pcfg["base_url"], max_tokens=max_tok, temperature=0.1)
         logger.info("[supervisor] %s scored by %s: %.80s", issue_key, provider, raw)
     except Exception as e:
@@ -121,7 +141,22 @@ def supervise(
         if started_local:
             shutdown_if_started_by_us("reply_supervisor")
 
-    return _parse_result(raw, provider)
+    result = _parse_result(raw, provider)
+    # 确定性后处理：公有云工单含客开建议 → 强制 cloud_custom_dev flag + 压分至 0.4，
+    # 不依赖 LLM 自觉。压分使 direct 路径 _sup_g3_failed 触发降级、normal 路径阻断自动回复。
+    try:
+        from services.reply_reuse_evaluator import is_public_cloud, reply_suggests_custom_dev
+        if is_public_cloud(deploy_mode) and reply_suggests_custom_dev(generated_reply):
+            if "cloud_custom_dev" not in result.risk_flags:
+                result.risk_flags.append("cloud_custom_dev")
+            if result.supervisor_score is not None and result.supervisor_score > 0.4:
+                result.supervisor_score = 0.4
+            if result.step_safety == "safe":
+                result.step_safety = "risky"
+            logger.info("[supervisor] %s 公有云客开违规 → 强制 cloud_custom_dev flag, score→0.4", issue_key)
+    except Exception as _e_cloud:
+        logger.debug("[supervisor] cloud policy post-check failed: %s", _e_cloud)
+    return result
 
 
 def _load_provider_cfg(provider_name: str) -> dict:
