@@ -25,12 +25,6 @@
       section: "main",
     },
     {
-      href: "report.html",
-      label: "周报分析",
-      icon: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>',
-      section: "main",
-    },
-    {
       href: "kb.html",
       label: "知识库",
       icon: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5A4.5 4.5 0 003 9.5v8A2.5 2.5 0 005.5 20H12m0-13C13.168 5.477 14.754 5 16.5 5A4.5 4.5 0 0121 9.5v8a2.5 2.5 0 01-2.5 2.5H12"></path>',

@@ -126,10 +126,10 @@ class BaseAgent(AgentMemoryMixin, ABC):  # noqa: E501  五层记忆 Mixin 接入
                         parent_token=None,
                         context={"source": "direct_instantiation", "audit": True},
                     )
-        except (UnauthorizedAgentError, ImportError):
+        except UnauthorizedAgentError:
             raise
         except Exception:
-            pass  # JobMaster 不可用时 fail-open，不阻断 agent 启动
+            pass  # JobMaster/jobmaster_lifecycle 不可用时 fail-open（deployable 已剥离该 infra），不阻断 agent 启动
 
     # ── 子类必须实现 ────────────────────────────────────────────────
     @abstractmethod

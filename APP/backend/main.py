@@ -38,16 +38,10 @@ from board_service_chroma import BoardService as ChromaBoardService
 # from board_service import BoardService
 
 from llm_service import LLMService
-from requirement_planning import get_requirement_planning_service
 from kb_analysis import get_kb_analyzer
 from kb_runtime_service import KnowledgeRuntimeService
-from design_fact_service import DesignFactService
-from competitor_research_service import CompetitorResearchService
-from competitor_validation_service import CompetitorValidationService
 from jira_service import jira_service as jira_svc, JiraService
 from search_chroma import get_vector_store
-from spec_generation import SpecGenerator
-from crew_service import crew_service
 from auth_service import get_auth_service
 from auth_deps import require_reply_quota, log_api_request
 
@@ -204,7 +198,6 @@ PROTECTED_PAGE_PATHS = {
     "/",
     "/search.html",
     "/board.html",
-    "/report.html",
     "/kb.html",
     "/settings.html",
     "/guide.html",
@@ -569,12 +562,15 @@ def _register_session_keepalives():
                 return False
 
         def _check_codex_proxy():
-            """检查 Codex 代理服务是否可用"""
+            """检查 Codex 代理服务是否可用（密钥/地址从环境变量读取，未配置则跳过）"""
+            codex_key = os.environ.get("CODEX_PROXY_KEY", "")
+            codex_url = os.environ.get("CODEX_PROXY_URL", "")
+            if not codex_key or not codex_url:
+                return False  # 未配置 codex 代理 → 视为不可用，跳过探测
             try:
                 import requests as _req
-                codex_key = "sk-ce7977281140bd93ee8a020b4b63070e5608a112d6a69f86c0722355735e994d"
                 r = _req.post(
-                    "http://104.194.82.46:8080/v1/chat/completions",
+                    codex_url,
                     json={"model": "gpt-4.1-mini", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 5},
                     headers={"Authorization": f"Bearer {codex_key}", "Content-Type": "application/json"},
                     timeout=10,
@@ -585,8 +581,7 @@ def _register_session_keepalives():
                     try:
                         from services.feishu_notifier import get_notifier
                         get_notifier().send_message(
-                            "✅ Codex 代理已恢复！可用 codex exec 跑探索任务\n"
-                            "模型: gpt-5.4 | 地址: 104.194.82.46:8080"
+                            "✅ Codex 代理已恢复"
                         )
                     except Exception:
                         pass
@@ -711,11 +706,8 @@ board_service = ChromaBoardService(
     issue_provider=_active_issue_provider,
 )
 
-requirement_service = get_requirement_planning_service(llm_service)
 kb_analyzer = get_kb_analyzer(llm_service)
 kb_runtime_service = KnowledgeRuntimeService()
-competitor_research_service = CompetitorResearchService()
-design_fact_service = DesignFactService(kb_runtime_service=kb_runtime_service)
 
 vector_store_instance = get_vector_store(allow_download=ALLOW_EMBEDDING_DOWNLOAD)
 
@@ -735,8 +727,6 @@ _kb_compile_svc = KBCompileService(
     llm_service=llm_service,
 )
 register_compile_service(_kb_compile_svc)
-
-competitor_validation_service = CompetitorValidationService()
 
 # --- 网络缓存服务初始化 (三节点架构) ---
 
@@ -998,11 +988,6 @@ def read_login_page():
 def read_search_page():
     return frontend_html_response("index.html")
 
-@app.get("/report.html")
-def read_report():
-    return frontend_html_response("report.html")
-
-
 @app.get("/kb.html")
 def read_kb_page():
     return frontend_html_response("kb.html")
@@ -1036,7 +1021,6 @@ _DEMO_HTML_MAP = {
     "board.html": "board.html",
     "agents.html": "agents.html",
     "login.html": "login.html",
-    "report.html": "report.html",
     "kb.html": "kb.html",
     "pm_board.html": "pm_board.html",
     "settings.html": "settings.html",
@@ -2092,15 +2076,6 @@ def get_report(filename: str):
 
     return data
 
-class GenerateReportRequest(BaseModel):
-    api_key: Optional[str] = None  # 从环境变量或请求中读取
-    provider: str = "OpenAI/Custom"
-    model_name: str = "zai-org/GLM-4.6V"
-    base_url: str = "https://api.siliconflow.cn/v1"
-    csv_filename: Optional[str] = None  # 指定要生成的CSV文件
-    force: bool = False  # 强制重新生成
-    project_key: str = "MYPROJECT"
-    domain_modules: List[str] = []
 
     @validator('api_key')
     def validate_api_key(cls, v):
@@ -2114,51 +2089,6 @@ class GenerateReportRequest(BaseModel):
             return env_key
         # 如果都没有，返回None（后续处理错误）
         return None
-
-@app.post("/api/generate_report")
-def generate_report(request: GenerateReportRequest):
-    print(f"Received report generation request. Provider: {request.provider}, API Key provided: {bool(request.api_key)}, CSV: {request.csv_filename}, Force: {request.force}")
-
-    # 验证API Key
-    if not request.api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="API Key未提供。请在请求中提供api_key，或设置SILICONFLOW_API_KEY环境变量。"
-        )
-
-    from weekly_analysis import WeeklyAnalyzer
-    try:
-        analyzer = WeeklyAnalyzer(project_key=request.project_key, domain_modules=request.domain_modules or None)
-        result = analyzer.run(
-            api_key=request.api_key,
-            provider=request.provider,
-            model_name=request.model_name,
-            base_url=request.base_url,
-            csv_filename=request.csv_filename,
-            force=request.force
-        )
-
-        # 如果报告已存在且未强制重新生成
-        if result and result.get('status') == 'exists':
-            return {
-                "status": "exists",
-                "message": "报告已存在",
-                "filename": result.get('filename'),
-                "data_start_date": result.get('data_start_date'),
-                "data_end_date": result.get('data_end_date')
-            }
-
-        return {
-            "status": "success",
-            "message": "Report generated successfully",
-            "filename": result.get('filename') if result else None,
-            "data_start_date": result.get('data_start_date') if result else None,
-            "data_end_date": result.get('data_end_date') if result else None
-        }
-    except Exception as e:
-        print(f"Error generating report: {e}")
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail=str(e))
 
 # --- 周报管理API (删除/重新生成) ---
 
@@ -2242,196 +2172,6 @@ def read_index_page():
     """问题分析页面（原搜索页面）"""
     return frontend_html_response("index.html")
 
-@app.get("/api/spec/files")
-def list_spec_files():
-    """List all spec files with their status"""
-    files = requirement_service.list_spec_files()
-    return [
-        {
-            "filename": f.filename,
-            "file_type": f.file_type,
-            "size_bytes": f.size_bytes,
-            "modified_time": f.modified_time,
-            "has_output": f.has_output,
-            "output_files": f.output_files
-        }
-        for f in files
-    ]
-
-@app.get("/api/spec/file/{filename:path}")
-def get_spec_file(filename: str):
-    """Read content of a spec file — 若有输出文件则返回最新输出，否则返回原始 spec"""
-    result = requirement_service.get_latest_content(filename)
-    if result["content"] is None:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="File not found")
-    return {"filename": filename, **result}
-
-class SaveFileRequest(BaseModel):
-    content: str
-
-@app.put("/api/spec/file/{filename:path}")
-def save_spec_file(filename: str, request: SaveFileRequest):
-    """Save content to a spec file"""
-    success = requirement_service.save_file_content(filename, request.content)
-    if not success:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail="Failed to save file")
-    return {"status": "success"}
-
-class UploadFileRequest(BaseModel):
-    filename: str
-    content: str
-
-@app.post("/api/spec/file")
-def upload_spec_file(request: UploadFileRequest):
-    """Upload a new spec file"""
-    success = requirement_service.upload_file(request.filename, request.content)
-    if not success:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail="Failed to upload file")
-    return {"status": "success", "filename": request.filename}
-
-@app.get("/api/templates")
-def list_templates():
-    """List available templates"""
-    return requirement_service.list_templates()
-
-@app.get("/api/template/{filename:path}")
-def get_template(filename: str):
-    """Read content of a template file"""
-    content = requirement_service.get_template_content(filename)
-    if content is None:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="Template not found")
-    return {"filename": filename, "content": content}
-
-class GenerateRequirementRequest(BaseModel):
-    spec_file: str
-    template: str
-    output_formats: List[str] = ["md"]
-    final_decision_notes: str = ""
-    draft_context: Optional[Dict[str, Any]] = None
-    api_key: Optional[str] = None
-    provider: str = ""
-    model_name: str = ""
-    base_url: str = ""
-
-@app.post("/api/requirements/generate")
-def start_requirement_generation(request: GenerateRequirementRequest):
-    """Start a requirement generation task"""
-    llm_runtime = resolve_effective_llm_runtime(
-        feature="spec_gen",
-        provider=request.provider,
-        api_key=request.api_key or "",
-        model_name=request.model_name,
-        base_url=request.base_url,
-    )
-    task_id = requirement_service.start_generation(
-        spec_file=request.spec_file,
-        template=request.template,
-        output_formats=request.output_formats,
-        final_decision_notes=request.final_decision_notes,
-        draft_context=request.draft_context,
-        api_key=llm_runtime["api_key"],
-        provider=llm_runtime["provider"],
-        model_name=llm_runtime["model_name"],
-        base_url=llm_runtime["base_url"]
-    )
-    return {"task_id": task_id, "status": "started"}
-
-@app.get("/api/requirements/status/{task_id}")
-def get_task_status(task_id: str):
-    """Get task status"""
-    status = requirement_service.get_task_status(task_id)
-    if status is None:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="Task not found")
-    return status
-
-@app.post("/api/requirements/cancel/{task_id}")
-def cancel_task(task_id: str):
-    """Cancel a running task"""
-    success = requirement_service.cancel_task(task_id)
-    return {"success": success}
-
-@app.get("/api/requirements/versions/{spec_file:path}")
-def list_versions(spec_file: str):
-    """List all versions of a spec file's outputs"""
-    return requirement_service.list_versions(spec_file)
-
-@app.get("/api/requirements/version/{version_file:path}")
-def get_version_content(version_file: str):
-    """Get content of a specific version"""
-    content = requirement_service.get_version_content(version_file)
-    if content is None:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="Version not found")
-    return {"filename": version_file, "content": content}
-
-# --- AI Content Refinement Endpoints ---
-
-@app.get("/api/output/{filename:path}")
-def get_output_file(filename: str):
-    """Get content of an output file"""
-    content = requirement_service.get_output_content(filename)
-    if content is None:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="Output file not found")
-    return {"filename": filename, "content": content}
-
-class RefineContentRequest(BaseModel):
-    filename: str
-    content: str
-    instruction: str
-    section_name: Optional[str] = None
-    api_key: Optional[str] = None
-    provider: str = ""
-    model_name: str = ""
-    base_url: str = ""
-
-@app.post("/api/requirements/refine")
-def refine_content(request: RefineContentRequest):
-    """Refine AI-generated content based on user instructions"""
-    if request.section_name:
-        # Section-level refinement
-        refined = requirement_service.refine_section(
-            original_content=request.content,
-            section_name=request.section_name,
-            user_instruction=request.instruction,
-            api_key=request.api_key or "",
-            provider=request.provider,
-            model_name=request.model_name,
-            base_url=request.base_url
-        )
-    else:
-        # Full document refinement
-        refined = requirement_service.refine_content(
-            original_content=request.content,
-            user_instruction=request.instruction,
-            api_key=request.api_key or "",
-            provider=request.provider,
-            model_name=request.model_name,
-            base_url=request.base_url
-        )
-    
-    # Save the refined content
-    if request.filename:
-        requirement_service.save_output_content(request.filename, refined)
-    
-    return {"content": refined, "filename": request.filename}
-
-class SaveOutputRequest(BaseModel):
-    content: str
-
-@app.put("/api/output/{filename:path}")
-def save_output_file(filename: str, request: SaveOutputRequest):
-    """Save content to an output file"""
-    success = requirement_service.save_output_content(filename, request.content)
-    if not success:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail="Failed to save output")
-    return {"status": "success"}
 
 # --- Knowledge Base Endpoints ---
 
@@ -4106,46 +3846,15 @@ def jira_action(request: JiraActionRequest, raw_request: Request):
 
 # --- Crew (Personnel) Endpoints ---
 
-@app.get("/api/crew/list")
-def get_crew_list():
-    """获取人员列表（按角色分组）"""
-    try:
-        return crew_service.get_grouped_personnel()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/crew/search")
-def search_crew(q: str = Query(..., description="搜索关键词")):
-    """搜索人员（支持中文名、用户名、角色）"""
-    try:
-        results = crew_service.search(q)
-        return {
-            "query": q,
-            "count": len(results),
-            "results": [
-                {
-                    "username": p.username,
-                    "realname": p.realname,
-                    "role": p.role,
-                    "subrole": p.subrole
-                }
-                for p in results
-            ]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.get("/api/crew/jira-search")
 def search_jira_users(q: str = Query(..., min_length=1), issue_key: str = Query(None), raw_request: Request = None):
-    """从Jira用户目录实时搜索（支持中文名/用户名），降级到crewlist。
+    """从Jira用户目录实时搜索（支持中文名/用户名）。
     传入 issue_key 时使用 /user/assignable/search 只返回该工单可分配的用户，避免搜到分配后报错的用户。"""
     q = q.strip()
     if not q:
         return {"results": [], "source": "empty"}
 
-    # 1. 从 Jira 搜索（使用请求方绑定的凭据，优先使用当前用户Jira账号）
+    # 从 Jira 搜索（使用请求方绑定的凭据，优先使用当前用户Jira账号）
     try:
         jira_client = build_request_jira_client(raw_request, require_binding=False) if raw_request else jira_svc
         if not jira_client:
@@ -4159,16 +3868,7 @@ def search_jira_users(q: str = Query(..., min_length=1), issue_key: str = Query(
     except Exception as e:
         print(f"[crew/jira-search] Jira搜索异常: {e}")
 
-    # 2. 降级到 crewlist（去重：同一 username 只保留一条）
-    crew_results = crew_service.search(q)
-    seen = set()
-    deduped = []
-    for p in crew_results:
-        key = (p.username or p.realname).lower()
-        if key not in seen:
-            seen.add(key)
-            deduped.append({"username": p.username, "displayName": p.realname, "active": True})
-    return {"results": deduped, "source": "crewlist"}
+    return {"results": [], "source": "jira"}
 
 
 # --- Trainer Sync Endpoints ---
@@ -6344,44 +6044,6 @@ def test_llm_connection(request: LLMTestRequest):
 
 # --- Monthly Report Endpoints ---
 
-from monthly_analysis import (
-    list_monthly_reports, get_monthly_report,
-    MonthlyReportGenerator
-)
-
-@app.get("/api/monthly_reports")
-def list_monthly_reports_endpoint():
-    """获取月报列表"""
-    try:
-        reports = list_monthly_reports()
-        return reports
-    except Exception as e:
-        print(f"Error listing monthly reports: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Failed to list monthly reports")
-
-@app.get("/api/monthly_reports/{filename}")
-def get_monthly_report_endpoint(filename: str):
-    """获取指定月报内容"""
-    try:
-        # Security: sanitize filename to prevent path traversal
-        import re
-        if not re.match(r'^[\w\-. ]+\.json$', filename):
-            raise HTTPException(status_code=400, detail="Invalid filename")
-
-        report = get_monthly_report(filename)
-        if not report:
-            raise HTTPException(status_code=404, detail="Report not found")
-        return report
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error getting monthly report: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Failed to get monthly report")
-
 class GenerateMonthlyReportRequest(BaseModel):
     year: int
     month: int
@@ -6431,46 +6093,6 @@ def delete_monthly_report(filename: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/generate_monthly_report")
-def generate_monthly_report_endpoint(request: GenerateMonthlyReportRequest):
-    """生成月报（同步方式，保持向后兼容）"""
-    try:
-        generator = MonthlyReportGenerator(project_key=request.project_key, domain_modules=request.domain_modules or None)
-        result = generator.generate(
-            year=request.year,
-            month=request.month,
-            force=request.force,
-            api_key=request.api_key,
-            provider=request.provider,
-            model_name=request.model_name,
-            base_url=request.base_url
-        )
-
-        # 如果报告已存在且未强制重新生成
-        if result and result.get('status') == 'exists':
-            return {
-                "status": "exists",
-                "message": "报告已存在",
-                "meta": result
-            }
-
-        if 'error' in result:
-            raise HTTPException(status_code=400, detail=result['error'])
-
-        return {
-            "status": "success",
-            "message": f"{request.year}年{request.month}月月报生成成功",
-            "meta": result.get('meta', {})
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error generating monthly report: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Failed to generate monthly report")
-
-
 # ==========================================
 # 异步报告生成API
 # ==========================================
@@ -6490,101 +6112,6 @@ class StartReportTaskRequest(BaseModel):
     force: bool = False
     project_key: str = "MYPROJECT"
     domain_modules: List[str] = []
-
-@app.post("/api/report/start")
-def start_report_task(request: StartReportTaskRequest):
-    """启动报告生成异步任务"""
-    # 若请求未显式传 api_key，按功能路由解析
-    if not request.api_key:
-        feature = "monthly_report" if request.task_type == "monthly" else "weekly_report"
-        llm_rt = resolve_feature_llm_runtime(feature)
-        resolved_api_key = llm_rt["api_key"]
-        resolved_provider = request.provider or llm_rt["provider"]
-        resolved_model = request.model_name or llm_rt["model_name"]
-        resolved_base_url = request.base_url or llm_rt["base_url"]
-    else:
-        resolved_api_key = request.api_key
-        resolved_provider = request.provider
-        resolved_model = request.model_name
-        resolved_base_url = request.base_url
-
-    params = {
-        "year": request.year,
-        "month": request.month,
-        "csv_filename": request.csv_filename,
-        "api_key": resolved_api_key,
-        "provider": resolved_provider,
-        "model_name": resolved_model,
-        "base_url": resolved_base_url,
-        "force": request.force,
-        "project_key": request.project_key,
-        "domain_modules": request.domain_modules or None
-    }
-
-    task = task_mgr.create_task(request.task_type, params)
-
-    # 将task_type加入params，以便run_report_generation能判断任务类型
-    params_with_type = {**params, "task_type": request.task_type}
-
-    def run_report_generation(progress_callback=None, **kwargs):
-        """执行报告生成"""
-        if kwargs.get("task_type") == "monthly":
-            generator = MonthlyReportGenerator(
-                project_key=kwargs.get("project_key", "MYPROJECT"),
-                domain_modules=kwargs.get("domain_modules")
-            )
-            if progress_callback:
-                progress_callback(10, "初始化月报生成...")
-
-            result = generator.generate(
-                year=kwargs.get("year"),
-                month=kwargs.get("month"),
-                force=kwargs.get("force", False),
-                api_key=kwargs.get("api_key"),
-                provider=kwargs.get("provider"),
-                model_name=kwargs.get("model_name"),
-                base_url=kwargs.get("base_url")
-            )
-
-            if progress_callback:
-                progress_callback(100, "月报生成完成")
-
-            return result
-        else:
-            # 周报生成
-            from weekly_analysis import WeeklyAnalyzer
-            analyzer = WeeklyAnalyzer(
-                project_key=kwargs.get("project_key", "MYPROJECT"),
-                domain_modules=kwargs.get("domain_modules")
-            )
-
-            if progress_callback:
-                progress_callback(10, "初始化周报生成...")
-
-            result = analyzer.run(
-                csv_filename=kwargs.get("csv_filename"),
-                force=kwargs.get("force", False),
-                api_key=kwargs.get("api_key"),
-                provider=kwargs.get("provider"),
-                model_name=kwargs.get("model_name"),
-                base_url=kwargs.get("base_url")
-            )
-
-            if progress_callback:
-                progress_callback(100, "周报生成完成")
-
-            return result
-
-    success = task_mgr.start_task(task.task_id, run_report_generation, **params_with_type)
-
-    if success:
-        return {
-            "status": "started",
-            "task_id": task.task_id,
-            "message": "任务已启动"
-        }
-    else:
-        raise HTTPException(status_code=500, detail="Failed to start task")
 
 @app.get("/api/report/status/{task_id}")
 def get_report_task_status(task_id: str):
@@ -7013,96 +6540,6 @@ if _RUN_BG and ENABLE_SCHEDULER:
     try:
         from services.scheduler_service import start_scheduler, register_task_handler
 
-        # 注册任务处理器：周报生成
-        def _task_weekly_report(notify_on_complete: bool = True, **kwargs):
-            """定时触发周报生成"""
-            from services.feishu_notifier import get_notifier
-            notifier = get_notifier()
-            try:
-                notifier.send_message("📊 周报生成已触发，后台执行中...")
-                import subprocess
-                result = subprocess.run(
-                    ["/Volumes/MacMini/opt/miniconda3/envs/antigravity/bin/python3.12",
-                     "APP/backend/scripts/run_weekly_report.py"],
-                    capture_output=True, text=True, timeout=300, cwd=str(Path.cwd())
-                )
-                if result.returncode == 0:
-                    if notify_on_complete:
-                        notifier.send_message("📊 周报生成完成\n" + (result.stdout[-200:] if result.stdout else ""))
-                    logger.info("[Scheduler] Weekly report done")
-                else:
-                    err = (result.stderr or result.stdout or "")[-300:]
-                    notifier.send_message(f"❌ 周报生成失败\n{err}")
-                    logger.error(f"[Scheduler] Weekly report failed: {result.stderr[:500]}")
-                    raise RuntimeError(f"weekly_report exit {result.returncode}: {err[:120]}")
-            except RuntimeError:
-                raise
-            except Exception as e:
-                logger.error(f"[Scheduler] Weekly report failed: {e}")
-                notifier.send_message(f"❌ 周报生成异常: {e}")
-                raise
-
-        register_task_handler("weekly_report", _task_weekly_report)
-
-        # 注册任务处理器：夜间自动探索
-        def _task_nightly_exploration(stop_hour: int = 7, notify_on_complete: bool = True, **kwargs):
-            """夜间 01:00-07:00 自动探索 BIP/金蝶设计器细节（含重试+LLM诊断）"""
-            import subprocess
-            from services.local_llm_lifecycle import with_fallback, shutdown_if_started_by_us
-            from services.feishu_notifier import get_notifier
-            notifier = get_notifier()
-            provider = with_fallback("nightly_exploration")
-            _script = str(Path(__file__).parent / "scripts" / "exploration_agent.py")
-            _proj_root = str(Path(__file__).parents[1])
-            _cmd = ["/Volumes/MacMini/opt/miniconda3/envs/antigravity/bin/python3.12", _script]
-            _env = {**os.environ, "EXPLORATION_STOP_HOUR": str(stop_hour),
-                    "LLM_PROVIDER_OVERRIDE": provider}
-
-            last_stderr = ""
-            last_rc = -1
-            try:
-                for attempt in range(1, 3):  # 最多2次（首次 + 1次重试）
-                    try:
-                        result = subprocess.run(
-                            _cmd, capture_output=True, text=True,
-                            timeout=6 * 3600, cwd=_proj_root, env=_env,
-                        )
-                        last_rc = result.returncode
-                        last_stderr = result.stderr
-                        if result.returncode == 0:
-                            logger.info(f"[Scheduler] Nightly exploration done (attempt {attempt})")
-                            if notify_on_complete:
-                                notifier.send_message("✅ 夜间探索完成")
-                            return
-                        logger.error(f"[Scheduler] Nightly exploration attempt {attempt} failed (rc={result.returncode}): {result.stderr[:300]}")
-                    except Exception as exc:
-                        last_stderr = str(exc)
-                        last_rc = -1
-                        logger.error(f"[Scheduler] Nightly exploration attempt {attempt} exception: {exc}")
-
-                    if attempt < 2:
-                        logger.info("[Scheduler] Nightly exploration: 等待 5 分钟后重试...")
-                        time.sleep(300)
-
-                # 两次均失败 → LLM 诊断 + 飞书告警
-                try:
-                    diagnosis = llm_service.call_llm(
-                        f"以下是夜间自动探索任务的失败输出（exit code={last_rc}），请用中文给出根因判断和建议修复步骤，简明扼要50字内：\n\n{last_stderr[:800]}",
-                        provider="zhipu",
-                    )
-                except Exception:
-                    diagnosis = "（LLM诊断不可用）"
-                notifier.send_message(
-                    f"❌ 夜间探索失败（重试2次均失败）\n"
-                    f"**错误**：{last_stderr[:400]}\n"
-                    f"**诊断**：{diagnosis}"
-                )
-                logger.error(f"[Scheduler] Nightly exploration failed after retries. stderr={last_stderr[:500]}")
-            finally:
-                shutdown_if_started_by_us("nightly_exploration")
-
-        register_task_handler("nightly_exploration", _task_nightly_exploration)
-
         def _task_reply_training(questions: int = 300, stop_hour: int = 7,
                                  pull_qcl: bool = True, run_backfill: bool = False,
                                  backfill_limit: int = 50, **kwargs):
@@ -7148,54 +6585,6 @@ if _RUN_BG and ENABLE_SCHEDULER:
 
         register_task_handler("reply_training", _task_reply_training)
 
-
-        def _task_daily_summary(**kwargs):
-            from datetime import date as _date
-            try:
-                from agents.daily_summary_agent import DailySummaryAgent
-                result = DailySummaryAgent().run_task(payload=kwargs, trigger_src="schedule:daily")
-                logger.info(f"[Scheduler] daily_summary done: {result}")
-            except Exception as exc:
-                logger.exception(f"[Scheduler] daily_summary failed: {exc}")
-                try:
-                    from services.feishu_notifier import get_notifier as _gn
-                    _gn().send_message(f"❌ 日报生成失败 {_date.today()}\n{exc}\n请在 agents.html 检查")
-                except Exception:
-                    pass
-
-        def _task_daily_summary_watchdog(**kwargs):
-            from datetime import date as _date, timedelta as _td
-            from pathlib import Path as _Path
-            yesterday = _date.today() - _td(days=1)
-            archive = _Path(__file__).parent.parent.parent / "conclusion" / "daily_reports" / f"{yesterday}.md"
-            if not archive.exists():
-                logger.warning("[Scheduler] watchdog: archive missing, re-running daily_summary")
-                _task_daily_summary(date=str(yesterday))
-                return
-            try:
-                from services.agent_task_store import AgentTaskStore as _ATS
-                import json as _json
-                store = _ATS()
-                failed = [
-                    t for t in store.list_recent(agent_name="daily_summary", limit=20)
-                    if t.status.value in ("awaiting_human_review",)
-                    and _json.loads(t.payload_json or "{}").get("kind") == "daily_report_failed"
-                    and str(yesterday) in (t.payload_json or "")
-                ]
-                if failed:
-                    from services.feishu_notifier import get_notifier as _gn
-                    md = archive.read_text(encoding="utf-8")
-                    if _gn().send_message(md):
-                        for t in failed:
-                            store.update_status(t.id, "succeeded")
-                        logger.info("[Scheduler] watchdog: re-send succeeded")
-                    else:
-                        logger.error("[Scheduler] watchdog: re-send also failed")
-            except Exception as exc:
-                logger.error(f"[Scheduler] watchdog error: {exc}")
-
-        register_task_handler("daily_summary", _task_daily_summary)
-        register_task_handler("daily_summary_watchdog", _task_daily_summary_watchdog)
 
         def _task_vacation_schedule_cleanup(purpose: str = "vacation_window_2026_05", **kwargs):
             """假期结束后自动 disable 所有临时调度（防止污染正常工作日）。"""
@@ -7293,36 +6682,6 @@ if _RUN_BG and ENABLE_SCHEDULER:
     except Exception as e:
         print(f"[Scheduler] 启动失败: {e}")
 
-# 始终注册周报处理器（无论是否 BG 模式），确保 /api/schedules/.../trigger 可用
-try:
-    from services.scheduler_service import register_task_handler as _reg_handler, _task_handlers as _th
-    if "weekly_report" not in _th:
-        def _weekly_report_fallback(notify_on_complete: bool = True, **kwargs):
-            from services.feishu_notifier import get_notifier
-            import subprocess
-            notifier = get_notifier()
-            try:
-                notifier.send_message("📊 周报生成已触发，后台执行中...")
-                result = subprocess.run(
-                    ["/Volumes/MacMini/opt/miniconda3/envs/antigravity/bin/python3.12",
-                     "APP/backend/scripts/run_weekly_report.py"],
-                    capture_output=True, text=True, timeout=600, cwd=str(Path.cwd())
-                )
-                if result.returncode == 0:
-                    if notify_on_complete:
-                        notifier.send_message("📊 周报生成完成\n" + (result.stdout[-200:] if result.stdout else ""))
-                    logger.info("[Scheduler] Weekly report done")
-                else:
-                    notifier.send_message(f"❌ 周报生成失败\n{result.stderr[-200:]}")
-                    logger.error(f"[Scheduler] Weekly report failed: {result.stderr[:500]}")
-            except Exception as _e:
-                logger.error(f"[Scheduler] Weekly report exception: {_e}")
-                notifier.send_message(f"❌ 周报生成异常: {_e}")
-        _reg_handler("weekly_report", _weekly_report_fallback)
-        print("[Scheduler] 已注册 weekly_report 处理器（fallback）")
-except Exception as _e:
-    print(f"[Scheduler] weekly_report fallback 注册失败: {_e}")
-
 # 始终注册 session_harvester，确保 /api/schedules/.../trigger 可用（daemon 拥有真实执行权，主进程提供 API 触发入口）
 try:
     from services.scheduler_service import register_task_handler as _reg_handler2, _task_handlers as _th2
@@ -7370,11 +6729,10 @@ try:
     from agents.registry import AgentRegistry as _AgentRegistry
     from agents.reply_agent import ReplyAgent
     from agents.adopted_agent import AdoptedAgent
-    from agents.competitor_agent import CompetitorAgent
     from agents.handover_suggest_agent import HandoverSuggestAgent
 
     _reg = _AgentRegistry.get_instance()
-    for _agent_cls in [AdoptedAgent, CompetitorAgent]:
+    for _agent_cls in [AdoptedAgent]:
         try:
             _reg.register(_agent_cls())
         except Exception as _ae:
@@ -7400,25 +6758,6 @@ try:
             print("[AgentRegistry] ClaudeAgent skipped on QCL host")
     except Exception as _ae:
         print(f"[AgentRegistry] register ClaudeAgent failed: {_ae}")
-
-    for _cls_name, _mod in [
-        ("UXDeverAgent", "agents.ux_dever_agent"),
-        ("UXMasterAgent", "agents.ux_master_agent"),
-    ]:
-        try:
-            import importlib as _il2
-            _m2 = _il2.import_module(_mod)
-            _reg.register(getattr(_m2, _cls_name)())
-        except Exception as _ae:
-            print(f"[AgentRegistry] register {_cls_name} failed: {_ae}")
-
-    # OMC subagent bridge — 扫描 ~/.claude/plugins/cache 并注册固定角色
-    try:
-        from agents.omc_bridge import register_all as _omc_register_all
-        _omc_count = _omc_register_all(_reg)
-        print(f"[AgentRegistry] OMC subagents 注册完成: {_omc_count} 个")
-    except Exception as _ae:
-        print(f"[AgentRegistry] OMC bridge 注册失败（非致命）: {_ae}")
 
     print(f"[AgentRegistry] 已注册 {len(_reg.list())} 个 Agent")
 except Exception as _e:

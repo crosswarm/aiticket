@@ -89,7 +89,7 @@ def get_embedding_function(api_key: str = None, allow_download: bool = True):
         _cfg = load_embedding_config()
         _normalize = bool(_cfg.get("normalize", False))
         ef = _NormalizingSTEmbeddingFunction(
-            model_name=_model,  # 默认 paraphrase-multilingual-MiniLM-L12-v2(384维)，P3.4 切 bge(768维)
+            model_name=_model,  # 默认 BAAI/bge-base-zh-v1.5(768维)，由 embedding_config 决定
             normalize=_normalize,
         )
         print(f"[VectorStore] 使用本地嵌入模型: {_model} (normalize={_normalize})")
@@ -302,7 +302,7 @@ class VectorStore:
         return True
     
     def search_similar_issues(self, query: str, top_k: int = 5,
-                              min_score: float = 0.70) -> List[Dict]:  # deployable 默认 MiniLM 标定（bge 启用时改 0.62）
+                              min_score: float = 0.62) -> List[Dict]:  # 默认 bge 标定
         """
         语义搜索相似工单
 

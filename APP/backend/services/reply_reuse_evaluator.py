@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).parent.parent
 _NEGATIVE_PAIRS_PATH = _PROJECT_ROOT / "data" / "badcase_negative_pairs.jsonl"
 
-# 负配对压制余弦阈值（deployable 默认 MiniLM 0.85；bge 启用时改 0.75）
-_NEG_PAIR_SUPPRESS_COS = 0.85
+# 负配对压制余弦阈值（默认 bge 标定 0.75）
+_NEG_PAIR_SUPPRESS_COS = 0.75
 
 
 # ── 公有云客开违规检测（Layer 3 硬隔离 + Layer 1 direct 出口网共用）──────────────
@@ -209,8 +209,8 @@ def evaluate_reuse(
             if cur_emb is not None:
                 bad_embeddings = neg_pairs[ex_key]
                 max_cos = max((_cosine(cur_emb, be) for be in bad_embeddings), default=0.0)
-                # Phase3 bge 重标：MiniLM 0.85（bge cosine 压缩，强相关~0.78、误召回~0.46
-                # → 0.75 既能命中"几乎同一坏 query"又不误伤普通相关 query）
+                # bge 标定 0.75：bge cosine 压缩，强相关~0.78、误召回~0.46
+                # → 0.75 既能命中"几乎同一坏 query"又不误伤普通相关 query
                 if max_cos > _NEG_PAIR_SUPPRESS_COS:
                     logger.info("[NegativePair] %s↔%s suppressed (cos=%.3f)",
                                 current_issue_key or "?", ex_key, max_cos)

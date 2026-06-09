@@ -7,14 +7,12 @@ import { test, expect } from "@playwright/test";
 const NAV_ITEMS = [
   { label: "问题分析", href: "search.html" },
   { label: "智能看板", href: "board.html" },
-  { label: "周报分析", href: "report.html" },
   { label: "知识库", href: "kb.html" },
 ];
 
 const DESKTOP_CASES = [
   { path: "/search.html", active: "问题分析", reportSidebar: false },
   { path: "/board.html", active: "智能看板", reportSidebar: false },
-  { path: "/report.html", active: "周报分析", reportSidebar: true },
   { path: "/kb.html", active: "知识库", reportSidebar: false },
 ];
 
@@ -57,13 +55,6 @@ test.describe("页面导航", () => {
     await page.click("text=智能看板");
     await expect(page).toHaveURL(/\/$/);
     await expect(page.locator("text=工单智能看板")).toBeVisible();
-
-    // 测试导航到报告页面
-    await page.click("text=周报分析");
-    await expect(page).toHaveURL(/report.html/);
-    await expect(
-      page.getByRole("heading", { name: /周总结分析报告/ }).first(),
-    ).toBeVisible();
 
     // 测试返回首页
     await page.click("text=问题分析");
@@ -145,7 +136,7 @@ test.describe("页面导航", () => {
   });
 
   test("核心页面首屏不应依赖远端 CDN 脚本", async ({ page }) => {
-    for (const target of ["/report.html"]) {
+    for (const target of ["/board.html"]) {
       await page.goto(target);
       const remoteScripts = await page
         .locator('script[src^="http"]')

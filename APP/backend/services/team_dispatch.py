@@ -9,11 +9,11 @@ TeamDispatcher — 跨 agent 分发父-子任务。
         dispatch_key="hook-bridge-v1",
         children=[
             ChildSpec(agent_name="claude", title="【分析】…", description="…"),
-            ChildSpec(agent_name="ux_master",  title="【UX】…",  description="…"),
+            ChildSpec(agent_name="reply",   title="【回复】…", description="…"),
         ],
     )
 
-样板来自 competitor_agent.py:55-65，扩展为跨 agent_name 的多子任务分发。
+扩展为跨 agent_name 的多子任务分发。
 """
 from __future__ import annotations
 

@@ -298,7 +298,7 @@ class AIAnalysisWorker:
         similar_issues = self.vector_store.search_similar_issues(
             query=query,
             top_k=1,
-            min_score=0.78  # 路径③工单相似度阈值（deployable 默认 MiniLM 标定；bge 启用时改 0.70）
+            min_score=0.70  # 路径③工单相似度阈值（默认 bge 标定）
         )
         if similar_issues:
             best = similar_issues[0]
@@ -422,7 +422,7 @@ class AIAnalysisWorker:
                 similar = self.vector_store.search_similar_issues(
                     query=f"{issue.summary} {issue.description}",
                     top_k=3,
-                    min_score=0.6,  # deployable 默认 MiniLM 标定（bge 启用时改 0.55）
+                    min_score=0.55,  # 默认 bge 标定
                 )
                 analysis["similar_issues"] = [s["issue_key"] for s in similar]
             except Exception as e:
@@ -486,7 +486,7 @@ class AIAnalysisWorker:
                         similar = self.vector_store.search_similar_issues(
                             query=f"{issue.summary} {issue.description}",
                             top_k=3,
-                            min_score=0.6  # deployable 默认 MiniLM 标定（bge 启用时改 0.55）
+                            min_score=0.55  # 默认 bge 标定
                         )
                         analysis['similar_issues'] = [s['issue_key'] for s in similar]
                     except Exception as e:
@@ -518,7 +518,7 @@ class AIAnalysisWorker:
                 similar = self.vector_store.search_similar_issues(
                     query=f"{issue.summary} {issue.description}",
                     top_k=3,
-                    min_score=0.6  # deployable 默认 MiniLM 标定（bge 启用时改 0.55）
+                    min_score=0.55  # 默认 bge 标定
                 )
                 all_similar.extend(similar)
             except Exception as e:

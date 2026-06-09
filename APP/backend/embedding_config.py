@@ -1,7 +1,7 @@
 """嵌入模型配置单一真相源（Phase 3 中心化，消除 4 处硬编码漂移风险）。
 
-config/embedding.json 控制模型；默认 MiniLM（issues/reply 多语言 384维、kb 英文 384维），
-保持现网行为。切 bge(768维) 由 P3.4 cutover 做。env AITICKET_EMBED_MODEL 可覆盖便于 A/B。
+config/embedding.json 控制模型；默认 bge-base-zh-v1.5（issues/reply/kb 统一中文 768维、非对称检索）。
+env AITICKET_EMBED_MODEL 可覆盖便于 A/B。
 
 ⚠️ 维度一致性：任何集合重建/查询必须用同一模型，384/768 混用会导致 Chroma 维度不匹配崩溃。
 """
@@ -15,12 +15,12 @@ _BACKEND = Path(__file__).resolve().parent
 _CONFIG_PATH = _BACKEND / "config" / "embedding.json"
 
 _DEFAULT: dict = {
-    "model_name": "paraphrase-multilingual-MiniLM-L12-v2",
-    "kb_model_name": "all-MiniLM-L6-v2",
-    "dim": 384,
-    "query_instruction": "",
-    "normalize": False,
-    # A2 cutover：serving 集合后缀。""=v1（MiniLM）；"_v2"=bge 重建集合。
+    "model_name": "BAAI/bge-base-zh-v1.5",
+    "kb_model_name": "BAAI/bge-base-zh-v1.5",
+    "dim": 768,
+    "query_instruction": "为这个句子生成表示以用于检索相关文章：",
+    "normalize": True,
+    # 全新装直接把 bge(768维) 建进基础集合，无需 _v2 蓝绿后缀。
     # env AITICKET_CHROMA_COLLECTION_SUFFIX 优先于本字段。
     "collection_suffix": "",
 }

@@ -24,14 +24,6 @@
       aliases: ["看板", "kanban", "工单"],
     },
     {
-      id: "nav-report",
-      label: "周报分析",
-      href: "report.html",
-      group: "导航",
-      icon: "bar-chart",
-      aliases: ["周报", "月报", "报告", "report"],
-    },
-    {
       id: "nav-kb",
       label: "知识库",
       href: "kb.html",

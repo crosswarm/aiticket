@@ -30,8 +30,10 @@ def run(limit: int = 0, dry_run: bool = False):
     if ef is not None:
         try:
             dim = len(ef(["test"])[0])
-            print(f"[RebuildIssuesV2] persist_directory={vs.persist_directory}  embedding_dim={dim}")
-            assert dim == 384, f"embedding 维度 {dim} != 384，终止"
+            from embedding_config import load_embedding_config
+            expected = load_embedding_config()["dim"]
+            print(f"[RebuildIssuesV2] persist_directory={vs.persist_directory}  embedding_dim={dim} expected={expected}")
+            assert dim == expected, f"embedding 维度 {dim} != {expected}，终止"
         except AssertionError:
             raise
         except Exception as e:
