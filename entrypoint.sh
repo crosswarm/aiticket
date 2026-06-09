@@ -22,5 +22,7 @@ exec uvicorn main:app \
     --host 0.0.0.0 \
     --port "$PORT" \
     --workers 1 \
+    --limit-concurrency 64 \
+    --timeout-keep-alive 5 \
     --log-level info \
     --access-log

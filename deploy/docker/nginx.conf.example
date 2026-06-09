@@ -1,3 +1,8 @@
+# 昂贵 LLM 端点限流 zone（按客户端 IP）。本文件被 include 进 nginx http{} 上下文
+# （conf.d / sites-enabled），故 limit_req_zone 可写在此处。rate=20r/m + burst=5。
+limit_req_zone $binary_remote_addr zone=ai_llm:10m rate=20r/m;
+limit_req_status 429;
+
 server {
     listen 80;
     server_name aiticket.yourteam.com;
@@ -33,17 +38,28 @@ server {
         proxy_buffering    off;
     }
 
-    # SSE endpoints (streaming replies)
-    location /api/board/generate-reply {
+    # 昂贵的同步 LLM 端点（注意：generate-reply 是阻塞 JSON，非 SSE）：每 IP 限流，超额 429
+    location = /api/board/generate-reply {
+        limit_req          zone=ai_llm burst=5 nodelay;
         proxy_pass         http://127.0.0.1:18000;
         proxy_set_header   Host $host;
         proxy_set_header   X-Real-IP $remote_addr;
-        proxy_set_header   Connection '';
         proxy_http_version 1.1;
         proxy_read_timeout 300s;
         proxy_buffering    off;
-        chunked_transfer_encoding on;
     }
+    location = /api/kb/qa {
+        limit_req          zone=ai_llm burst=5 nodelay;
+        proxy_pass         http://127.0.0.1:18000;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_http_version 1.1;
+        proxy_read_timeout 300s;
+        proxy_buffering    off;
+    }
+
+    # 真正的 SSE 流式端点（/query、/api/analyze/stream）走 location /api/ 默认转发，
+    # 切勿对其挂 limit_req（令牌桶会误杀长连接）。
 
     client_max_body_size 20M;
 }

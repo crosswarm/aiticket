@@ -11,7 +11,7 @@ Environment="DATA_DIR=/data/aiticket"
 Environment="CONFIG_FILE=/etc/aiticket/deployment.yaml"
 EnvironmentFile=/etc/aiticket/.env
 ExecStartPre=/opt/aiticket/venv/bin/python -m bootstrap.init_db --data-dir ${DATA_DIR}/sqlite
-ExecStart=/opt/aiticket/venv/bin/uvicorn main:app --host 127.0.0.1 --port 18000 --workers 1
+ExecStart=/opt/aiticket/venv/bin/uvicorn main:app --host 127.0.0.1 --port 18000 --workers 1 --limit-concurrency 64 --timeout-keep-alive 5
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:/var/log/aiticket/uvicorn.log
