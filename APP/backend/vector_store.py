@@ -8,11 +8,58 @@ from chromadb.config import Settings
 from chromadb.utils import embedding_functions
 import json
 import hashlib
+import logging
+import random
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import asdict
 import numpy as np
 import os
+
+logger = logging.getLogger(__name__)
+
+
+def _apply_query_instruction(text: str) -> str:
+    """检索 query 侧前缀（bge 非对称检索；MiniLM 下前缀为空 → 原样返回）。
+
+    Phase3 F2：doc 侧不加前缀（由 EF __call__ 处理），仅 query 文本在此预拼，
+    因 Chroma 1.5.5 单一 __call__ 无法区分 doc/query。
+    """
+    try:
+        from embedding_config import get_query_instruction
+        prefix = get_query_instruction() or ""
+    except Exception:
+        prefix = ""
+    return f"{prefix}{text}" if prefix else text
+
+
+class _NormalizingSTEmbeddingFunction(embedding_functions.EmbeddingFunction):
+    """SentenceTransformer EF，统一控制 L2 归一化（bge 非对称检索一致性）。
+
+    Phase3 F2：
+    - doc 侧（Chroma 对 .add() 与 .query(query_texts=...) 都走本 __call__）不加任何前缀；
+    - query 侧的 bge 非对称前缀由调用方在 query 文本上预拼（见 search_* 方法），
+      因为 Chroma 1.5.5 单一 __call__ 无法区分 doc/query；
+    - normalize=True 时启用 normalize_embeddings，使余弦阈值物理意义与 doc 侧一致。
+    """
+
+    def __init__(self, model_name: str, normalize: bool = False) -> None:
+        from sentence_transformers import SentenceTransformer
+        self._model = SentenceTransformer(model_name)
+        self._normalize = bool(normalize)
+        self._model_name = model_name
+
+    def __call__(self, input):  # Chroma EF 协议：单参 input
+        texts = list(input)
+        embs = self._model.encode(
+            texts,
+            normalize_embeddings=self._normalize,
+            show_progress_bar=False,
+        )
+        return embs.tolist()
+
+    def name(self) -> str:
+        return f"normalizing-st::{self._model_name}"
 
 
 def get_embedding_function(api_key: str = None, allow_download: bool = True):
@@ -32,12 +79,20 @@ def get_embedding_function(api_key: str = None, allow_download: bool = True):
         print("[VectorStore] 跳过嵌入模型加载，使用已有向量数据")
         return None
 
-    # 方案1: 本地多语言模型（推荐，无需API）
+    # 方案1: 本地模型（推荐，无需API）。模型名来自 embedding_config 单一真相源（Phase3 中心化）
     try:
-        ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="paraphrase-multilingual-MiniLM-L12-v2"  # 多语言，384维
+        from embedding_config import (
+            get_embedding_model_name,
+            load_embedding_config,
         )
-        print("[VectorStore] 使用本地嵌入模型: paraphrase-multilingual-MiniLM-L12-v2")
+        _model = get_embedding_model_name()
+        _cfg = load_embedding_config()
+        _normalize = bool(_cfg.get("normalize", False))
+        ef = _NormalizingSTEmbeddingFunction(
+            model_name=_model,  # 默认 BAAI/bge-base-zh-v1.5(768维)，由 embedding_config 决定
+            normalize=_normalize,
+        )
+        print(f"[VectorStore] 使用本地嵌入模型: {_model} (normalize={_normalize})")
         return ef
     except Exception as e:
         print(f"[VectorStore] 本地模型加载失败: {e}")
@@ -77,6 +132,7 @@ class VectorStore:
     集合1: issues - 存储工单原始内容向量
     集合2: analysis_cache - 存储AI分析结果
     集合3: similarity_graph - 存储工单相似度关系
+    集合4: req_pool - 存储需求池
     集合5: query_cache - 查询结果缓存
     """
 
@@ -100,6 +156,7 @@ class VectorStore:
         self.issues_collection = self._get_or_create_collection("issues")
         self.analysis_collection = self._get_or_create_collection("analysis_cache")
         self.similarity_collection = self._get_or_create_collection("similarity_graph")
+        self.req_pool_collection = self._get_or_create_collection("req_pool")
         self.req_clusters_collection = self._get_or_create_collection("req_clusters")
 
         # 初始化查询缓存集合
@@ -109,23 +166,66 @@ class VectorStore:
         print(f"  - 工单集合: {self._safe_collection_count(self.issues_collection)} 条")
         print(f"  - 分析缓存: {self._safe_collection_count(self.analysis_collection)} 条")
         print(f"  - 相似度图: {self._safe_collection_count(self.similarity_collection)} 条")
+        print(f"  - 需求池: {self._safe_collection_count(self.req_pool_collection)} 条")
         print(f"  - 需求聚类: {self._safe_collection_count(self.req_clusters_collection)} 条")
         if self.query_cache:
             print(f"  - 查询缓存: {self._safe_collection_count(self.query_cache)} 条")
     
+    # A2 cutover：仅这些集合有 bge 重建的 _v2 派生（其余如 similarity_graph/req_clusters/
+    # query_cache 无 v2，不加后缀以免创建空集合破坏其功能）。
+    _SUFFIXABLE_COLLECTIONS = frozenset({
+        "issues", "analysis_cache", "req_pool",
+    })
+
+    def _resolve_collection_name(self, name: str) -> str:
+        """A2 env 驱动集合后缀切换：serving 层读 _v2（cutover），清后缀即回滚 v1。
+
+        后缀来源优先级：env AITICKET_CHROMA_COLLECTION_SUFFIX → embedding_config.collection_suffix。
+        仅对 _SUFFIXABLE_COLLECTIONS 生效；切换=设后缀+重启，回滚=清后缀+重启，不 rename、不破坏 v1。
+        """
+        suffix = os.environ.get("AITICKET_CHROMA_COLLECTION_SUFFIX")
+        if suffix is None:
+            try:
+                from embedding_config import load_embedding_config
+                suffix = load_embedding_config().get("collection_suffix", "") or ""
+            except Exception:
+                suffix = ""
+        if suffix and name in self._SUFFIXABLE_COLLECTIONS:
+            return f"{name}{suffix}"
+        return name
+
     def _get_or_create_collection(self, name: str):
-        """获取或创建集合"""
+        """获取或创建集合（A2：按 env/config 后缀解析到 _v2 集合）。
+
+        Chroma 1.5.5 会把 EF 配置持久化进集合：已存在集合若用『不同』EF 打开会报
+        『embedding function conflict』，用 create_collection 又因已存在报 already exists。
+        故：① 先尝试带 EF get；② EF 冲突/已存在 → 不带 EF get（沿用存储配置，查询时由
+        本类在 query_texts 上预拼前缀、向量已是目标模型所产）；③ 仍失败 → create。
+        """
+        resolved = self._resolve_collection_name(name)
+        # ① 带 EF 直接 get（新建集合或 EF 一致时走这里）
         try:
             return self.client.get_collection(
-                name=name,
-                embedding_function=self.embedding_func
+                name=resolved,
+                embedding_function=self.embedding_func,
             )
         except Exception:
+            pass
+        # ② 不带 EF get（集合已存在且持久化了 EF 配置 → 避免冲突）
+        try:
+            return self.client.get_collection(name=resolved)
+        except Exception:
+            pass
+        # ③ 真不存在 → 创建
+        try:
             return self.client.create_collection(
-                name=name,
+                name=resolved,
                 embedding_function=self.embedding_func,
-                metadata={"hnsw:space": "cosine"}  # 使用余弦相似度
+                metadata={"hnsw:space": "cosine"},
             )
+        except Exception:
+            # 并发/竞态下可能刚被建出 → 兜底再 get
+            return self.client.get_collection(name=resolved)
 
     def _safe_collection_count(self, collection) -> int:
         try:
@@ -135,13 +235,14 @@ class VectorStore:
             return 0
 
     def _init_query_cache_collection(self):
-        """初始化查询缓存集合"""
+        """初始化查询缓存集合。
+
+        走 _get_or_create_collection 三级容错（带 EF get → 不带 EF get → create），
+        避免重启遇旧持久化 EF（如 384 MiniLM）与当前 bge EF 冲突时直接崩。
+        query_cache 不在 _SUFFIXABLE_COLLECTIONS，解析为裸名 query_cache（无 _v2）。
+        """
         try:
-            self.query_cache = self.client.get_or_create_collection(
-                name="query_cache",
-                embedding_function=self.embedding_func,
-                metadata={"description": "查询结果缓存，TTL 24小时"}
-            )
+            self.query_cache = self._get_or_create_collection("query_cache")
             print("[VectorStore] query_cache集合初始化成功")
         except Exception as e:
             print(f"[VectorStore] query_cache集合初始化失败: {e}")
@@ -155,7 +256,7 @@ class VectorStore:
         添加工单到向量库
         
         Args:
-            issue_key: 工单编号 MYPROJECT-12345
+            issue_key: 工单编号 LCZX-12345
             summary: 标题
             description: 描述
             metadata: 元数据字段
@@ -201,7 +302,7 @@ class VectorStore:
         return True
     
     def search_similar_issues(self, query: str, top_k: int = 5,
-                              min_score: float = 0.7) -> List[Dict]:
+                              min_score: float = 0.62) -> List[Dict]:  # 默认 bge 标定
         """
         语义搜索相似工单
 
@@ -217,7 +318,7 @@ class VectorStore:
 
         try:
             results = self.issues_collection.query(
-                query_texts=[query],
+                query_texts=[_apply_query_instruction(query)],
                 n_results=min(top_k * 2, self.issues_collection.count()),  # 多取一些用于过滤
                 include=['metadatas', 'distances', 'documents']
             )
@@ -245,7 +346,14 @@ class VectorStore:
 
         # 按分数排序
         similar_issues.sort(key=lambda x: x['score'], reverse=True)
-        return similar_issues[:top_k]
+        result = similar_issues[:top_k]
+        if result and random.random() < 0.10:
+            top5 = [(r['issue_key'], round(r['score'], 3)) for r in result[:5]]
+            logger.debug("[VectorStore] search_similar_issues: query=%r top5=%s filters=min_score=%.2f", query[:80], top5, min_score)
+            import traceback as _tb
+            _caller = "|".join(f"{f.filename.split('/')[-1]}:{f.lineno}" for f in _tb.extract_stack()[-4:-1])
+            logger.debug("[DEPRECATED] VectorStore.search_similar_issues caller=%s", _caller)
+        return result
 
     def _keyword_search(self, query: str, top_k: int = 5) -> List[Dict]:
         """
@@ -379,8 +487,21 @@ class VectorStore:
                 'model_used': str
             }
         """
+        # 写入门（C 治本）：拦截空工单/分析失败的占位 stub，不写进向量缓存。否则其占位 embedding_text
+        # （"工单缺少标题和描述…"/"自动分析失败"）污染 bge 召回，且 model_used!=rule_engine 时可能被
+        # 采纳门放过（63723 类的源头：空工单 stub 优先级高于文件富 entry，靠 816b430 才绕过）。
+        # 保守判定：functionality_impact 占位 AND summary(标题) 占位/空，二者同时满足才拦——
+        # 正常工单 summary=真实标题或 fi 有实质内容，不会被误伤。
+        _fi_g = (analysis.get('functionality_impact', '') or '').strip()
+        _sm_g = (summary or '').strip()
+        _fi_bad = (_fi_g == '' or _fi_g.startswith('未知') or '工单信息完全为空' in _fi_g)
+        _sm_bad = (_sm_g == '' or '工单缺少标题和描述' in _sm_g or '工单信息完全为空' in _sm_g)
+        if _fi_bad and _sm_bad:
+            print(f"[VectorStore] 写入门：拦截空工单占位 stub，不缓存 {issue_key} (fi='{_fi_g[:24]}')")
+            return
+
         content_hash = hashlib.md5(summary.encode()).hexdigest()[:16] if summary else ""
-        
+
         doc_id = f"analysis_{issue_key}"
         
         # 构建可序列化的元数据
@@ -400,29 +521,23 @@ class VectorStore:
             'expires_at': (datetime.now() + timedelta(days=ttl_days)).isoformat()
         }
         
-        # 使用 suggestion + impact 作为向量（用于相似建议复用）
-        embedding_text = f"{analysis.get('solution_suggestion', '')} {analysis.get('functionality_impact', '')}"
+        # 使用 summary（issue标题）作为向量优先，回退到 suggestion+impact，最后用 issue_key
+        embedding_text = summary.strip() or f"{analysis.get('solution_suggestion', '')} {analysis.get('functionality_impact', '')}".strip() or issue_key
         
-        # 删除旧记录
-        try:
-            self.analysis_collection.delete(ids=[doc_id])
-        except Exception:
-            pass
-
         # 如果没有embedding函数，跳过向量存储，但不报错
         if self.embedding_func is None:
             print(f"[VectorStore] 警告: 没有embedding函数，跳过向量存储，但分析结果仍通过内存返回")
-            # 不返回，继续执行回调
             return
 
+        # upsert 比 delete+add 更安全：避免 delete 成功但 add 失败导致数据丢失
         try:
-            self.analysis_collection.add(
+            self.analysis_collection.upsert(
                 ids=[doc_id],
                 documents=[embedding_text],
                 metadatas=[meta]
             )
         except Exception as e:
-            print(f"[VectorStore] 缓存分析失败: {e}")
+            print(f"[VectorStore] 缓存分析 upsert 失败: {e}")
             # 不抛出异常，让分析结果通过内存返回
     
     def get_cached_analysis(self, issue_key: str, 
@@ -443,11 +558,11 @@ class VectorStore:
             
             meta = result['metadatas'][0]
             
-            # 检查过期
+            # 检查过期（已过 expires_at 视为 stale 但仍可用，产品知识老化慢）
             expires_at = datetime.fromisoformat(meta.get('expires_at', '2000-01-01'))
             if datetime.now() > expires_at:
-                return None  # 已过期
-            
+                return {'stale': True, **self._meta_to_analysis(meta)}
+
             # 检查年龄
             created_at = datetime.fromisoformat(meta.get('created_at', '2000-01-01'))
             if datetime.now() - created_at > timedelta(days=max_age_days):
@@ -470,7 +585,7 @@ class VectorStore:
             return None
         
         results = self.analysis_collection.query(
-            query_texts=[query],
+            query_texts=[_apply_query_instruction(query)],
             n_results=3,
             where={"confidence": {"$gte": min_confidence}},  # 只考虑高可靠度结果
             include=['metadatas', 'distances']
@@ -617,7 +732,58 @@ class VectorStore:
                 documents=documents[i:i+batch_size],
                 metadatas=metadatas[i:i+batch_size]
             )
-    
+
+    def batch_upsert_issues(self, issues: List[Dict]):
+        """批量 upsert 工单（用于更新已有工单的内容）。
+
+        与 batch_add_issues 的区别：upsert 对已存在 id 执行更新而非静默 no-op，
+        确保描述变更的工单能被重新索引。
+        """
+        ids = []
+        documents = []
+        metadatas = []
+
+        for issue in issues:
+            issue_key = issue.get('key')
+            summary = issue.get('summary', '')
+            description = issue.get('description', '')
+            text = f"{summary} {description}"[:2000]
+
+            content_hash = hashlib.md5(text.encode()).hexdigest()[:16]
+
+            ids.append(f"issue_{issue_key}")
+            documents.append(text)
+            metadatas.append({
+                'issue_key': issue_key,
+                'summary': summary[:500],
+                'content_hash': content_hash,
+                'added_at': datetime.now().isoformat(),
+                **{k: str(v)[:500] for k, v in issue.items() if k not in ['key', 'summary', 'description']}
+            })
+
+        # 分批 upsert
+        batch_size = 100
+        for i in range(0, len(ids), batch_size):
+            self.issues_collection.upsert(
+                ids=ids[i:i+batch_size],
+                documents=documents[i:i+batch_size],
+                metadatas=metadatas[i:i+batch_size]
+            )
+
+    def batch_add_generic_issues(self, issues) -> None:
+        """Accept a list of GenericIssue objects and index them via batch_add_issues."""
+        docs = [
+            {
+                "key": i.key,
+                "summary": i.summary,
+                "description": i.description,
+                "source": i.source,
+                **{k: v for k, v in i.extra.items() if isinstance(v, str)},
+            }
+            for i in issues
+        ]
+        self.batch_add_issues(docs)
+
     def get_stats(self) -> Dict:
         """获取统计信息"""
         return {
@@ -640,6 +806,197 @@ class VectorStore:
         
         return count
 
+    # ==================== 需求池 (Requirement Pool) 操作 ====================
+    
+    def upsert_requirement(self, req_id: str, title: str, description: str, metadata: Dict = None):
+        """
+        添加或更新需求池记录
+        """
+        doc_id = f"req_{req_id}"
+        embedding_text = f"{title}\n{description}"[:2000]
+
+        meta = {
+            'req_id': req_id,
+            'title': title[:500],
+            'description': description[:2000], # store some of description in metadata
+            'status': metadata.get('status', 'new') if metadata else 'new',
+            'source_issues': json.dumps(metadata.get('source_issues', []) if metadata else []),
+            'ai_analysis': json.dumps(metadata.get('ai_analysis', {}) if metadata else {}),
+            'review_records': json.dumps(metadata.get('review_records', []) if metadata else {}),
+            'entry_source': metadata.get('entry_source', '') if metadata else '',
+            'requirement_fact_packet': json.dumps(metadata.get('requirement_fact_packet', {}) if metadata else {}),
+            'created_at': metadata.get('created_at', datetime.now().isoformat()) if metadata else datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat(),
+            'feishu_notified': metadata.get('feishu_notified', False) if metadata else False,
+            'topic_l1': metadata.get('topic_l1', '') if metadata else '',
+            'topic_l2': metadata.get('topic_l2', '') if metadata else '',
+        }
+
+        if self.embedding_func is None:
+            try:
+                from kb_hybrid_index import LocalHashEmbeddingFunction
+                from embedding_config import get_embedding_dim
+                _local_ef = LocalHashEmbeddingFunction(dimensions=get_embedding_dim())
+                embedding = _local_ef([embedding_text])[0]
+                logger.info(
+                    "[VectorStore] offline mode: req_pool using local-hash embedding for %s — "
+                    "upgrade to bge-base-zh-v1.5 for real similarity",
+                    doc_id,
+                )
+                self.req_pool_collection.upsert(
+                    ids=[doc_id],
+                    embeddings=[embedding],
+                    metadatas=[meta],
+                )
+                return True
+            except Exception as e:
+                print(f"[VectorStore] Upsert requirement with local-hash embedding failed: {e}")
+                return False
+        else:
+            # 使用embedding函数
+            try:
+                self.req_pool_collection.upsert(
+                    ids=[doc_id],
+                    documents=[embedding_text],
+                    metadatas=[meta]
+                )
+                return True
+            except Exception as e:
+                print(f"[VectorStore] Upsert requirement failed: {e}")
+                return False
+
+    def get_requirement(self, req_id: str) -> Optional[Dict]:
+        """获取指定的需求"""
+        try:
+            result = self.req_pool_collection.get(
+                ids=[f"req_{req_id}"],
+                include=['metadatas', 'documents']
+            )
+            if result and result['ids']:
+                meta = result['metadatas'][0]
+                return {
+                    'req_id': meta.get('req_id'),
+                    'title': meta.get('title', ''),
+                    'description': meta.get('description', ''),
+                    'status': meta.get('status', 'new'),
+                    'source_issues': json.loads(meta.get('source_issues', '[]')),
+                    'ai_analysis': json.loads(meta.get('ai_analysis', '{}')),
+                    'review_records': json.loads(meta.get('review_records', '[]')),
+                    'entry_source': meta.get('entry_source', ''),
+                    'requirement_fact_packet': json.loads(meta.get('requirement_fact_packet', '{}')),
+                    'created_at': meta.get('created_at'),
+                    'updated_at': meta.get('updated_at'),
+                    'feishu_notified': meta.get('feishu_notified', False),
+                }
+        except Exception as e:
+             print(f"[VectorStore] Get requirement failed: {e}")
+        return None
+
+    def list_requirements(self, status: str = None, date_range: Dict = None) -> List[Dict]:
+        """获取需求列表，支持状态筛选和日期范围筛选
+
+        Args:
+            status: 状态筛选
+            date_range: 日期范围筛选 {'start': '2026-01-01', 'end': '2026-02-28'}
+        """
+        try:
+            where_clause = {"status": status} if status else None
+
+            result = self.req_pool_collection.get(
+                where=where_clause,
+                include=['metadatas']
+            )
+
+            reqs = []
+            if result and result['metadatas']:
+                for meta in result['metadatas']:
+                    req = {
+                        'req_id': meta.get('req_id'),
+                        'title': meta.get('title', ''),
+                        'description': meta.get('description', ''),
+                        'status': meta.get('status', 'new'),
+                        'source_issues': json.loads(meta.get('source_issues', '[]')),
+                        'ai_analysis': json.loads(meta.get('ai_analysis', '{}')),
+                        'review_records': json.loads(meta.get('review_records', '[]')),
+                        'entry_source': meta.get('entry_source', ''),
+                        'requirement_fact_packet': json.loads(meta.get('requirement_fact_packet', '{}')),
+                        'created_at': meta.get('created_at'),
+                        'updated_at': meta.get('updated_at'),
+                        'feishu_notified': meta.get('feishu_notified', False),
+                    }
+
+                    # 内存中过滤日期范围
+                    if date_range and req.get('created_at'):
+                        req_date = req['created_at'][:10]  # 取YYYY-MM-DD部分
+                        if date_range.get('start') and req_date < date_range['start']:
+                            continue
+                        if date_range.get('end') and req_date > date_range['end']:
+                            continue
+
+                    reqs.append(req)
+
+            # 按创建时间倒序
+            reqs.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+            return reqs
+        except Exception as e:
+            print(f"[VectorStore] List requirements failed: {e}")
+            return []
+
+    def delete_requirement(self, req_id: str) -> bool:
+        """删除指定的需求"""
+        try:
+            self.req_pool_collection.delete(ids=[f"req_{req_id}"])
+            return True
+        except Exception as e:
+            print(f"[VectorStore] Delete requirement failed: {e}")
+            return False
+
+    def clear_requirements(self) -> bool:
+        """清空所有需求（谨慎使用）"""
+        try:
+            # 获取所有需求ID
+            result = self.req_pool_collection.get()
+            if result and result['ids']:
+                self.req_pool_collection.delete(ids=result['ids'])
+            return True
+        except Exception as e:
+            print(f"[VectorStore] Clear requirements failed: {e}")
+            return False
+
+    def search_similar_requirements(self, query: str, top_k: int = 5) -> List[Dict]:
+        """
+        语义搜索相似的需求（用于查重）
+        """
+        if self.req_pool_collection.count() == 0:
+            return []
+
+        try:
+            results = self.req_pool_collection.query(
+                query_texts=[_apply_query_instruction(query)],
+                n_results=min(top_k, self.req_pool_collection.count()),
+                include=['metadatas', 'distances']
+            )
+
+            similar_reqs = []
+            if results and results['ids'] and results['ids'][0]:
+                for i in range(len(results['ids'][0])):
+                    distance = results['distances'][0][i]
+                    score = 1 - distance
+
+                    meta = results['metadatas'][0][i]
+                    similar_reqs.append({
+                        'req_id': meta.get('req_id'),
+                        'title': meta.get('title', ''),
+                        'score': float(score),
+                        'status': meta.get('status', 'new')
+                    })
+
+                similar_reqs.sort(key=lambda x: x['score'], reverse=True)
+            return similar_reqs
+        except Exception as e:
+            print(f"[VectorStore] Search similar requirements failed: {e}")
+            return []
+
     # ==================== 需求聚类操作 ====================
 
     def upsert_cluster(self, cluster_id: str, title: str, metadata: Dict) -> bool:
@@ -655,12 +1012,15 @@ class VectorStore:
         meta["updated_at"] = datetime.now().isoformat()
         try:
             if self.embedding_func is None:
-                import numpy as np, hashlib
-                seed = int.from_bytes(hashlib.sha256(embedding_text.encode()).digest()[:4], 'big')
-                np.random.seed(seed)
-                emb = (np.random.randn(384).astype(np.float32))
-                emb /= np.linalg.norm(emb)
-                self.req_clusters_collection.upsert(ids=[doc_id], embeddings=[emb.tolist()], metadatas=[meta])
+                from kb_hybrid_index import LocalHashEmbeddingFunction
+                from embedding_config import get_embedding_dim
+                _local_ef = LocalHashEmbeddingFunction(dimensions=get_embedding_dim())
+                emb = _local_ef([embedding_text])[0]
+                logger.info(
+                    "[VectorStore] offline mode: req_clusters using local-hash embedding for %s",
+                    doc_id,
+                )
+                self.req_clusters_collection.upsert(ids=[doc_id], embeddings=[emb], metadatas=[meta])
             else:
                 self.req_clusters_collection.upsert(ids=[doc_id], documents=[embedding_text], metadatas=[meta])
             return True
@@ -710,6 +1070,26 @@ class VectorStore:
             print(f"[VectorStore] delete_cluster failed: {e}")
             return False
 
+    def update_requirement_field(self, req_id: str, fields: Dict) -> bool:
+        """局部更新需求元数据字段，fields 中值为 None 表示删除该字段"""
+        doc_id = f"req_{req_id}"
+        try:
+            result = self.req_pool_collection.get(ids=[doc_id], include=["metadatas"])
+            if not result or not result["ids"]:
+                return False
+            meta = result["metadatas"][0].copy()
+            for k, v in fields.items():
+                if v is None:
+                    meta.pop(k, None)
+                else:
+                    meta[k] = json.dumps(v, ensure_ascii=False, default=str) if isinstance(v, (dict, list)) else v
+            meta["updated_at"] = datetime.now().isoformat()
+            self.req_pool_collection.update(ids=[doc_id], metadatas=[meta])
+            return True
+        except Exception as e:
+            print(f"[VectorStore] update_requirement_field failed: {e}")
+            return False
+
     # ==================== 查询缓存操作 ====================
 
     def save_query_cache(self, cache_key: str, query: str, content: str,
@@ -733,10 +1113,12 @@ class VectorStore:
         query_embedding = self._get_query_embedding(query)
 
         try:
+            from embedding_config import get_embedding_dim
+            _zero = [0.0] * get_embedding_dim()
             self.query_cache.upsert(
                 ids=[cache_key],
                 documents=[content],
-                embeddings=[query_embedding.tolist() if query_embedding is not None else [0.0] * 384],
+                embeddings=[query_embedding.tolist() if query_embedding is not None else _zero],
                 metadatas=[{
                     "original_query": query,
                     "context_keys": json.dumps(context_keys),
@@ -786,7 +1168,8 @@ class VectorStore:
             meta['hit_count'] = current_hit_count + 1
 
             # 更新缓存记录（使用upsert），需要提供embedding
-            embedding = [0.0] * 384  # 默认值
+            from embedding_config import get_embedding_dim
+            embedding = [0.0] * get_embedding_dim()  # 默认值（维度随 serving 模型，bge=768）
             embeddings_list = result.get('embeddings')
             if embeddings_list is not None and len(embeddings_list) > 0:
                 first_embedding = embeddings_list[0]

@@ -33,6 +33,9 @@ def _load_llm_config() -> dict:
 
 def _build_mem0_config() -> MemoryConfig:
     llm_cfg = _load_llm_config()
+    # 嵌入模型读单一真相源 embedding_config（默认 bge-base-zh-v1.5/768，消除硬编码 MiniLM/384 漂移）
+    from embedding_config import load_embedding_config
+    _emb_cfg = load_embedding_config()
     return MemoryConfig(
         vector_store=VectorStoreConfig(
             provider="chroma",
@@ -53,8 +56,8 @@ def _build_mem0_config() -> MemoryConfig:
         embedder=EmbedderConfig(
             provider="huggingface",
             config={
-                "model": "paraphrase-multilingual-MiniLM-L12-v2",
-                "embedding_dims": 384,
+                "model": _emb_cfg["model_name"],
+                "embedding_dims": int(_emb_cfg["dim"]),
             }
         ),
     )

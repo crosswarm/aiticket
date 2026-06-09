@@ -27,8 +27,13 @@ def build_issue_query(
     if not parts and cache_fn is not None:
         try:
             raw = cache_fn(issue_key) or {}
-            summary = (raw.get("summary") or raw.get("title") or "").strip()
-            desc = (raw.get("description") or "")[:600].strip()
+            # raw may be a dict OR a JiraIssue/GenericIssue object — handle both
+            if hasattr(raw, "summary"):
+                summary = (getattr(raw, "summary", "") or "").strip()
+                desc = str(getattr(raw, "description", "") or "")[:600].strip()
+            else:
+                summary = (raw.get("summary") or raw.get("title") or "").strip()
+                desc = (raw.get("description") or "")[:600].strip()
             if summary:
                 parts.append(summary)
             if desc:

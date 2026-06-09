@@ -27,8 +27,11 @@ COLLECTION_NAME = "product_facts"
 def _get_embedding_function():
     try:
         from chromadb.utils import embedding_functions
+        # 模型名读 embedding_config 单一真相源（默认 bge-base-zh-v1.5/768），
+        # 须与 issues/kb 集合同模型，否则维度不一致导致 Chroma 崩溃。
+        from embedding_config import get_embedding_model_name
         return embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="paraphrase-multilingual-MiniLM-L12-v2"
+            model_name=get_embedding_model_name()
         )
     except Exception as e:
         print(f"[FactsIndexer] 嵌入模型加载失败，使用 Chroma 默认: {e}")

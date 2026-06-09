@@ -1,9 +1,7 @@
 """
 reply_method_detector.py — 统一"纳入需求库"回复方式检测
 
-合并散落的检测逻辑：
-  - monthly_analysis.py
-  - weekly_analysis.py
+统一散落的回复方式检测逻辑，供 reply 流水线复用。
 """
 from __future__ import annotations
 
