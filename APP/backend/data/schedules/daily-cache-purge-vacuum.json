@@ -1,0 +1,27 @@
+{
+  "id": "daily-cache-purge-vacuum",
+  "name": "每日缓存过期清理 + chroma VACUUM",
+  "task_type": "script",
+  "trigger_type": "cron",
+  "cron": "30 4 * * *",
+  "enabled": true,
+  "catchup_window_hours": 4,
+  "cooldown_hours": 0,
+  "command": [
+    "__PYTHON__",
+    "scripts/cache_purge_vacuum.py"
+  ],
+  "description": "每日04:30：删过期 analysis_cache(chroma 30d / JSON 90d) + 批量删 query_cache 过期行 + 尝试 VACUUM 各 chroma.sqlite3 回收 freelist。在线时 VACUUM 多半 SQLITE_BUSY 自动跳过(逻辑删除已阻止无限增长)；深度回收走停服窗口 --vacuum-only。修复 cleanup_expired 此前无调度调用方导致缓存无限累积的问题。",
+  "last_run": null,
+  "created_at": "2026-06-09T00:00:00",
+  "host_constraint": null,
+  "preflight_local_llm": false,
+  "llm_strategy": "none",
+  "run_count": 0,
+  "last_status": "pending",
+  "created_by": "claude",
+  "created_by_uuid": "aaac6ff8-d4a6-ce54-1d0b-0538426b0028",
+  "schema_version": "1.0",
+  "recent_runs": [],
+  "agent_hint": "jobmaster"
+}

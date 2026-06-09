@@ -155,7 +155,7 @@ set -a; source .env; set +a
 
 # 启动后端
 cd APP/backend
-uvicorn main:app --host 0.0.0.0 --port ${PORT:-18000} --workers 1
+uvicorn main:app --host 0.0.0.0 --port ${PORT:-18000} --workers 1 --limit-concurrency 64 --timeout-keep-alive 5
 
 # 验证
 curl http://127.0.0.1:18000/api/health
@@ -163,6 +163,8 @@ curl http://127.0.0.1:18000/api/health
 ```
 
 > **重要**：`--workers` 必须为 `1`。ChromaDB 使用文件锁，多 worker 会导致锁冲突崩溃。
+>
+> **准入限流**：`--limit-concurrency 64` 限制单 worker 同时处理的请求数（超额直接返回 503，避免慢 LLM 请求堆积把进程拖垮）；`--timeout-keep-alive 5` 尽快释放空闲长连接。智能回复是同步阻塞调用，没有这两项保护时上游 429 风暴会在 1–2 分钟内占满线程池导致服务假死。
 
 首次启动会自动完成：
 - SQLite schema 初始化
@@ -188,6 +190,10 @@ curl -X POST http://127.0.0.1:18000/api/auth/setup \
 ## Nginx 反代配置
 
 ```nginx
+# 昂贵 LLM 端点限流 zone（http 上下文；sites-enabled / conf.d 已在 nginx http{} 内）。
+limit_req_zone $binary_remote_addr zone=ai_llm:10m rate=20r/m;
+limit_req_status 429;
+
 server {
     listen 443 ssl;
     server_name aiticket.yourteam.com;
@@ -198,6 +204,24 @@ server {
     # 上传文件大小限制（KB 文档上传，最大 20 MB）
     client_max_body_size 25m;
 
+    # 昂贵的同步 LLM 端点（generate-reply 是阻塞 JSON，非 SSE）：每 IP 限流，超额 429。
+    location = /api/board/generate-reply {
+        limit_req          zone=ai_llm burst=5 nodelay;
+        proxy_pass         http://127.0.0.1:18000;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_read_timeout 300s;
+        proxy_buffering    off;
+    }
+    location = /api/kb/qa {
+        limit_req          zone=ai_llm burst=5 nodelay;
+        proxy_pass         http://127.0.0.1:18000;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_read_timeout 300s;
+        proxy_buffering    off;
+    }
+
     location / {
         proxy_pass         http://127.0.0.1:18000;
         proxy_set_header   Host $host;
@@ -205,7 +229,7 @@ server {
         proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto $scheme;
 
-        # SSE 流式响应（智能回复生成）
+        # 真 SSE 流式端点（/query、/api/analyze/stream）经此默认转发，切勿挂 limit_req（令牌桶会误杀长连接）
         proxy_buffering    off;
         proxy_cache        off;
         proxy_read_timeout 300s;
@@ -239,7 +263,9 @@ EnvironmentFile=/opt/aiticket/.env
 ExecStart=/opt/aiticket/.venv/bin/uvicorn main:app \
     --host 0.0.0.0 \
     --port 18000 \
-    --workers 1
+    --workers 1 \
+    --limit-concurrency 64 \
+    --timeout-keep-alive 5
 Restart=always
 RestartSec=5
 StandardOutput=journal
