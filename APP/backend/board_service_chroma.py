@@ -143,7 +143,7 @@ class AIAnalysisWorker:
         if self.worker_thread:
             self.worker_thread.join(timeout=10)
     
-    def submit(self, issue: JiraIssue, priority: int = 5, skip_reuse: bool = False):
+    def submit(self, issue: JiraIssue, priority: int = 5, skip_reuse: bool = False, user_id: str = None):
         """
         提交分析任务
 
@@ -155,6 +155,7 @@ class AIAnalysisWorker:
 
         Args:
             skip_reuse: 是否跳过复用逻辑（强制重新分析时使用）
+            user_id: 触发用户（用户主动批量分析时透传，LLM 走其用户级凭据；后台任务为 None）
         """
         # 去重保护：已在队列中的工单不重复入队
         if issue.key in self._pending_keys:
@@ -175,10 +176,10 @@ class AIAnalysisWorker:
             else:
                 return False  # 丢弃低优先级任务（未入队）
 
-        # 使用计数器确保队列元素可比较 (priority, counter, issue, skip_reuse)
+        # 使用计数器确保队列元素可比较 (priority, counter, issue, skip_reuse, user_id)
         self._task_counter += 1
         self._pending_keys.add(issue.key)
-        self.task_queue.put((priority, self._task_counter, issue, skip_reuse))
+        self.task_queue.put((priority, self._task_counter, issue, skip_reuse, user_id))
         print(f"[AIWorker] 任务已提交: {issue.key} (优先级: {priority}, 跳过复用: {skip_reuse})")
         return True  # 已成功入队
     
@@ -203,42 +204,47 @@ class AIAnalysisWorker:
                 print(f"[AIWorker Error] {e}")
                 time.sleep(5)
     
-    def _collect_batch(self) -> List[Tuple[JiraIssue, bool]]:
-        """收集一批待处理任务，返回 (issue, skip_reuse) 元组列表"""
+    def _collect_batch(self) -> List[tuple]:
+        """收集一批待处理任务，返回 (issue, skip_reuse, user_id) 元组列表"""
         batch = []
         timeout = time.time() + 2  # 最多等待2秒凑齐一批
 
         while len(batch) < self.batch_size and time.time() < timeout:
             try:
-                priority, counter, issue, skip_reuse = self.task_queue.get(timeout=0.5)
-                batch.append((priority, issue, skip_reuse))
+                item = self.task_queue.get(timeout=0.5)
+                if len(item) == 5:
+                    priority, counter, issue, skip_reuse, user_id = item
+                else:  # 兼容旧 4 元组
+                    priority, counter, issue, skip_reuse = item
+                    user_id = None
+                batch.append((priority, issue, skip_reuse, user_id))
             except queue.Empty:
                 break
             except Exception as e:
                 print(f"[AIWorker] 获取任务出错: {e}")
                 break
 
-        return [(issue, skip_reuse) for _, issue, skip_reuse in batch]
+        return [(issue, skip_reuse, user_id) for _, issue, skip_reuse, user_id in batch]
     
     def _process_batch(self, items: List[tuple]):
         """批量处理工单
 
         Args:
-            items: [(issue, skip_reuse), ...] 元组列表
+            items: [(issue, skip_reuse, user_id), ...] 元组列表
         """
-        issues = [issue for issue, _ in items]
+        issues = [it[0] for it in items]
         print(f"[AIWorker] 处理批次: {[i.key for i in issues]}")
         # 从 pending_keys 中移除已出队的工单，允许后续重新入队
         for _issue in issues:
             self._pending_keys.discard(_issue.key)
 
         # 阶段1: 尝试复用已有分析（基于语义相似度）
-        to_analyze = []
-        for issue, skip_reuse in items:
+        to_analyze = []  # [(issue, user_id)]
+        for issue, skip_reuse, user_id in items:
             # 如果跳过复用，直接进入分析阶段
             if skip_reuse:
                 print(f"[AIWorker] {issue.key} 强制重新分析，跳过复用检查")
-                to_analyze.append(issue)
+                to_analyze.append((issue, user_id))
                 continue
 
             try:
@@ -247,21 +253,26 @@ class AIAnalysisWorker:
                     # 直接复用成功
                     self._save_and_notify(issue.key, analysis, issue_title=issue.summary, issue_description=(issue.description or '')[:1000])
                 else:
-                    to_analyze.append(issue)
+                    to_analyze.append((issue, user_id))
             except Exception as e:
                 print(f"[AIWorker] 复用分析失败 {issue.key}: {e}")
-                to_analyze.append(issue)
+                to_analyze.append((issue, user_id))
 
         if not to_analyze:
             return
 
-        # 阶段2: 批量LLM分析
+        # 阶段2: 批量LLM分析 — 按触发用户分组，用户主动触发的批量分析走其用户级 LLM 凭据
         try:
-            self._batch_llm_analyze(to_analyze)
+            from collections import OrderedDict
+            groups: "OrderedDict[str, list]" = OrderedDict()
+            for issue, user_id in to_analyze:
+                groups.setdefault(user_id or "", []).append(issue)
+            for uid, grp_issues in groups.items():
+                self._batch_llm_analyze(grp_issues, user_id=uid or None)
         except Exception as e:
             print(f"[AIWorker] 批量LLM分析失败: {e}")
             # 确保所有工单都有降级结果
-            for issue in to_analyze:
+            for issue, _uid in to_analyze:
                 try:
                     fallback = self._rule_based_analysis(issue)
                     self._save_and_notify(issue.key, fallback, issue_title=issue.summary, issue_description=(issue.description or '')[:1000])
@@ -2093,7 +2104,7 @@ class BoardService:
             print(f"[Force Analyze Error] {e}")
             return {'status': 'error', 'message': str(e)}
 
-    def batch_reanalyze(self, issue_keys: List[str]) -> Dict:
+    def batch_reanalyze(self, issue_keys: List[str], user_id: str = None) -> Dict:
         """
         批量重新分析多个工单
 
@@ -2119,8 +2130,8 @@ class BoardService:
                 issue = self._get_issue_from_cache(issue_key)
 
                 if issue:
-                    # 提交高优先级分析（跳过复用，强制重新分析）
-                    self.worker.submit(issue, priority=0, skip_reuse=True)
+                    # 提交高优先级分析（跳过复用，强制重新分析；带触发用户→其用户级 LLM）
+                    self.worker.submit(issue, priority=0, skip_reuse=True, user_id=user_id)
                     self.analysis_status[issue_key] = {'status': 'analyzing'}
                     submitted += 1
                     print(f"[BoardService] {issue_key} 已提交批量重新分析")

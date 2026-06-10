@@ -3939,11 +3939,18 @@
             });
 
             if (keysToAnalyze.length === 0) {
-                showToast('所有工单都已有AI分析结果', 'info');
-                return;
-            }
-
-            if (!confirm(`确定要批量重新分析 ${keysToAnalyze.length} 个工单吗？\n\n这将提交到后台队列，您可以离开页面，分析完成后会自动更新。`)) {
+                // 全部已有分析缓存 → 给"强制重新分析"路径（修复：此前直接 return，按钮看似无反应）
+                const allKeys = [];
+                Object.values(boardData).forEach(col => col.forEach(issue => allKeys.push(issue.key)));
+                if (allKeys.length === 0) {
+                    showToast('当前看板没有工单', 'info');
+                    return;
+                }
+                if (!confirm(`全部 ${allKeys.length} 个工单已有分析结果。\n\n是否强制重新分析全部工单？（将使用你配置的个人 LLM 重新生成分类/置信度/解决方案）`)) {
+                    return;
+                }
+                keysToAnalyze.push(...allKeys);
+            } else if (!confirm(`确定要批量重新分析 ${keysToAnalyze.length} 个工单吗？\n\n这将提交到后台队列，您可以离开页面，分析完成后会自动更新。`)) {
                 return;
             }
 
