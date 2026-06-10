@@ -2803,15 +2803,16 @@ class BatchReanalyzeRequest(BaseModel):
     issue_keys: List[str]
 
 @app.post("/api/board/batch-reanalyze")
-def batch_reanalyze_issues(request: BatchReanalyzeRequest):
+def batch_reanalyze_issues(request: BatchReanalyzeRequest, raw_request: Request):
     """
-    批量重新分析多个工单
+    批量重新分析多个工单（用户主动触发 → 透传 user_id，LLM 走其用户级凭据）
 
     请求: {"issue_keys": ["MYPROJECT-12345", "MYPROJECT-12346"]}
     响应: {"status": "success", "data": {"submitted": 2, "queue_size": 5}}
     """
     try:
-        result = board_service.batch_reanalyze(request.issue_keys)
+        _cu = get_current_user(raw_request) or {}
+        result = board_service.batch_reanalyze(request.issue_keys, user_id=_cu.get("id") or None)
         return {"status": "success", "data": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
