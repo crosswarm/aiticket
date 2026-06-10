@@ -129,6 +129,9 @@ class _FakeAuthService:
             return {}
         return self._user_cfg.get(user_id, {})
 
+    def get_user_last_provider(self, user_id):
+        return self._last_provider.get(user_id, "") if hasattr(self, "_last_provider") else ""
+
 
 @pytest.fixture
 def main_mod():
@@ -250,3 +253,49 @@ def test_exclude_providers_respected(main_mod, monkeypatch):
     assert rt["_source"] == "user"
     assert rt["provider"] == "openai"
     assert rt["api_key"] == "sk-openai-user"
+
+
+# ──────────── C. bugfix: 用户 provider 不在路由链时仍应命中用户级 ────────────
+# 生产案例：songshijia 配了 deepseek，但 smart_reply 路由 minimax →
+# 修复前用户级只查路由链候选 → 误判 blocked。
+
+def test_user_provider_outside_routing_chain_still_used(main_mod, monkeypatch):
+    _patch(
+        main_mod, monkeypatch,
+        routing={"smart_reply": "minimax"},  # 路由链里没有 deepseek
+        user_cfg={"u1": {"deepseek": {"api_key": "sk-ds-user", "model_name": "deepseek-v4-flash", "base_url": "https://ds"}}},
+        system_cfg={"minimax": {"api_key": "sk-system"}},
+    )
+    rt = main_mod.resolve_feature_llm_runtime("smart_reply", user_id="u1")
+    assert rt["_source"] == "user"
+    assert rt["provider"] == "deepseek"
+    assert rt["api_key"] == "sk-ds-user"
+    assert not rt.get("_blocked")
+
+
+def test_user_last_provider_preferred_in_fallback_order(main_mod, monkeypatch):
+    fake = _FakeAuthService(
+        {"smart_reply": "minimax"},
+        {"u1": {
+            "deepseek": {"api_key": "sk-ds", "model_name": "", "base_url": ""},
+            "openai": {"api_key": "sk-oa", "model_name": "", "base_url": ""},
+        }},
+    )
+    fake._last_provider = {"u1": "openai"}
+    monkeypatch.setattr(main_mod, "auth_service", fake)
+    monkeypatch.setattr(main_mod, "load_llm_config", lambda: {})
+    rt = main_mod.resolve_feature_llm_runtime("smart_reply", user_id="u1")
+    assert rt["_source"] == "user"
+    assert rt["provider"] == "openai"  # last_provider 优先
+
+
+def test_exclude_providers_applies_to_user_fallback(main_mod, monkeypatch):
+    # 用户只配 deepseek 但被 exclude（429 failover 场景）→ 用户级不命中 → blocked
+    _patch(
+        main_mod, monkeypatch,
+        routing={"smart_reply": "minimax"},
+        user_cfg={"u1": {"deepseek": {"api_key": "sk-ds", "model_name": "", "base_url": ""}}},
+        system_cfg={},
+    )
+    rt = main_mod.resolve_feature_llm_runtime("smart_reply", user_id="u1", exclude_providers=["deepseek"])
+    assert rt.get("_blocked") is True

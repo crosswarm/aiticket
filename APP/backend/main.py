@@ -5910,7 +5910,8 @@ def resolve_feature_llm_runtime(
     skip = set(exclude_providers or [])
     candidate_providers = [p for p in providers if p not in skip]
 
-    # ── 1. 用户级优先：按路由顺序查当前用户对候选 provider 的凭据 ──
+    # ── 1. 用户级优先 ──
+    # 1a. 路由链中用户配过的 provider 优先（系统策略与用户凭据的交集最优）
     user_cfg = auth_service.get_user_llm_config(user_id) if user_id else {}
     for provider_name in candidate_providers:
         pc = user_cfg.get(provider_name) or {}
@@ -5922,6 +5923,28 @@ def resolve_feature_llm_runtime(
                 "base_url": pc.get("base_url", ""),
                 "_source": "user",
             }
+    # 1b. 交集为空：退到用户自己的 last_provider → 其配置的任意 provider。
+    #     用户级语义=用户配了 key 就能用，路由链只约束系统级兜底，不拦用户自己的选择
+    #     （bugfix: songshijia 配 deepseek 但 smart_reply 路由 minimax → 曾被误判 blocked）。
+    if user_cfg:
+        _last = ""
+        try:
+            _last = auth_service.get_user_last_provider(user_id) or ""
+        except Exception:
+            pass
+        _ordered = ([_last] if _last in user_cfg else []) + [p for p in user_cfg if p != _last]
+        for provider_name in _ordered:
+            if provider_name in skip:
+                continue
+            pc = user_cfg.get(provider_name) or {}
+            if pc.get("api_key"):
+                return {
+                    "provider": provider_name,
+                    "api_key": pc["api_key"],
+                    "model_name": pc.get("model_name", ""),
+                    "base_url": pc.get("base_url", ""),
+                    "_source": "user",
+                }
 
     # ── 2. 系统兜底：仅当该 feature 允许 ──
     allow_fallback = get_feature_fallback_map().get(feature, True)
