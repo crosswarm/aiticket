@@ -2693,10 +2693,12 @@ def get_analysis_status(request: AnalysisStatusRequest):
 
 @app.post("/api/board/{issue_key}/reanalyze")
 def force_reanalyze(issue_key: str, request: Request):
-    """强制重新分析指定工单"""
+    """强制重新分析指定工单（用户主动触发 → 透传 user_id，LLM 走其用户级凭据）"""
     try:
         jira_client = build_request_jira_client(request)
-        result = board_service.force_analyze(issue_key, jira_client=jira_client)
+        _cu = get_current_user(request) or {}
+        result = board_service.force_analyze(
+            issue_key, jira_client=jira_client, user_id=_cu.get("id") or None)
         return {"status": "success", "data": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
