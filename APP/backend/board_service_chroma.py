@@ -730,6 +730,8 @@ class AIAnalysisWorker:
                     _, reason, entry = _cache_quality_gate(issue_key, entry, existing)
                     if reason == "title_preserved":
                         print(f"[Cache] {issue_key}: quality gate 保留原有 issue_title（新数据为空，可能 Jira 403）")
+                    elif reason == "llm_analysis_preserved":
+                        print(f"[Cache] {issue_key}: quality gate 保留原有 LLM 分析（新结果为 rule_engine 降级产物）")
                     if not entry.get('issue_title'):
                         print(f"[Cache] BLOCKED: {issue_key} no issue_title after quality gate (likely Jira 403), skipping write. confidence={entry.get('confidence')}")
                         return False
@@ -754,13 +756,41 @@ class AIAnalysisWorker:
             return False
 
 
+def _supervisor_direct_failed(sup) -> bool:
+    """G5 supervisor 在 Gate3 direct 短路出口上的判定（fail-closed）。
+
+    supervisor 不可用（结果为 None 或 score=None——LLM 阻断/配额/解析失败/网关关闭）
+    时 direct 不得无监督放行，必须降级 llm_blend 走完整五闸门。
+    （QCL 2026-06-11：score=None 曾被当通过 → 错配回复直出客服，YDY-9892）
+    """
+    return (
+        sup is None
+        or getattr(sup, "supervisor_score", None) is None
+        or sup.supervisor_score < 0.6
+    )
+
+
 def _cache_quality_gate(issue_key: str, new_entry: dict, existing: dict) -> tuple:
     """缓存写入质量门。返回 (allow, reason, merged_entry)。
-    reason: "new_entry" | "title_preserved" | "normal"
-    防止 Jira 403 / 网络抖动导致的空 title 覆盖已有真实数据。
+    reason: "new_entry" | "llm_analysis_preserved" | "title_preserved" | "normal"
+    防止 Jira 403 / 网络抖动导致的空 title 覆盖已有真实数据；
+    防止无凭据降级产物（rule_engine / 空 solution）洗掉已有 LLM 分析。
     """
     if not existing:
         return True, "new_entry", new_entry
+    # 降级保护①：规则引擎产物不得整体覆盖已有 LLM 分析
+    # （QCL 2026-06-11：B类无凭据强制重析把好分析洗成 rule_engine 空壳）
+    if (new_entry.get("model_used") == "rule_engine"
+            and existing.get("model_used")
+            and existing.get("model_used") != "rule_engine"):
+        return True, "llm_analysis_preserved", existing
+    # 降级保护②：新分析缺 solution 字段时，保留旧 LLM 分析的对应字段（字段级合并）
+    if existing.get("model_used") and existing.get("model_used") != "rule_engine":
+        for _f in ("solution_recommendation", "solution_suggestion"):
+            if not new_entry.get(_f) and existing.get(_f):
+                new_entry = dict(new_entry)
+                new_entry[_f] = existing[_f]
+                new_entry["_preserved_from_regression"] = True
     if existing.get("issue_title") and not new_entry.get("issue_title"):
         new_entry = dict(new_entry)
         new_entry["issue_title"] = existing["issue_title"]
@@ -2067,14 +2097,15 @@ class BoardService:
 
         return updates
     
-    def force_analyze(self, issue_key: str, jira_client: Optional[JiraService] = None) -> Dict:
+    def force_analyze(self, issue_key: str, jira_client: Optional[JiraService] = None,
+                      user_id: str = None) -> Dict:
         """
         强制重新分析指定工单（用户手动触发）
 
         流程：
         1. 使旧缓存失效
         2. 从Jira重新获取工单信息
-        3. 提交高优先级分析任务
+        3. 提交高优先级分析任务（带触发用户 → LLM 走其用户级凭据）
         """
         # 1. 使旧缓存失效
         self.vector_store.invalidate_cache(issue_key)
@@ -2092,7 +2123,7 @@ class BoardService:
             issue = issues[0]
 
             # 3. 提交高优先级分析（跳过复用，强制重新分析）
-            self.worker.submit(issue, priority=0, skip_reuse=True)  # 最高优先级，跳过复用
+            self.worker.submit(issue, priority=0, skip_reuse=True, user_id=user_id)  # 最高优先级，跳过复用
 
             # 更新内存状态
             self.analysis_status[issue_key] = {'status': 'analyzing'}
@@ -2659,7 +2690,7 @@ class BoardService:
             if force:
                 try:
                     print(f"[GenerateReply] force=True 且无AI分析，触发实时分析: {issue_key}")
-                    _fresh = self.force_analyze(issue_key)
+                    _fresh = self.force_analyze(issue_key, user_id=user_id or None)
                     if _fresh and not _fresh.get("error"):
                         ai_analysis = self.vector_store.get_cached_analysis(issue_key)
                         if not ai_analysis:
@@ -3106,9 +3137,7 @@ class BoardService:
                     main_provider="minimax",
                     deploy_mode=(ai_analysis or {}).get("deploy_mode", ""),
                 )
-                _sup_g3_failed = _sup_g3 is None or (
-                    _sup_g3.supervisor_score is not None and _sup_g3.supervisor_score < 0.6
-                )
+                _sup_g3_failed = _supervisor_direct_failed(_sup_g3)
             except Exception as _e_sup3:
                 print(f"[Gate3] supervisor on direct path failed: {_e_sup3}")
                 _sup_g3_failed = True
