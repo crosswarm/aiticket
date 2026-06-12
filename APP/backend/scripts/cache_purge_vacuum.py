@@ -238,6 +238,19 @@ def main() -> int:
         step_a_b_chroma_logical(args.dry_run)
         step_c_analysis_json(args.dry_run)
     step_d_vacuum(args.dry_run)
+    # 心跳落盘：watchdog 据此判断任务真实跑过（scheduler 的 last_status 在 handler
+    # 异常时仍记 success 不可信；effect-based 心跳才是真相源）。dry-run 不写。
+    if not args.dry_run:
+        try:
+            hb = BACKEND / "data" / "cache_purge_heartbeat.json"
+            hb.parent.mkdir(parents=True, exist_ok=True)
+            hb.write_text(json.dumps({
+                "last_success": datetime.now().isoformat(),
+                "vacuum_only": bool(args.vacuum_only),
+                "duration_s": round(time.time() - t0, 1),
+            }, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            _log(f"[heartbeat] 写入失败: {e!r}")
     _log(f"完成，耗时 {time.time()-t0:.1f}s")
     return 0
 
