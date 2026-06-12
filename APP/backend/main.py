@@ -87,6 +87,7 @@ from services.pm_collaboration_service import get_pm_service
 
 import uvicorn
 import os
+import asyncio
 import hashlib
 import json
 import re
@@ -4046,20 +4047,41 @@ def trainer_daily_report():
 
 # --- Smart Reply Endpoints ---
 
+# P3 护栏：限制同时在跑的 LLM 回复生成数（容量报告§3#3）。
+# generate_reply 此前是同步 def——每个请求占住 1 个 anyio 线程数十秒（串 2 次云端 LLM），
+# 高峰+429 重试时 64 线程被占满导致整个 worker 假死。改 async + to_thread 后慢 LLM
+# 不再独占 handler 线程；Semaphore 把无限并发砸上游收敛为受控 N 路（默认 8）。
+# precompute 路径（独立 ThreadPoolExecutor daemon 线程，无 event loop）不共享此信号量。
+# 注意：asyncio.Semaphore 绑定首次 acquire 的事件循环，跨 loop 复用会抛
+# "bound to a different event loop"——按 loop 惰性创建；生产 uvicorn 单 loop 即全局闸。
+_REPLY_LLM_SEMAPHORES: dict = {}
+
+
+def _get_reply_llm_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    sem = _REPLY_LLM_SEMAPHORES.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(int(os.environ.get("REPLY_LLM_MAX_CONCURRENT", "8")))
+        _REPLY_LLM_SEMAPHORES[loop] = sem
+    return sem
+
+
 @app.post("/api/board/generate-reply")
-def generate_reply(request: GenerateReplyRequest, raw_request: Request, _quota=Depends(require_reply_quota)):
+async def generate_reply(request: GenerateReplyRequest, raw_request: Request, _quota=Depends(require_reply_quota)):
     """基于AI分析生成智能回复内容"""
     log_api_request(raw_request, _quota, issue_key=request.issue_key)
     try:
         _cu = get_current_user(raw_request)
-        result = board_service.generate_reply_content(
-            request.issue_key,
-            force=request.force,
-            user_id=_cu["id"] if _cu else "",
-            project_key=getattr(raw_request.state, "project_key", "") or "",
-            force_pass_gate1=request.force_pass_gate1,
-            force_pass_gate2=request.force_pass_gate2,
-        )
+        async with _get_reply_llm_semaphore():
+            result = await asyncio.to_thread(
+                board_service.generate_reply_content,
+                request.issue_key,
+                force=request.force,
+                user_id=_cu["id"] if _cu else "",
+                project_key=getattr(raw_request.state, "project_key", "") or "",
+                force_pass_gate1=request.force_pass_gate1,
+                force_pass_gate2=request.force_pass_gate2,
+            )
         if result.get("gate") == "completeness":
             _insuf_type = result.get("insufficient_type", "missing_fields")
             return {
@@ -6872,6 +6894,29 @@ if _RUN_BG and ENABLE_SCHEDULER:
                     pass
 
         register_task_handler("kb_refresh_full", _task_kb_refresh_full)
+
+        def _task_script(**params):
+            """通用 script 任务：command 数组子进程执行（__PYTHON__ → 当前解释器）。
+            deployable 无 jobmaster daemon，task_type=script 的 schedule（如
+            daily-cache-purge-vacuum）此前无人消费=静默空转，由本 handler 兜底执行。"""
+            import subprocess as _sp
+            import sys as _sys
+            _sid = params.get("_schedule_id", "?")
+            _cmd = list(params.get("_schedule_command") or [])
+            if not _cmd:
+                logger.warning(f"[task:script] {_sid} 无 command，跳过")
+                return
+            _cmd = [_sys.executable if c == "__PYTHON__" else c for c in _cmd]
+            _backend_dir = os.path.dirname(os.path.abspath(__file__))
+            r = _sp.run(_cmd, cwd=_backend_dir, capture_output=True, text=True,
+                        timeout=int(params.get("timeout_seconds", 1800)))
+            _tail = ((r.stdout or "") + (r.stderr or ""))[-800:]
+            if r.returncode != 0:
+                logger.error(f"[task:script] {_sid} rc={r.returncode} 输出尾部:\n{_tail}")
+                raise RuntimeError(f"script task {_sid} rc={r.returncode}")
+            logger.info(f"[task:script] {_sid} 完成 rc=0 输出尾部:\n{_tail}")
+
+        register_task_handler("script", _task_script)
 
         start_scheduler()
         print("[Scheduler] v4.0 定时调度服务已启动")
