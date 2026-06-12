@@ -1,0 +1,27 @@
+{
+  "id": "daily-cache-purge-watchdog",
+  "name": "缓存清理任务看门狗（查心跳+补救+告警）",
+  "task_type": "script",
+  "trigger_type": "cron",
+  "cron": "40 9 * * *",
+  "enabled": true,
+  "catchup_window_hours": 6,
+  "cooldown_hours": 0,
+  "command": [
+    "__PYTHON__",
+    "scripts/cache_purge_watchdog.py"
+  ],
+  "description": "每日09:40 检查 daily-cache-purge-vacuum(04:30) 是否真实跑过：读 data/cache_purge_heartbeat.json（effect-based，不信 last_status——scheduler handler 异常时仍记 success）。心跳>26h → 自动补跑 cache_purge_vacuum.py → 仍失败发飞书告警(NOTIFICATION_WEBHOOK_URL)。铁律：定时任务必须有看门狗+补救+告警。",
+  "last_run": null,
+  "created_at": "2026-06-12T00:00:00",
+  "host_constraint": null,
+  "preflight_local_llm": false,
+  "llm_strategy": "none",
+  "run_count": 0,
+  "last_status": "pending",
+  "created_by": "claude",
+  "created_by_uuid": "aaac6ff8-d4a6-ce54-1d0b-0538426b0028",
+  "schema_version": "1.0",
+  "recent_runs": [],
+  "agent_hint": "jobmaster"
+}
