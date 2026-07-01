@@ -5605,6 +5605,14 @@ def _kb_startup_sync_and_warn():
     except Exception as e:
         logger.warning("[KB] lifespan startup: incremental sync failed (non-fatal): %s", e)
 
+    # 启动自愈：若 kb_compiled 被误清为空且备份存在，自动恢复（不依赖人工调 restore 端点）
+    try:
+        _restored = kb_runtime_service.auto_restore_compiled_if_empty()
+        if _restored:
+            logger.warning("[KB] lifespan startup: auto-restored %d kb_compiled entries from backup", _restored)
+    except Exception as e:
+        logger.warning("[KB] lifespan startup: auto-restore failed (non-fatal): %s", e)
+
     # Compare converted/ directories vs compiled entries in documents table
     try:
         import os as _os

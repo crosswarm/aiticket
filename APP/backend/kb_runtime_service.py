@@ -111,6 +111,10 @@ class KnowledgeRuntimeService:
         self.sqlite_path = (sqlite_path or (self._data_root / "sqlite" / "kb_chunks.db")).resolve()
         self.chroma_path = (chroma_path or (self._data_root / "chroma" / "kb")).resolve()
         self.ticket_chroma_path = (ticket_chroma_path or (self._data_root / "chroma" / "ticket")).resolve()
+        # 受保护条目(kb_compiled 等)的 JSON 备份路径——备份写与恢复读的单一真相源。
+        # 历史 bug: _backup 写 _data_root/sqlite/，_restore 却读 project_root/data/sqlite/（缺 APP/ 段）
+        # → restore 永远找不到备份、每次 sync 后编译条目归零。收敛到此属性杜绝再次漂移。
+        self._compiled_backup_path = (self._data_root / "sqlite" / "kb_compiled_backup.json")
         self.apcom_cache_path = self.kb_root / "OUTPUT" / "apcom_docs" / "manifest.json"
         self.hybrid_index = KnowledgeHybridIndex(self.sqlite_path, self.chroma_path)
         self.local_builder = KBLocalBuilder(project_root=self.project_root, kb_root=self.kb_root, topic_file=self.topic_file)
@@ -407,7 +411,8 @@ class KnowledgeRuntimeService:
         if preserved_count > 0 and post_total < preserved_count:
             print(f"[KBService] ⚠️ sync 后受保护条目从 {preserved_count} 降至 {post_total}，从 JSON 备份恢复...")
             restored = self._restore_from_backup()
-            print(f"[KBService] 恢复完成: {restored} 条（补回 {preserved_count - post_total} 条差额）")
+            # 恢复后强校验：仍不足则 raise，不再静默吞——让 kb-refresh schedule 标 failed 被看门狗抓到
+            self._assert_preserved_restored(preserved_count, restored)
 
         return {
             "ok": True,
@@ -429,7 +434,7 @@ class KnowledgeRuntimeService:
             rows = self.hybrid_index.list_by_source_kinds(_PRESERVED_SOURCE_KINDS)
             if not rows:
                 return 0
-            backup_path = self._data_root / "sqlite" / "kb_compiled_backup.json"
+            backup_path = self._compiled_backup_path
             backup_path.parent.mkdir(parents=True, exist_ok=True)
             existing: list = []
             if backup_path.exists():
@@ -452,7 +457,7 @@ class KnowledgeRuntimeService:
     def _restore_from_backup(self) -> int:
         """从最新的 JSON 备份恢复受保护条目。返回恢复条目数。"""
         import json as _json
-        backup_path = self.project_root / "data" / "sqlite" / "kb_compiled_backup.json"
+        backup_path = self._compiled_backup_path
         if not backup_path.exists():
             print("[KBService] 无备份文件，无法恢复")
             return 0
@@ -475,6 +480,36 @@ class KnowledgeRuntimeService:
             return restored
         except Exception as e:
             print(f"[KBService] 恢复失败: {e}")
+            return 0
+
+    def _assert_preserved_restored(self, preserved_count: int, restored: int) -> None:
+        """sync 恢复后强校验：受保护条目仍不足则 raise（不静默吞，让 schedule 标 failed）。"""
+        post_total2 = (self.hybrid_index.count_by_source_kind('kb_compiled')
+                       + self.hybrid_index.count_by_source_kind('user_contributed'))
+        print(f"[KBService] 恢复完成: {restored} 条，恢复后受保护条目 {post_total2}/{preserved_count}")
+        if post_total2 < preserved_count:
+            raise RuntimeError(
+                f"KB sync 受保护条目未能补齐: {post_total2}/{preserved_count} "
+                f"(备份路径={self._compiled_backup_path})"
+            )
+
+    def auto_restore_compiled_if_empty(self) -> int:
+        """启动自愈：kb_compiled 为空且备份存在时自动恢复。返回恢复条目数。
+
+        让任何一次误清（sync 冲掉、DB 重建等）在下次启动即自愈，不依赖人工调
+        POST /api/kb/restore-compiled。仅在确实为空时触发，非空不动。
+        """
+        try:
+            if self.hybrid_index.count_by_source_kind("kb_compiled") > 0:
+                return 0
+            if not self._compiled_backup_path.exists():
+                return 0
+            restored = self._restore_from_backup()
+            if restored:
+                print(f"[KBService] 启动自愈：kb_compiled 为空，从备份恢复 {restored} 条")
+            return restored
+        except Exception as e:
+            print(f"[KBService] 启动自愈失败（非致命）: {e}")
             return 0
 
     def draft(
