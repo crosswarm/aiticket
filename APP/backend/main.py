@@ -303,7 +303,9 @@ def _resolve_jira_base_url(binding_base_url: Optional[str] = None) -> Optional[s
     role = os.environ.get("AITICKET_ROLE", "mini").lower()
     if role == "qcl":
         return os.environ.get("MINI_PROXY_URL", "http://127.0.0.1:5001")
-    return binding_base_url or None
+    # 优先用绑定里保存的地址（自建实例应来自用户粘贴的 cURL）；
+    # 兜底到 JIRA_BASE_URL 环境变量，避免空值导致 [Errno 8] DNS 解析失败。
+    return binding_base_url or os.environ.get("JIRA_BASE_URL") or None
 
 
 def build_request_jira_client(request: Request, require_binding: bool = True) -> Optional[JiraService]:
