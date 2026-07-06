@@ -1737,6 +1737,12 @@
             }
         }
 
+        // 客户自己的 Jira 地址（自建实例各不相同，绝不能写死占位符）
+        window.__jiraBaseUrl = window.__jiraBaseUrl || '';
+        function jiraBaseUrl(){ return (window.__jiraBaseUrl || '').replace(/\/+$/, ''); }
+        function jiraBrowseHref(key){ var b = jiraBaseUrl(); return b ? (b + '/browse/' + key) : '#'; }
+        function openJiraHome(){ var b = jiraBaseUrl(); if (b) { window.open(b, '_blank'); } else { alert('请先在「账号设置 → Jira 绑定」里填写你的 Jira 地址'); } }
+
         async function loadBindingStatus() {
             try {
                 var [jiraResp, pmResp] = await Promise.all([
@@ -1745,6 +1751,7 @@
                 ]);
                 if (jiraResp.ok) {
                     var jiraData = await jiraResp.json();
+                    if (jiraData.binding && jiraData.binding.jira_base_url) window.__jiraBaseUrl = jiraData.binding.jira_base_url;
                     var jiraDot = document.getElementById('jira-binding-dot');
                     if (jiraDot) jiraDot.style.background = (jiraData.binding && jiraData.binding.has_token) ? '#22c55e' : '#ef4444';
                 }
@@ -1771,7 +1778,7 @@
                 var html = '<div id="jira-session-expired-banner" style="display:none;position:sticky;top:0;z-index:60;background:#fef2f2;border-bottom:2px solid #ef4444;padding:10px 16px;font-size:13px;color:#991b1b;display:flex;align-items:center;justify-content:space-between;gap:10px;">'
                     + '<div><span style="font-weight:600;">⚠️ Jira Session 已过期</span> — 看板数据无法加载。请在 Chrome 中打开 Jira 页面重新登录，然后<strong>重新绑定</strong>。</div>'
                     + '<div style="display:flex;gap:6px;">'
-                    + '<button onclick="window.open(\'https://jira.example.com\',\'_blank\')" style="padding:4px 10px;background:#dc2626;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;">🔗 打开 Jira</button>'
+                    + '<button onclick="openJiraHome()" style="padding:4px 10px;background:#dc2626;color:#fff;border:none;border-radius:6px;font-size:12px;cursor:pointer;">🔗 打开 Jira</button>'
                     + '<button onclick="openAccountSettings()" style="padding:4px 10px;background:#fff;color:#991b1b;border:1px solid #ef4444;border-radius:6px;font-size:12px;cursor:pointer;">🔧 重新绑定</button>'
                     + '<button onclick="document.getElementById(\'jira-session-expired-banner\').style.display=\'none\'" style="padding:4px 8px;background:transparent;color:#991b1b;border:none;cursor:pointer;font-size:16px;">✕</button>'
                     + '</div></div>';
@@ -1932,6 +1939,7 @@
         async function saveJiraBinding() {
             var mode = document.querySelector('input[name="jira-auth-mode"]:checked').value;
             var baseUrl = document.getElementById('settings-jira-url').value.trim();
+            if (baseUrl) window.__jiraBaseUrl = baseUrl;  // 即时更新全局地址
             try {
                 var r, d;
                 if (mode === 'session_cookie') {
@@ -2010,6 +2018,16 @@
             return result;
         }
 
+        // 从粘贴的 cURL 中提取请求的 origin（scheme://host[:port]）——即客户自己的 Jira 地址。
+        // 绝不能写死占位符，否则自建实例会拿占位域名去解析导致 [Errno 8] DNS 失败。
+        function parseCurlForBaseUrl(text) {
+            // 优先取 `curl '<url>'` 里紧跟 curl 的 URL；否则取文本中第一个 http(s) 地址
+            var m = text.match(/curl\s+['"]?(https?:\/\/[^\/\s'"]+)/i);
+            if (m) return m[1];
+            m = text.match(/https?:\/\/[^\/\s'"]+/i);
+            return m ? m[0] : '';
+        }
+
         async function pasteCurlImportAndTest(kind) {
             var text = document.getElementById('paste-curl-input').value.trim();
             var feedback = document.getElementById('paste-curl-feedback');
@@ -2018,12 +2036,20 @@
             feedback.innerHTML = '<span style="color:#64748b;">🔍 解析中...</span>';
 
             if (kind === 'jira') {
-                if (!cookies.JSESSIONID) { feedback.innerHTML = '<span style="color:#ef4444;">❌ 未找到 JSESSIONID（确认您粘贴的是 jira.example.com 的请求）</span>'; return; }
-                feedback.innerHTML = '<span style="color:#64748b;">✓ 解析到 JSESSIONID=' + cookies.JSESSIONID.substring(0,10) + '...' + (cookies.xsrf_token ? '，xsrf_token=' + cookies.xsrf_token.substring(0,10) + '...' : '（无 xsrf）') + '<br>💾 保存绑定中...</span>';
+                if (!cookies.JSESSIONID) { feedback.innerHTML = '<span style="color:#ef4444;">❌ 未找到 JSESSIONID（确认粘贴的是你已登录 Jira 的完整 cURL 请求）</span>'; return; }
+                // 从 cURL 识别客户自己的 Jira 地址；回退到「账号设置」里手填的 Base URL
+                var jiraBase = parseCurlForBaseUrl(text);
+                if (!jiraBase) {
+                    var _urlInput = document.getElementById('settings-jira-url');
+                    jiraBase = (_urlInput && _urlInput.value.trim()) || '';
+                }
+                if (!jiraBase) { feedback.innerHTML = '<span style="color:#ef4444;">❌ 无法从 cURL 中识别 Jira 地址。请确认整段 cURL 含你的 Jira 网址（形如 <code>curl \'https://你的Jira域名/rest/...\'</code>），或先在「账号设置 → Jira Base URL」填写后重试。</span>'; return; }
+                window.__jiraBaseUrl = jiraBase;  // 即时更新全局地址，跳转链接立即生效
+                feedback.innerHTML = '<span style="color:#64748b;">✓ 解析到 JSESSIONID=' + cookies.JSESSIONID.substring(0,10) + '...' + (cookies.xsrf_token ? '，xsrf_token=' + cookies.xsrf_token.substring(0,10) + '...' : '（无 xsrf）') + '｜Jira=' + jiraBase + '<br>💾 保存绑定中...</span>';
                 try {
                     var sr = await fetch(API_BASE+'/api/settings/jira-session-binding', {
                         method: 'POST', headers: {'Content-Type':'application/json'},
-                        body: JSON.stringify({jsessionid: cookies.JSESSIONID, xsrf_token: cookies.xsrf_token || '', jira_base_url: 'https://jira.example.com'})
+                        body: JSON.stringify({jsessionid: cookies.JSESSIONID, xsrf_token: cookies.xsrf_token || '', jira_base_url: jiraBase})
                     });
                     if (!sr.ok) { var e = await sr.json(); feedback.innerHTML = '<span style="color:#ef4444;">❌ 保存失败: ' + (e.detail || e.message) + '</span>'; return; }
                     feedback.innerHTML = '<span style="color:#64748b;">✓ 已保存<br>🧪 测试连接中...</span>';
@@ -2034,8 +2060,12 @@
                     if (jd.status === 'ok' || wc.status === 'ok') {
                         feedback.innerHTML = '<span style="color:#10b981;">✅ 绑定成功！Jira 连接 OK (session: ' + (jd.auth_method || 'session_cookie') + ')</span><br><span style="color:#64748b;font-size:11px;">3 秒后刷新页面加载数据...</span>';
                         setTimeout(function(){ location.reload(); }, 3000);
+                    } else if (jd.status === 'dns_failure' || (jd.error && /errno\s*8|nodename|servname|not known|getaddrinfo|name or service/i.test(jd.error))) {
+                        feedback.innerHTML = '<span style="color:#ef4444;">⚠️ 已保存，但无法解析 Jira 域名 ' + jiraBase + '（' + (jd.error || 'DNS 解析失败') + '）<br>这是<b>网络/地址问题，不是 session 过期</b>：请确认该 Jira 地址正确、且本服务器能访问它（内网 Jira 需连 VPN）。</span>';
+                    } else if ((wc.http_status || jd.http_status) === 401 || wc.status === 'auth_failure') {
+                        feedback.innerHTML = '<span style="color:#ef4444;">⚠️ 已保存，但 session 已过期（401 未授权）。请在 Jira 重新登录后再复制 cURL。</span>';
                     } else {
-                        feedback.innerHTML = '<span style="color:#ef4444;">⚠️ 已保存但测试失败: HTTP ' + (wc.http_status || '?') + ' ' + (wc.error || jd.error || '未知') + '<br>可能是 session 过期，请重新复制 cURL</span>';
+                        feedback.innerHTML = '<span style="color:#ef4444;">⚠️ 已保存但测试失败: HTTP ' + (wc.http_status || jd.status || '?') + ' ' + (wc.error || jd.error || '未知') + '</span>';
                     }
                 } catch(e) { feedback.innerHTML = '<span style="color:#ef4444;">❌ 请求失败: ' + e.message + '</span>'; }
             } else if (kind === 'pm') {
@@ -3658,7 +3688,7 @@
 
             document.getElementById('drawer-title').textContent = issue.summary || '无标题';
             document.getElementById('drawer-key').textContent = issue.key;
-            document.getElementById('drawer-jira-link').href = `https://jira.example.com/browse/${issue.key}`;
+            document.getElementById('drawer-jira-link').href = jiraBrowseHref(issue.key);
 
             const ai = issue.ai_analysis || {};
             const dueDate = issue.due_date ? formatDate(issue.due_date) : '无';
@@ -7732,7 +7762,7 @@ ${_colDecision(byKey)}
                         if (g3._legacy_note) body += `<div style="color:#a16207;font-style:italic;">${_esc(g3._legacy_note)}</div>`;
                         if (g3.candidate_key) {
                             const summary = g3.candidate_summary ? `<div style="margin-top:2px;color:#64748b;font-size:10px;">${_esc(g3.candidate_summary.slice(0,120))}${g3.candidate_summary.length>120?'…':''}</div>` : '';
-                            body += `<div><span style="color:#64748b;">主复用工单:</span> <a href="https://jira.example.com/browse/${g3.candidate_key}" target="_blank" style="color:#2563eb;font-family:monospace;font-weight:600">${g3.candidate_key}</a>${summary}</div>`;
+                            body += `<div><span style="color:#64748b;">主复用工单:</span> <a href="${jiraBrowseHref(g3.candidate_key)}" target="_blank" style="color:#2563eb;font-family:monospace;font-weight:600">${g3.candidate_key}</a>${summary}</div>`;
                         }
                         if (g3.composite_score != null) body += _row('综合相似度', _pct(g3.composite_score));
                         if (g3.reuse_strategy) {
