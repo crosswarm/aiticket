@@ -5,12 +5,16 @@ services:
       dockerfile: Dockerfile
     container_name: aiticket
     restart: unless-stopped
+    # PORT 只控宿主发布端口；容器内固定 18000（见 entrypoint.sh）。
     ports:
       - "${PORT:-18000}:18000"
     env_file:
-      - .env
+      - path: .env
+        required: false
     volumes:
-      - ./APP/backend/config/deployment.yaml:/app/config/deployment.yaml:ro
+      # 配置：镜像已内置默认 config/deployment.yaml，开箱即起。
+      # 如需自定义，去掉下一行注释并在 host 准备好该文件（cp deployment.yaml.example deployment.yaml）：
+      # - ./APP/backend/config/deployment.yaml:/app/APP/backend/config/deployment.yaml:ro
       - aiticket-data:/data
       - aiticket-logs:/app/logs
     healthcheck:
