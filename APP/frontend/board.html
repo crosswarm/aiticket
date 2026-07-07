@@ -7253,8 +7253,6 @@ ${_colDecision(byKey)}
         let pendingSuggestions = null;  // 待应用的AI推荐字段值（等字段选项加载完再设）
         const replyCache = new Map();   // issueKey → {content, data, timestamp}
         const gate1BlockedKeys = new Set(); // issues currently blocked by Gate 1
-        let _replyAbort = null;         // AbortController for in-flight generate-reply request
-        let _replyRequestSeq = 0;       // monotonic counter — stale responses are dropped
 
         // 把预计算结果从 gateStatusByKey 灌进 replyCache，让回复按钮零等待命中本地缓存
         function _seedReplyCacheFromGate(key, gateInfo) {
