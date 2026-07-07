@@ -36,6 +36,10 @@ _PRESERVED_SOURCE_KINDS: tuple[str, ...] = (
     'reply_example',
 )
 
+# 单文档 chunk 上限：防止大型转换文档(统计 xlsx/长 PDF 等)铺平成天量文本时切出
+# 数十万 chunk 撑爆整库(历史事故: 一个统计表 565383 chunk → 67G 库)。超限截断 + 告警。
+_MAX_CHUNKS_PER_DOC = 2000
+
 
 class LocalHashEmbeddingFunction:
     """Deterministic local embedding to keep Chroma usable without downloads."""
@@ -654,7 +658,11 @@ class KnowledgeHybridIndex:
             current = f"{current[-overlap:]}\n{line}".strip() if current else line
         if current:
             sections.append(current)
-        return sections or [text[:max_chars]]
+        sections = sections or [text[:max_chars]]
+        if len(sections) > _MAX_CHUNKS_PER_DOC:
+            print(f"[KBIndex] ⚠️ 单文档切出 {len(sections)} chunk 超上限 {_MAX_CHUNKS_PER_DOC}，截断（疑大型转换文档/统计表）")
+            sections = sections[:_MAX_CHUNKS_PER_DOC]
+        return sections
 
     def _search_fts(self, query: str, top_k: int, source_kind: str | None, category: str | None, project_key: str | None = None) -> list[dict[str, Any]]:
         tokens = [token for token in TOKEN_RE.findall(query or "") if token]
