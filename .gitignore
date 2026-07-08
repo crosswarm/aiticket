@@ -244,3 +244,6 @@ APP/backend/data/audits/
 APP/backend/data/retrieval_logs/
 APP/data/retrieval_logs/
 .understand-anything/
+
+# 本地 compose 覆盖（测试持久化，不入库）
+docker-compose.override.yml
