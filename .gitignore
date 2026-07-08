@@ -78,6 +78,9 @@ APP/frontend/node_modules/
 
 # Internal tool configs
 .claude/
+.codex/
+.agents/
+.worktrees/
 .omc/
 .agent/
 .gemini/
@@ -95,10 +98,13 @@ APP/frontend/node_modules/
 APP/backend/data/app_auth.db
 APP/backend/data/app_auth.db.*.bak*
 APP/backend/data/app_auth.key
+APP/backend/data/llm_config.json
 APP/backend/data/feishu_sessions.db
 APP/backend/data/requirements.db
 APP/backend/llm_config.json
 data/chroma_kb_runtime/
+data/cache/
+data/.demo_seeded
 data/sqlite/
 src
 
