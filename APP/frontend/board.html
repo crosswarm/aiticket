@@ -39,7 +39,8 @@
         .board-column {
             min-height: 200px;
             transition: all 0.3s ease;
-            max-width: 400px;
+            width: 100%;
+            max-width: none;
         }
 
         .issue-card {
@@ -2504,9 +2505,14 @@
 
         // 从缓存中恢复上次选择（key → {value, label}）
         const _cbSaved = _cbLoadStore();
+        function _getProjectCtxValue() {
+            return window.ProjectCtx && typeof window.ProjectCtx.get === 'function'
+                ? (window.ProjectCtx.get() || '')
+                : '';
+        }
 
         const _cbState = {
-            project:  { options: [], value: _cbSaved.project?.value  || ProjectCtx.get() || '',        label: _cbSaved.project?.label  || ProjectCtx.get() || '' },
+            project:  { options: [], value: _cbSaved.project?.value  || _getProjectCtxValue(),        label: _cbSaved.project?.label  || _getProjectCtxValue() },
             assignee: { options: [], value: _cbSaved.assignee?.value || 'currentUser()', label: _cbSaved.assignee?.label || '当前用户' },
         };
 
@@ -2712,7 +2718,7 @@
         // 将项目列表填充到 combobox（不覆盖用户已选的项目）
         function _applyProjects(projects) {
             if (!projects || !projects.length) return;
-            const savedVal = _cbState.project.value || ProjectCtx.get() || '';
+            const savedVal = _cbState.project.value || _getProjectCtxValue();
             const pinned = projects.find(p => p.key === savedVal);
             const rest = projects.filter(p => p.key !== savedVal);
             const ordered = pinned ? [pinned, ...rest] : projects;
@@ -2978,9 +2984,8 @@
                     boardData = result.data;
                     // ── Jira session 失效检测 ──
                     const jiraErr = result.jira_error || '';
-                    const isSessionExpired = /401|403|Unauthorized|Forbidden|auth_failure/i.test(jiraErr)
-                                             || result.data_source === 'unavailable';
-                    showJiraSessionBanner(isSessionExpired ? jiraErr : null);
+                    const isSessionExpired = result.data_source === 'unavailable';
+                    showJiraSessionBanner(isSessionExpired ? (jiraErr || 'Jira 不可达') : null);
                     // 同步更新用户菜单的 Jira 状态小红点
                     var jiraDot = document.getElementById('jira-binding-dot');
                     if (jiraDot) jiraDot.style.background = isSessionExpired ? '#ef4444' : '#10b981';
@@ -4428,8 +4433,8 @@
                 document.getElementById('rule-editor-title').textContent = '新建自动化规则';
                 document.getElementById('rule-edit-id').value = '';
                 document.getElementById('rule-name').value = '';
-                document.getElementById('rule-cond-project').value = ProjectCtx.get() || '';
-                document.getElementById('rule-cond-project-search').value = ProjectCtx.get() || '';
+                document.getElementById('rule-cond-project').value = _getProjectCtxValue();
+                document.getElementById('rule-cond-project-search').value = _getProjectCtxValue();
                 document.getElementById('rule-cond-type').value = '';
                 document.getElementById('rule-cond-keywords').value = '';
                 document.getElementById('rule-cond-assignee').value = '';
@@ -4663,8 +4668,8 @@
             });
             const gateBoard = document.getElementById('kanban-grid-gate');
             const dateBoard = document.getElementById('kanban-grid') || document.getElementById('board-container');
-            if (gateBoard) gateBoard.style.display = mode === 'gate' ? '' : 'none';
-            if (dateBoard) dateBoard.style.display = mode === 'date' ? '' : 'none';
+            if (gateBoard) gateBoard.style.display = mode === 'gate' ? 'flex' : 'none';
+            if (dateBoard) dateBoard.style.display = mode === 'date' ? 'grid' : 'none';
             // 闸门模式：隐藏与看板筛选无关的过滤栏，避免顶部大片空白
             const filterBar = document.querySelector('.filter-bar');
             if (filterBar) filterBar.style.display = mode === 'gate' ? 'none' : '';
