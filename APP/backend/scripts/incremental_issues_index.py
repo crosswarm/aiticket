@@ -8,11 +8,15 @@
 用法:
   python3 APP/backend/scripts/incremental_issues_index.py [--days N] [--project KEY] [--dry-run]
 """
+from __future__ import annotations
+
 import argparse
 import os
 import sys
 
-BACKEND = os.path.join(os.path.dirname(__file__), "..")
+SCRIPTS_DIR = os.path.dirname(__file__)
+BACKEND = os.path.join(SCRIPTS_DIR, "..")
+sys.path.insert(0, os.path.abspath(SCRIPTS_DIR))
 sys.path.insert(0, os.path.abspath(BACKEND))
 
 from config.loader import cfg
