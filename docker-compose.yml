@@ -22,7 +22,9 @@ services:
       - aiticket-data:/data
       - aiticket-logs:/app/logs
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:18000/api/board/stats"]
+      # --noproxy '*'：localhost 探活绝不走代理。否则若宿主 ~/.docker/config.json
+      # 配了 proxies（docker 会注入 HTTP_PROXY 到容器），健康探测会经代理失败→误报 unhealthy。
+      test: ["CMD", "curl", "-fsS", "--noproxy", "*", "http://localhost:18000/api/board/stats"]
       interval: 30s
       timeout: 10s
       retries: 5
