@@ -770,6 +770,58 @@ def _supervisor_direct_failed(sup) -> bool:
     )
 
 
+_BAD_REPLY_PREFIXES = (
+    "Error:", "模型调用失败:", "LLM 分析失败:",
+    "您好！工单标题", "您好！当前工单标题", "您好！您提交的工单标题",
+    "工单标题和描述均为空", "工单信息缺失", "当前工单标题和描述",
+)
+
+
+def _looks_like_analysis_template_reply(reply_content: str) -> bool:
+    """Detect analysis summaries that are not customer-facing replies."""
+    text = (reply_content or "").strip()
+    if not text:
+        return False
+    headings = ("【解决方案】", "【功能影响】", "【推荐处理】")
+    heading_hits = sum(1 for h in headings if h in text)
+    return heading_hits >= 2 and not text.startswith("您好")
+
+
+def _reply_gateway_has_no_evidence(reply_gateway: Optional[dict]) -> bool:
+    gates = (reply_gateway or {}).get("gates") or {}
+    g4 = gates.get("G4_specificity") or {}
+    return (
+        g4.get("level") == "none"
+        or (g4.get("verdict") == "fail" and int(g4.get("kb_evidence_count") or 0) == 0)
+    )
+
+
+def _reply_cache_block_reason(
+    reply_content: str,
+    *,
+    entry: Optional[dict] = None,
+    grounded_confidence: Optional[dict] = None,
+    reply_gateway: Optional[dict] = None,
+) -> str:
+    """Return a reason when a generated reply must not be reused as rich cache."""
+    text = (reply_content or "").strip()
+    if len(text) < 10:
+        return "empty_reply"
+    if any(text.startswith(p) for p in _BAD_REPLY_PREFIXES):
+        return "bad_prefix"
+    if _looks_like_analysis_template_reply(text):
+        return "analysis_template"
+
+    entry = entry or {}
+    gc = grounded_confidence or entry.get("grounded_confidence") or {}
+    gw = reply_gateway or entry.get("reply_gateway") or {}
+    if gc.get("evidence_status") == "no_evidence":
+        return "no_evidence"
+    if _reply_gateway_has_no_evidence(gw):
+        return "g4_no_evidence"
+    return ""
+
+
 def _cache_quality_gate(issue_key: str, new_entry: dict, existing: dict) -> tuple:
     """缓存写入质量门。返回 (allow, reason, merged_entry)。
     reason: "new_entry" | "llm_analysis_preserved" | "title_preserved" | "normal"
@@ -2598,7 +2650,9 @@ class BoardService:
 
     def generate_reply_content(self, issue_key: str, force: bool = False,
                                user_id: str = "", project_key: str = "",
-                               gate_mode: str = "decide_and_execute") -> Dict:
+                               gate_mode: str = "decide_and_execute",
+                               force_pass_gate1: bool = False,
+                               force_pass_gate2: bool = False) -> Dict:
         """
         基于AI分析结果生成智能回复内容
 
@@ -2625,9 +2679,11 @@ class BoardService:
             _early_entry = get_cached_reply_entry(issue_key, {})
             if _early_entry is not None and "grounded_confidence" in _early_entry:
                 _early_reply = _early_entry.get("reply_content", "")
-                _rich_bad_prefixes = ("Error:", "模型调用失败:", "LLM 分析失败:", "您好！工单标题", "您好！您提交的工单标题", "工单标题和描述均为空")
-                if _early_reply and len(_early_reply) >= 10 and not any(
-                        _early_reply.startswith(p) for p in _rich_bad_prefixes):
+                _cache_block_reason = _reply_cache_block_reason(
+                    _early_reply,
+                    entry=_early_entry,
+                )
+                if not _cache_block_reason:
                     print(f"[GenerateReply] 富缓存早期命中，跳过AI分析加载: {issue_key}")
                     _kb_scored = _early_entry.get("kb_hits_scored") or []
                     return {
@@ -2651,18 +2707,25 @@ class BoardService:
                         "issue_key": issue_key,
                         "reuse_score": _early_entry.get("reuse_score"),
                     }
+                print(f"[GenerateReply] 富缓存命中但质量门阻断: {issue_key} reason={_cache_block_reason}")
         # ─────────────────────────────────────────────────────────────────────
 
         # ── Gate 1: 信息完整性检查 ─────────────────────────────────────────────
-        gate1_result = self._run_gate1_completeness(issue_key, gate_mode=gate_mode)
-        if gate1_result is not None:
-            return gate1_result
+        if force_pass_gate1:
+            print(f"[Gate1] {issue_key}: force_pass_gate1=True，跳过完整性拦截")
+        else:
+            gate1_result = self._run_gate1_completeness(issue_key, gate_mode=gate_mode)
+            if gate1_result is not None:
+                return gate1_result
         # ─────────────────────────────────────────────────────────────────────
 
         # ── Gate 2: 分类正确性检查 ─────────────────────────────────────────────
-        gate2_result = self._run_gate2_classification(issue_key, gate_mode=gate_mode)
-        if gate2_result is not None:
-            return gate2_result
+        if force_pass_gate2:
+            print(f"[Gate2] {issue_key}: force_pass_gate2=True，跳过分类拦截")
+        else:
+            gate2_result = self._run_gate2_classification(issue_key, gate_mode=gate_mode)
+            if gate2_result is not None:
+                return gate2_result
         # ─────────────────────────────────────────────────────────────────────
 
         # Gate 4 具体度等级 —— 在 KB 证据填充后更新，这里先初始化默认值
@@ -3236,12 +3299,24 @@ class BoardService:
         # 7. 生成解决方案内容（始终用 LLM，即使无 KB 证据/范例也可基于 ai_analysis + product_facts 生成）
         solution_content = self._generate_styled_reply(ai_analysis, similar_issues, reply_examples, kb_evidence, module_category=module_category, user_id=user_id, specificity_level=_specificity_level)
 
+        _template_block_reason = _reply_cache_block_reason(solution_content)
+        if _template_block_reason in {"analysis_template", "empty_reply"}:
+            print(f"[GenerateReply] 阻断非正式回复输出: {issue_key} reason={_template_block_reason}")
+            return {
+                "reply_content": "",
+                "solution_content": "",
+                "ai_analysis": ai_analysis,
+                "word_count": 0,
+                "error": "当前生成结果为兜底分析模板，已阻止作为正式回复输出。请配置个人 LLM 凭据或补充知识库/相似工单证据后重试。",
+                "generation_method": "blocked_low_quality",
+                "specificity_level": _specificity_level,
+                "kb_sources": [item.get('name', '') for item in kb_evidence[:4]] if kb_evidence else [],
+                "kb_evidence_count": len(kb_evidence) if kb_evidence else 0,
+                "examples_used_count": len(reply_examples) if reply_examples else 0,
+            }
+
         # ── LLM 输出验证：检测空工单模板回复，回退到富缓存 ───────────────────────
-        _EMPTY_TICKET_PREFIXES = (
-            "您好！工单标题", "您好！当前工单标题", "您好！您提交的工单标题",
-            "工单标题和描述均为空", "工单信息缺失", "当前工单标题和描述",
-        )
-        if solution_content and any(solution_content.startswith(p) for p in _EMPTY_TICKET_PREFIXES):
+        if solution_content and any(solution_content.startswith(p) for p in _BAD_REPLY_PREFIXES):
             print(f"[CacheLeak] {issue_key}: LLM 输出为空工单模板，说明 analysis_cache title 仍为空，尝试富缓存回退")
             try:
                 from services.feishu_notifier import get_notifier
@@ -3251,7 +3326,7 @@ class BoardService:
             from reply_cache_service import get_cached_reply_entry as _gce
             _fb_entry = _gce(issue_key, {}) or {}
             _fb_reply = _fb_entry.get("reply_content", "")
-            if _fb_reply and len(_fb_reply) >= 10 and not any(_fb_reply.startswith(p) for p in _EMPTY_TICKET_PREFIXES):
+            if not _reply_cache_block_reason(_fb_reply, entry=_fb_entry):
                 print(f"[GenerateReply] 富缓存回退成功，使用历史回复: {issue_key} ({len(_fb_reply)}字)")
                 solution_content = _fb_reply
             else:
@@ -3505,16 +3580,25 @@ class BoardService:
                 for s in (similar_issues or [])[:5]
                 if (s.get("score") or 0) >= 0.25
             ]
-            save_cached_reply(issue_key, ai_analysis, solution_content, extra_fields={
-                "grounded_confidence": _grounded_conf,
-                "kb_hits_scored": _kb_scored_cache,
-                "similar_issues_scored": _sim_scored_cache,
-                "reply_strategy": _strategy_cache,
-                "reply_gateway": locals().get("_gw_result"),
-                "suggested_reply_method": suggested_fields.get('reply_method'),
-                "suggested_issue_type": suggested_fields.get('issue_type'),
-                "generation_method": "llm",
-            })
+            _cache_block_reason = _reply_cache_block_reason(
+                solution_content,
+                grounded_confidence=_grounded_conf,
+                reply_gateway=locals().get("_gw_result"),
+            )
+            if _cache_block_reason:
+                print(f"[GenerateReply] 不写入富缓存: {issue_key} reason={_cache_block_reason}")
+            else:
+                save_cached_reply(issue_key, ai_analysis, solution_content, extra_fields={
+                    "ai_analysis": ai_analysis,
+                    "grounded_confidence": _grounded_conf,
+                    "kb_hits_scored": _kb_scored_cache,
+                    "similar_issues_scored": _sim_scored_cache,
+                    "reply_strategy": _strategy_cache,
+                    "reply_gateway": locals().get("_gw_result"),
+                    "suggested_reply_method": suggested_fields.get('reply_method'),
+                    "suggested_issue_type": suggested_fields.get('issue_type'),
+                    "generation_method": "llm",
+                })
         else:
             print(f"[GenerateReply] 强制重新生成，不保存缓存: {issue_key}")
 

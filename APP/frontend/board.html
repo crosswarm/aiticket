@@ -3044,7 +3044,9 @@
             const _preloadOne = async (issue) => {
                 try {
                     const r = await fetch(`${API_BASE}/api/board/generate-reply`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', ...getJiraHeaders() },
+                        credentials: 'include',
                         body: JSON.stringify({ issue_key: issue.key, force: false, force_pass_gate1: true })
                     });
                     const d = await r.json();
@@ -5047,7 +5049,8 @@ ${_colDecision(byKey)}
                 try {
                     const r = await fetch(`${API_BASE}/api/board/generate-reply`, {
                         method: 'POST',
-                        headers: {'Content-Type':'application/json'},
+                        headers: {'Content-Type':'application/json', ...getJiraHeaders()},
+                        credentials: 'include',
                         body: JSON.stringify({issue_key: key, force: false}),
                     });
                     const data = await r.json();
@@ -5454,7 +5457,9 @@ ${_colDecision(byKey)}
                 for (const key of candidateKeys) {
                     try {
                         const r = await fetch(API_BASE+'/api/board/generate-reply', {
-                            method:'POST', headers:{'Content-Type':'application/json'},
+                            method:'POST',
+                            headers:{'Content-Type':'application/json', ...getJiraHeaders()},
+                            credentials:'include',
                             body: JSON.stringify({issue_key: key})
                         }).then(r=>r.json());
                         const pid = (r.data||r).pending_approval_id;
@@ -7423,11 +7428,15 @@ ${_colDecision(byKey)}
                     : _replyAbort.signal;
                 const response = await fetch(`${API_BASE}/api/board/generate-reply`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...getJiraHeaders() },
+                    credentials: 'include',
                     body: JSON.stringify({ issue_key: issueKey, force: force }),
                     signal: _fetchSig,
                 });
-                const data = await response.json();
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(data.detail || data.message || `生成失败（HTTP ${response.status}）`);
+                }
 
                 // 后端回声校验（后端已在所有响应路径加 issue_key）
                 if (data.issue_key && data.issue_key !== myKey) {
@@ -7501,6 +7510,12 @@ ${_colDecision(byKey)}
                     document.getElementById('re-solution').value = '';
                     document.getElementById('re-gen-details')?.classList.add('hidden');
                     console.warn('[Reply] 无AI分析数据:', msg);
+                    throw new Error(msg);
+                } else {
+                    const msg = data.message || '未能生成内容，请手动输入';
+                    document.getElementById('re-solution').placeholder = msg;
+                    document.getElementById('re-solution').value = '';
+                    document.getElementById('re-gen-details')?.classList.add('hidden');
                     throw new Error(msg);
                 }
             } catch (error) {
@@ -7892,10 +7907,14 @@ ${_colDecision(byKey)}
             try {
                 const response = await fetch(`${API_BASE}/api/board/generate-reply`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...getJiraHeaders() },
+                    credentials: 'include',
                     body: JSON.stringify({ issue_key: issueKey, force: true, force_pass_gate1: true })
                 });
-                const data = await response.json();
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(data.detail || data.message || `生成失败（HTTP ${response.status}）`);
+                }
                 if (data.status === 'llm_blocked') {
                     document.getElementById('re-solution').value = '';
                     document.getElementById('re-solution').placeholder = data.message || '该功能需要你配置个人 LLM 凭据后才能生成回复。';

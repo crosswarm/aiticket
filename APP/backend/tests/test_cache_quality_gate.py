@@ -5,7 +5,11 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from board_service_chroma import _cache_quality_gate, _supervisor_direct_failed
+from board_service_chroma import (
+    _cache_quality_gate,
+    _reply_cache_block_reason,
+    _supervisor_direct_failed,
+)
 
 
 class TestCacheQualityGate:
@@ -123,6 +127,42 @@ class TestSupervisorDirectFailClosed:
 
     def test_passing_score_ok(self):
         assert _supervisor_direct_failed(self._Sup(0.8)) is False
+
+
+class TestReplyCacheQualityGate:
+    def test_blocks_analysis_template_reply(self):
+        reply = "【解决方案】\n建议产品经理检查文档。\n\n【功能影响】\n文档需求\n\n【推荐处理】 产品经理"
+        assert _reply_cache_block_reason(reply) == "analysis_template"
+
+    def test_blocks_no_evidence_rich_cache(self):
+        entry = {
+            "grounded_confidence": {"evidence_status": "no_evidence"},
+            "reply_gateway": {
+                "gates": {
+                    "G4_specificity": {
+                        "verdict": "fail",
+                        "level": "none",
+                        "kb_evidence_count": 0,
+                    }
+                }
+            },
+        }
+        assert _reply_cache_block_reason("您好！已转达产品团队评估，谢谢", entry=entry) == "no_evidence"
+
+    def test_allows_customer_facing_reply_with_evidence(self):
+        entry = {
+            "grounded_confidence": {"evidence_status": "kb_only"},
+            "reply_gateway": {
+                "gates": {
+                    "G4_specificity": {
+                        "verdict": "pass",
+                        "level": "medium",
+                        "kb_evidence_count": 1,
+                    }
+                }
+            },
+        }
+        assert _reply_cache_block_reason("您好！该能力请按知识库路径配置后验证，谢谢", entry=entry) == ""
 
 
 class TestForceAnalyzeUserIdPassthrough:
