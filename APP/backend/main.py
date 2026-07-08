@@ -2126,8 +2126,7 @@ def _run_kb_refresh(task_id: str, force: bool) -> None:
     try:
         # 1. Build (scan orphans, update manifest)
         try:
-            from kb_local_builder import KBLocalBuilder
-            KBLocalBuilder().build()
+            kb_runtime_service.local_builder.build()
             _kb_refresh_tasks[task_id]["step"] = "build_done"
         except Exception as e:
             logger.warning("[kb/refresh] build step failed (non-fatal): %s", e)
@@ -5618,7 +5617,7 @@ def _kb_startup_sync_and_warn():
     # Compare converted/ directories vs compiled entries in documents table
     try:
         import os as _os
-        converted_root = Path(__file__).parent.parent.parent / "KB" / "OUTPUT" / "converted"
+        converted_root = kb_runtime_service.kb_root / "OUTPUT" / "converted"
         if converted_root.exists():
             disk_domains = {
                 d for d in _os.listdir(str(converted_root))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import zipfile
 from dataclasses import dataclass
@@ -31,11 +32,67 @@ class ParseResult:
     metadata_only: bool = False
 
 
+def _resolve_config_path(project_root: Path, raw_path: str | None) -> Path | None:
+    if not raw_path:
+        return None
+    expanded = Path(os.path.expandvars(raw_path))
+    return expanded if expanded.is_absolute() else project_root / expanded
+
+
+def _load_kb_config() -> dict[str, Any]:
+    try:
+        from config.loader import cfg
+
+        return cfg("kb") or {}
+    except Exception:
+        return {}
+
+
+def _default_data_root(project_root: Path) -> Path:
+    raw = os.environ.get("AITICKET_DATA_ROOT") or os.environ.get("DATA_DIR")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return (project_root / "APP" / "data").resolve()
+
+
+def _default_kb_root(project_root: Path, data_root: Path) -> Path:
+    env_root = os.environ.get("KB_ROOT")
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+
+    kb_cfg = _load_kb_config()
+    configured_raw = str(kb_cfg.get("root_dir") or "").strip()
+    configured = _resolve_config_path(project_root, kb_cfg.get("root_dir"))
+    if os.environ.get("AITICKET_DATA_ROOT") or os.environ.get("DATA_DIR"):
+        if configured_raw in {"", "KB", "./KB"}:
+            return (data_root / "kb").resolve()
+        if configured == Path("/data/kb") and data_root != Path("/data"):
+            return (data_root / "kb").resolve()
+        return (configured or (data_root / "kb")).resolve()
+
+    if configured and configured.exists():
+        return configured.resolve()
+    return (project_root / "KB").resolve()
+
+
+def _default_topic_file(project_root: Path) -> Path:
+    env_topic = os.environ.get("KB_TOPIC_FILE")
+    if env_topic:
+        return Path(env_topic).expanduser().resolve()
+
+    kb_cfg = _load_kb_config()
+    configured = _resolve_config_path(project_root, kb_cfg.get("topic_file"))
+    if configured and configured.exists():
+        return configured.resolve()
+    return (project_root / "APP" / "backend" / "data" / "topic.md").resolve()
+
+
 class KBLocalBuilder:
-    def __init__(self, project_root: Path, kb_root: Path | None = None, topic_file: Path | None = None) -> None:
-        self.project_root = Path(project_root).resolve()
-        self.kb_root = (kb_root or (self.project_root / "KB")).resolve()
-        self.topic_file = (topic_file or (self.project_root / "APP" / "backend" / "data" / "topic.md")).resolve()
+    def __init__(self, project_root: Path | None = None, kb_root: Path | None = None, topic_file: Path | None = None) -> None:
+        self.project_root = Path(project_root or Path(__file__).resolve().parents[2]).resolve()
+        self.data_root = _default_data_root(self.project_root)
+        self.kb_root = (kb_root.resolve() if kb_root else _default_kb_root(self.project_root, self.data_root))
+        self.topic_file = (topic_file.resolve() if topic_file else _default_topic_file(self.project_root))
         self.manifest_path = self.kb_root / "INDEX" / "manifest.json"
         self.converted_root = self.kb_root / "OUTPUT" / "converted"
         self.index_root = self.kb_root / "INDEX" / "FILES"
@@ -74,7 +131,7 @@ class KBLocalBuilder:
 
             parsed = self._parse_file(source_path)
             converted_rel_path = Path("KB") / "OUTPUT" / "converted" / source_path.relative_to(self.kb_root).with_suffix(".md")
-            converted_abs_path = self.project_root / converted_rel_path
+            converted_abs_path = self.kb_root / "OUTPUT" / "converted" / source_path.relative_to(self.kb_root).with_suffix(".md")
             converted_abs_path.parent.mkdir(parents=True, exist_ok=True)
             converted_text = self._render_converted_markdown(source_rel_path, source_path.stem, parsed)
             converted_abs_path.write_text(converted_text, encoding="utf-8")
@@ -247,7 +304,7 @@ class KBLocalBuilder:
             return contents, next_counter
 
         for md_path in sorted(self.converted_root.rglob("*.md")):
-            converted_path_str = (Path("KB") / md_path.relative_to(self.project_root / "KB")).as_posix()
+            converted_path_str = (Path("KB") / md_path.relative_to(self.kb_root)).as_posix()
             if converted_path_str in registered_converted:
                 continue
 

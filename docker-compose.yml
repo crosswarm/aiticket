@@ -15,6 +15,7 @@ services:
       # 认证库落到持久 volume（/data），否则 auth 在容器临时层，
       # 每次 rebuild/recreate 都丢 admin 账号与 Jira 绑定。
       - APP_AUTH_DB_PATH=/data/app_auth.db
+      - APP_AUTH_SECRET_PATH=/data/app_auth.key
     volumes:
       # 配置：镜像已内置默认 config/deployment.yaml，开箱即起。
       # 如需自定义，去掉下一行注释并在 host 准备好该文件（cp deployment.yaml.example deployment.yaml）：

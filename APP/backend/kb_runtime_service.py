@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import html
 import json
-import os
 import re
 import zipfile
 from collections import Counter
@@ -12,7 +11,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 from kb_hybrid_index import KnowledgeHybridIndex
-from kb_local_builder import KBLocalBuilder
+from kb_local_builder import KBLocalBuilder, _default_data_root, _default_kb_root, _default_topic_file
 
 
 SUPPORTED_APCOM_EXTENSIONS = {".md", ".txt", ".docx", ".pptx", ".xlsx", ".csv", ".sql", ".html", ".xml"}
@@ -101,13 +100,13 @@ class KnowledgeRuntimeService:
         llm_service: Any | None = None,
     ) -> None:
         self.project_root = (project_root or Path(__file__).resolve().parents[2]).resolve()
-        self.kb_root = (kb_root or (self.project_root / "KB")).resolve()
+        self._data_root = _default_data_root(self.project_root)
+        self.kb_root = (kb_root.resolve() if kb_root else _default_kb_root(self.project_root, self._data_root))
         self.apcom_root = (
             apcom_root
             or Path("/Volumes/MacMini/Users/cfone/Documents/用友/Docs/iuap-apcom-docs")
         ).resolve()
-        self.topic_file = (topic_file or (self.project_root / "APP" / "backend" / "data" / "topic.md")).resolve()
-        self._data_root = Path(os.environ.get("AITICKET_DATA_ROOT") or str(self.project_root / "APP" / "data"))
+        self.topic_file = (topic_file.resolve() if topic_file else _default_topic_file(self.project_root))
         self.sqlite_path = (sqlite_path or (self._data_root / "sqlite" / "kb_chunks.db")).resolve()
         self.chroma_path = (chroma_path or (self._data_root / "chroma" / "kb")).resolve()
         self.ticket_chroma_path = (ticket_chroma_path or (self._data_root / "chroma" / "ticket")).resolve()
@@ -229,7 +228,7 @@ class KnowledgeRuntimeService:
                     item["score"] = item.get("score", 0) + 0.08
             ranked_items.sort(key=lambda x: x.get("score", 0), reverse=True)
         source_groups = self._build_source_groups(ranked_items)
-        primary_materials = self._build_primary_materials(ranked_items)
+        primary_materials = self._build_primary_materials(ranked_items, query)
         return {
             "query": query,
             "items": ranked_items,
@@ -303,7 +302,7 @@ class KnowledgeRuntimeService:
         return merged[:top_k]
 
     def get_content(self, content_id: str) -> dict[str, Any] | None:
-        for item in self.get_manifest()["items"]:
+        for item in self._get_full_content_items():
             if item["content_id"] == content_id:
                 enriched = dict(item)
                 enriched["chunks"] = self.hybrid_index.get_chunks_for_content(content_id)
@@ -336,6 +335,9 @@ class KnowledgeRuntimeService:
                 },
             }
         return None
+
+    def _get_full_content_items(self) -> list[dict[str, Any]]:
+        return self._load_kb_items() + self._load_apcom_items()
 
     def get_metadata(self, content_id: str) -> dict[str, Any] | None:
         item = self.get_content(content_id)
@@ -428,7 +430,8 @@ class KnowledgeRuntimeService:
 
     def _backup_preserved_kinds(self) -> int:
         """sync 前把受保护 source_kind 导出到 JSON 备份（最多保留 3 份）。返回备份条目数。"""
-        import json as _json, time as _time
+        import json as _json
+        import time as _time
         from kb_hybrid_index import _PRESERVED_SOURCE_KINDS
         try:
             rows = self.hybrid_index.list_by_source_kinds(_PRESERVED_SOURCE_KINDS)
@@ -813,10 +816,12 @@ class KnowledgeRuntimeService:
             return "命中历史工单，但更适合作为侧证而非主资料。"
         return "与问题存在弱关联，建议与更高相关资料交叉验证。"
 
-    def _build_primary_materials(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _build_primary_materials(self, items: list[dict[str, Any]], query: str = "") -> list[dict[str, Any]]:
         selected: dict[str, dict[str, Any]] = {}
         for item in items:
             if item.get("source_kind") == "ticket_case":
+                continue
+            if self._has_negative_relevance_marker(item, query):
                 continue
             key = item.get("content_id") or item.get("name", "")
             existing = selected.get(key)
@@ -831,6 +836,25 @@ class KnowledgeRuntimeService:
             )
         )
         return primary_materials[:6]
+
+    def _has_negative_relevance_marker(self, item: dict[str, Any], query: str) -> bool:
+        text = " ".join(
+            str(item.get(key, "") or "")
+            for key in ("name", "summary", "chunk_text", "chunk_preview")
+        ).lower()
+        markers = ("无关", "不相关", "非相关", "不适用", "不属于")
+        marker_positions = [text.find(marker) for marker in markers if marker in text]
+        if not marker_positions:
+            return False
+
+        query_terms = [term for term in self._search_tokens(query) if len(term) >= 2]
+        if not query_terms:
+            return False
+        for pos in marker_positions:
+            window = text[max(0, pos - 32): pos + 32]
+            if any(term in window for term in query_terms):
+                return True
+        return False
 
     def _build_ticket_result_summary(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         tickets = [item for item in items if item.get("source_kind") == "ticket_case"]
@@ -922,9 +946,7 @@ class KnowledgeRuntimeService:
             if _src_for_mtime:
                 try:
                     import os as _os
-                    _mp = Path(_src_for_mtime)
-                    if not _mp.is_absolute():
-                        _mp = self.project_root / _mp
+                    _mp = self._resolve_project_path(_src_for_mtime)
                     _mtime = str(int(_os.path.getmtime(_mp)))
                 except Exception:
                     pass
@@ -1140,7 +1162,6 @@ class KnowledgeRuntimeService:
         elif item["source_kind"] == "kb_local":
             score += 0.4
         # 惩罚仅靠通用词(如"使用")命中的文档
-        import re as _re
         stop_words = {"使用", "操作", "配置", "如何", "怎么", "问题", "设置", "方案", "说明"}
         core_tokens = [t for t in tokens if t not in stop_words and len(t) >= 2]
         core_hits = sum(1 for t in core_tokens if t in haystack)
@@ -1368,17 +1389,26 @@ class KnowledgeRuntimeService:
 
         path = Path(raw_path)
         if not path.is_absolute():
-            if raw_path.startswith(("KB/", "APP/", "data/")):
+            if raw_path.startswith("KB/"):
+                return self.kb_root / raw_path[3:]
+            if raw_path.startswith("APP/"):
                 return self.project_root / raw_path
+            if raw_path.startswith("data/"):
+                return self._data_root / raw_path[5:]
             return self.kb_root / raw_path
 
         normalized = raw_path.replace("\\", "/")
         rerooted_path: Path | None = None
-        for root_name in ("KB", "APP", "data"):
+        reroot_map = {
+            "KB": self.kb_root,
+            "APP": self.project_root / "APP",
+            "data": self._data_root,
+        }
+        for root_name, root_path in reroot_map.items():
             marker = f"/{root_name}/"
             if marker in normalized:
                 suffix = normalized.split(marker, 1)[1]
-                rerooted_path = self.project_root / root_name / suffix
+                rerooted_path = root_path / suffix
                 if rerooted_path.exists():
                     return rerooted_path
                 break

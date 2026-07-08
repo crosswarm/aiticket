@@ -2,6 +2,8 @@
 set -euo pipefail
 
 DATA_DIR="${DATA_DIR:-/data}"
+export DATA_DIR
+export AITICKET_DATA_ROOT="${AITICKET_DATA_ROOT:-$DATA_DIR}"
 # 容器内固定监听 18000（对齐 EXPOSE / healthcheck / compose 容器侧）。
 # 宿主发布端口由 compose 的 ${PORT:-18000}:18000 控制，PORT 只改宿主侧，不改容器内。
 # 旧版容器内用 --port $PORT 而 compose 容器侧写死 18000，一旦 .env 改 PORT

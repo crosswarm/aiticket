@@ -238,6 +238,47 @@ def test_sync_builds_local_manifest_from_raw_source_file(tmp_path: Path):
     assert "未来审批查询" in converted_path.read_text(encoding="utf-8")
 
 
+def test_runtime_defaults_to_data_dir_kb_and_resolves_logical_paths(tmp_path: Path, monkeypatch):
+    from kb_runtime_service import KnowledgeRuntimeService
+
+    project_root = tmp_path / "repo"
+    data_dir = tmp_path / "runtime-data"
+    kb_root = data_dir / "kb"
+    topic_file = project_root / "topic.md"
+    source_file = kb_root / "流程中心" / "帮助文档" / "流程监控说明.md"
+
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text(
+        "# 流程监控说明\n\n流程监控支持未来审批人查询和人工干预。",
+        encoding="utf-8",
+    )
+    topic_file.parent.mkdir(parents=True, exist_ok=True)
+    topic_file.write_text("# 主题\n\n- [TOP-WF] 工作流\n", encoding="utf-8")
+
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.delenv("AITICKET_DATA_ROOT", raising=False)
+    monkeypatch.delenv("KB_ROOT", raising=False)
+
+    service = KnowledgeRuntimeService(
+        project_root=project_root,
+        apcom_root=tmp_path / "missing-apcom",
+        topic_file=topic_file,
+    )
+
+    result = service.sync(force_refresh=True)
+    manifest = json.loads((kb_root / "INDEX" / "manifest.json").read_text(encoding="utf-8"))
+    content_id = next(iter(manifest["contents"]))
+    content = service.get_content(content_id)
+
+    assert service.kb_root == kb_root.resolve()
+    assert service.sqlite_path == (data_dir / "sqlite" / "kb_chunks.db").resolve()
+    assert service.chroma_path == (data_dir / "chroma" / "kb").resolve()
+    assert result["ok"] is True
+    assert result["local_manifest_count"] == 1
+    assert content is not None
+    assert "未来审批人查询" in content["raw_content"]
+
+
 def test_search_bundle_includes_ticket_cases_and_source_groups(kb_fixture):
     from kb_runtime_service import KnowledgeRuntimeService
 

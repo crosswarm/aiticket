@@ -44,6 +44,36 @@ def test_local_builder_generates_relative_manifest_and_index_files(tmp_path: Pat
     assert index_path.exists()
 
 
+def test_local_builder_defaults_to_data_dir_kb(tmp_path: Path, monkeypatch):
+    from kb_local_builder import KBLocalBuilder
+
+    project_root = tmp_path / "repo"
+    data_dir = tmp_path / "runtime-data"
+    kb_root = data_dir / "kb"
+    topic_file = project_root / "topic.md"
+    source_file = kb_root / "流程中心" / "帮助文档" / "流程监控说明.md"
+
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.write_text("# 流程监控说明\n\n流程监控支持未来审批人查询和人工干预。", encoding="utf-8")
+    topic_file.parent.mkdir(parents=True, exist_ok=True)
+    topic_file.write_text("# 主题\n", encoding="utf-8")
+
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.delenv("AITICKET_DATA_ROOT", raising=False)
+    monkeypatch.delenv("KB_ROOT", raising=False)
+
+    builder = KBLocalBuilder(project_root=project_root, topic_file=topic_file)
+    result = builder.build()
+
+    manifest = json.loads((kb_root / "INDEX" / "manifest.json").read_text(encoding="utf-8"))
+    item = next(iter(manifest["contents"].values()))
+
+    assert builder.kb_root == kb_root.resolve()
+    assert result["content_count"] == 1
+    assert item["converted_path"] == "KB/OUTPUT/converted/流程中心/帮助文档/流程监控说明.md"
+    assert (kb_root / "OUTPUT" / "converted" / "流程中心" / "帮助文档" / "流程监控说明.md").exists()
+
+
 def test_local_builder_writes_degraded_stub_when_parser_returns_error(tmp_path: Path, monkeypatch):
     from kb_local_builder import KBLocalBuilder
 
