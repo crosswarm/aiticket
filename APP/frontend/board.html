@@ -10,19 +10,15 @@
     <link rel="stylesheet" href="/assets/ds/base.css">
     <link rel="stylesheet" href="/assets/ds/components.css">
     <link rel="stylesheet" href="/assets/ds/command-palette.css">
-    <link rel="stylesheet" href="assets/components/pipeline/pipeline.css">
-    <link rel="stylesheet" href="assets/components/pipeline/pipeline-drawer.css">
-    <script src="/assets/vendor/tailwind-browser.min.js"></script>
+    <link rel="stylesheet" href="/assets/components/pipeline/pipeline.css">
+    <link rel="stylesheet" href="/assets/components/pipeline/pipeline-drawer.css">
+    <script src="/assets/vendor/tailwind-browser.min.js" onerror="document.documentElement.classList.add('tailwind-fallback')"></script>
     <script src="/assets/vendor/marked.min.js"></script>
     <!-- Early fallback detection -->
     <script>
         (function() {
-            window.addEventListener('load', function() {
-                if (typeof window.tailwind === 'undefined') {
-                    console.error('[Board] Tailwind CSS failed to load from local vendor bundle');
-                    document.documentElement.classList.add('tailwind-fallback');
-                }
-            });
+            // @tailwindcss/browser v4 no longer exposes the old window.tailwind global.
+            // Fallback is enabled by the script onerror handler above when the bundle truly fails.
         })();
     </script>
     <style>

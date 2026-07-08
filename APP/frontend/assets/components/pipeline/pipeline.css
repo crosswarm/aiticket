@@ -1,0 +1,237 @@
+/* Pipeline canvas — compact visual flow used by reply gate settings. */
+
+.pl-canvas {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 160px;
+}
+
+.pl-stage-row {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  min-width: max-content;
+}
+
+.pl-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 220px;
+}
+
+.pl-stage-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ds-text-muted, #64748b);
+}
+
+.pl-node {
+  width: 220px;
+  min-height: 104px;
+  border: 1px solid var(--ds-border, #e2e8f0);
+  border-radius: 8px;
+  background: var(--ds-bg-surface, #fff);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.pl-node:hover {
+  border-color: var(--ds-accent, #4f46e5);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+}
+
+.pl-node-off {
+  opacity: 0.55;
+}
+
+.pl-node-alert {
+  border-color: var(--ds-warning, #f59e0b);
+}
+
+.pl-node-danger {
+  border-color: var(--ds-danger, #dc2626);
+}
+
+.pl-node-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 6px;
+}
+
+.pl-node-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--ds-info-subtle, #eef2ff);
+  color: var(--ds-accent, #4f46e5);
+  flex: 0 0 auto;
+}
+
+.pl-node-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ds-text-primary, #0f172a);
+  line-height: 1.25;
+}
+
+.pl-node-subtitle {
+  font-size: 11px;
+  color: var(--ds-text-muted, #64748b);
+  margin-top: 2px;
+}
+
+.pl-node-body {
+  padding: 0 12px 10px;
+}
+
+.pl-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pl-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 10px;
+  color: var(--ds-text-secondary, #475569);
+  background: var(--ds-bg-muted, #f1f5f9);
+}
+
+.pl-metric {
+  margin-top: 8px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--ds-bg-muted, #f1f5f9);
+  overflow: hidden;
+}
+
+.pl-metric-bar {
+  height: 100%;
+  background: var(--ds-success, #16a34a);
+}
+
+.pl-connection-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 96px;
+  min-width: max-content;
+}
+
+.pl-connection {
+  width: 136px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--ds-border, #e2e8f0);
+}
+
+.pl-connection-flowing {
+  background: var(--ds-accent, #4f46e5);
+}
+
+.pl-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  max-width: min(92vw, 560px);
+  transform: translateX(105%);
+  transition: transform 160ms ease;
+  z-index: 80;
+  background: var(--ds-bg-surface, #fff);
+  border-left: 1px solid var(--ds-border, #e2e8f0);
+  box-shadow: -16px 0 32px rgba(15, 23, 42, 0.12);
+  display: flex;
+  flex-direction: column;
+}
+
+.pl-drawer-open {
+  transform: translateX(0);
+}
+
+.pl-drawer-header,
+.pl-drawer-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--ds-border-subtle, #f1f5f9);
+}
+
+.pl-drawer-footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--ds-border-subtle, #f1f5f9);
+  border-bottom: 0;
+}
+
+.pl-drawer-title {
+  flex: 1 1 auto;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ds-text-primary, #0f172a);
+}
+
+.pl-drawer-close {
+  border: 0;
+  background: transparent;
+  color: var(--ds-text-muted, #64748b);
+  cursor: pointer;
+  padding: 4px;
+}
+
+.pl-drawer-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.pl-field {
+  margin-bottom: 12px;
+}
+
+.pl-field-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ds-text-secondary, #475569);
+  margin-bottom: 5px;
+}
+
+.pl-field-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--ds-text-muted, #64748b);
+}
+
+.pl-stats-block {
+  border: 1px solid var(--ds-border-subtle, #f1f5f9);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.pl-stats-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--ds-text-secondary, #475569);
+}
+
+.pl-stats-row + .pl-stats-row {
+  margin-top: 5px;
+}
+
+.pl-stats-val {
+  font-weight: 650;
+  color: var(--ds-text-primary, #0f172a);
+}

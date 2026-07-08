@@ -394,6 +394,7 @@ def get_system_role():
 
 # 健康检查端点
 @app.get("/health")
+@app.get("/api/health")
 async def health_check():
     """服务健康检查"""
     try:
@@ -971,6 +972,16 @@ def read_root():
 def read_login_page():
     return frontend_html_response("login.html")
 
+
+@app.get("/favicon.ico")
+@app.head("/favicon.ico")
+def read_favicon():
+    favicon = os.path.join(FRONTEND_DIR, "stackedit", "icons-c75a9472175cc17394ba6428d867fbcf", "favicon.ico")
+    if os.path.exists(favicon):
+        return FileResponse(favicon, media_type="image/x-icon")
+    raise HTTPException(status_code=404)
+
+
 @app.get("/search.html")
 def read_search_page():
     return frontend_html_response("index.html")
@@ -1025,6 +1036,22 @@ def read_demo_page(page: str):
         return frontend_html_response(fn)
     from fastapi import HTTPException
     raise HTTPException(status_code=404)
+
+
+@app.get("/api/instance/config")
+def get_instance_config_api():
+    """Expose non-secret deployment metadata used by the frontend project switcher."""
+    from config.loader import get_instance_config
+
+    config = get_instance_config()
+    instance = config.get("instance", {}) or {}
+    return {
+        "name": instance.get("name", "AITicket"),
+        "slug": instance.get("slug", "aiticket"),
+        "primary_project_key": instance.get("primary_project_key", ""),
+        "allowed_project_keys": instance.get("allowed_project_keys", []),
+        "module_taxonomy": config.get("module_taxonomy", []),
+    }
 
 
 
