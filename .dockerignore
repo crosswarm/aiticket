@@ -1,0 +1,76 @@
+# .dockerignore —— 排除构建垃圾与运行时状态，避免烘焙进镜像。
+# 关键：Docker 构建上下文不看 .gitignore，若不排除，本地 gitignored 的
+# app_auth.db 等运行时文件会被 COPY 进镜像（曾导致镜像内置一个预置 admin，
+# 客户 bootstrap 报 409）。此文件镜像 .gitignore 的运行时排除项。
+
+# --- 版本控制 / 开发目录 ---
+.git
+.gitignore
+.worktrees/
+.agents/
+.claude/
+.codex/
+*.md.orig
+
+# --- Python 构建垃圾 ---
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# --- 前端 / node ---
+node_modules/
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+._*
+
+# --- 实例配置（含 secrets，不进镜像；镜像用 *.example 生成默认）---
+.env
+docker-compose.override.yml
+APP/backend/config/deployment.yaml
+APP/backend/llm_config.json
+
+# --- 运行时数据库 & 状态（挂载自 /data volume，不进镜像）---
+APP/backend/data/app_auth.db
+APP/backend/data/app_auth.key
+APP/backend/data/*.db
+APP/backend/data/jobmaster_state.json*
+APP/backend/data/jobmaster_events.jsonl
+APP/backend/data/operation_history.jsonl
+APP/backend/data/handover_suggestion_cache.json
+APP/backend/data/.product_facts_mtime
+APP/backend/data/sqlite/
+APP/backend/data/reply_trainer/
+APP/backend/data/training_mem0_chroma/
+APP/backend/data/data_cache/
+APP/backend/data/chroma*/
+**/*.backup.*
+**/*.bak
+
+# --- ChromaDB 向量库 ---
+chroma_db/
+chroma_db_backup*/
+chroma_db.backup*/
+
+# --- 日志 ---
+*.log
+nohup.out
+APP/backend/logs/
+
+# --- 大目录 / 非镜像必需（运行时用 /data volume）---
+KB/
+conclusion/
+design/
+playwright-report/
