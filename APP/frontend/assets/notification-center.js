@@ -17,9 +17,19 @@
   // ── 初始化 ──────────────────────────────────────────────────────
   NC.init = function () {
     _injectBanner();
-    _requestPermission();
-    _connectSSE();
+    _connectSSEIfAllowed();
   };
+
+  function _connectSSEIfAllowed() {
+    fetch("/api/auth/me", { credentials: "include" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (!d || !d.user || d.user.role !== "admin") return;
+        _requestPermission();
+        _connectSSE();
+      })
+      .catch(function () {});
+  }
 
   // ── 浏览器通知权限 ───────────────────────────────────────────────
   function _requestPermission() {
@@ -60,7 +70,9 @@
       });
 
       _sse.onerror = function () {
-        setTimeout(_connectSSE, 8000);
+        if (_sse) { try { _sse.close(); } catch (e) {} }
+        _sse = null;
+        setTimeout(_connectSSEIfAllowed, 8000);
       };
     } catch (e) {}
   }

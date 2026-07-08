@@ -22,9 +22,8 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from sse_starlette.sse import EventSourceResponse
 
 from agents.base import AgentStatus, AgentTask
 from agents.registry import AgentRegistry
@@ -457,9 +456,9 @@ async def sse_stream(request: Request):
                     break
                 try:
                     msg = queue.get_nowait()
-                    yield {"event": msg["event"], "data": msg["data"]}
+                    yield f"event: {msg['event']}\ndata: {msg['data']}\n\n"
                 except asyncio.QueueEmpty:
-                    yield {"event": "ping", "data": "{}"}
+                    yield "event: ping\ndata: {}\n\n"
                     await asyncio.sleep(20)
         finally:
             try:
@@ -467,9 +466,14 @@ async def sse_stream(request: Request):
             except ValueError:
                 pass
 
-    return EventSourceResponse(
+    return StreamingResponse(
         event_gen(),
-        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
     )
 
 
@@ -757,4 +761,3 @@ def delete_nickname(code: str, request: Request):
     from auth_service import get_auth_service
     get_auth_service().delete_user_nickname(uid, code)
     return {"ok": True, "code": code, "nickname": "restored_to_default"}
-
