@@ -428,50 +428,73 @@ class KnowledgeRuntimeService:
             "preserved_count": preserved_count,
         }
 
+    @staticmethod
+    def _merge_backup_items(*sources) -> dict:
+        """把多个来源(快照 items 列表)按 content_id 求并集，后来的覆盖同 id。仅保留有正文的条目。"""
+        merged: dict = {}
+        for items in sources:
+            for it in (items or []):
+                if not isinstance(it, dict):
+                    continue
+                cid = it.get("content_id")
+                if cid and (it.get("content") or "").strip():
+                    merged[cid] = it
+        return merged
+
+    @classmethod
+    def _load_backup_union(cls, data) -> dict:
+        """从备份 JSON（兼容旧 list-of-snapshots 与新 dict 格式）载入 content_id 并集。"""
+        snaps = data if isinstance(data, list) else [data]
+        item_lists = [s.get("items", []) for s in snaps if isinstance(s, dict)]
+        return cls._merge_backup_items(*item_lists)
+
     def _backup_preserved_kinds(self) -> int:
-        """sync 前把受保护 source_kind 导出到 JSON 备份（最多保留 3 份）。返回备份条目数。"""
-        import json as _json
-        import time as _time
+        """sync 前把受保护 source_kind 写入 JSON 备份（**高水位并集，只增不减**）。返回并集条目数。
+
+        rebuild 用「dump→物理全清→内存回填」保护 kb_compiled，回填被打断会砸到低谷；旧实现抓当下
+        live 值、只留 3 份、restore 取最新那份 → 低谷被当真相、好快照被挤出、覆盖率棘轮下滑流失。
+        改并集只增不减：备份永远保有历史最大集，rebuild 被打断留低值也能从并集恢复回满。
+        """
+        import json as _json, time as _time
         from kb_hybrid_index import _PRESERVED_SOURCE_KINDS
         try:
             rows = self.hybrid_index.list_by_source_kinds(_PRESERVED_SOURCE_KINDS)
-            if not rows:
-                return 0
             backup_path = self._compiled_backup_path
             backup_path.parent.mkdir(parents=True, exist_ok=True)
-            existing: list = []
+            prev_union: dict = {}
             if backup_path.exists():
                 try:
-                    existing = _json.loads(backup_path.read_text(encoding="utf-8"))
-                    if not isinstance(existing, list):
-                        existing = []
+                    prev_union = self._load_backup_union(_json.loads(backup_path.read_text(encoding="utf-8")))
                 except Exception:
-                    existing = []
-            existing.append({"ts": int(_time.time()), "items": rows})
-            # 只保留最近 3 份
-            existing = existing[-3:]
-            backup_path.write_text(_json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
-            print(f"[KBService] 已备份 {len(rows)} 条受保护数据 → {backup_path}")
-            return len(rows)
+                    prev_union = {}
+            merged = self._merge_backup_items(list(prev_union.values()), rows)
+            if not merged:
+                return 0
+            items = list(merged.values())
+            backup_path.write_text(
+                _json.dumps({"ts": int(_time.time()), "items": items}, ensure_ascii=False, indent=2),
+                encoding="utf-8")
+            print(f"[KBService] 已备份(高水位并集) {len(items)} 条受保护数据（live={len(rows)}, 历史={len(prev_union)}）→ {backup_path}")
+            return len(items)
         except Exception as e:
             print(f"[KBService] 备份受保护数据失败: {e}")
             return 0
 
     def _restore_from_backup(self) -> int:
-        """从最新的 JSON 备份恢复受保护条目。返回恢复条目数。"""
+        """从 JSON 备份的**高水位并集**恢复受保护条目（不再只取最新那份快照）。返回恢复条目数。"""
         import json as _json
         backup_path = self._compiled_backup_path
         if not backup_path.exists():
             print("[KBService] 无备份文件，无法恢复")
             return 0
         try:
-            snapshots = _json.loads(backup_path.read_text(encoding="utf-8"))
-            if not snapshots:
+            union = self._load_backup_union(_json.loads(backup_path.read_text(encoding="utf-8")))
+            items = list(union.values())
+            if not items:
                 return 0
-            latest = snapshots[-1]
-            items = latest.get("items", [])
             restored = 0
             for item in items:
+                item = dict(item)
                 content = item.pop("content", "")
                 if content.strip():
                     try:
@@ -479,7 +502,7 @@ class KnowledgeRuntimeService:
                         restored += 1
                     except Exception as e:
                         print(f"[KBService] 恢复条目失败 {item.get('content_id')}: {e}")
-            print(f"[KBService] 从备份恢复 {restored}/{len(items)} 条")
+            print(f"[KBService] 从备份并集恢复 {restored}/{len(items)} 条")
             return restored
         except Exception as e:
             print(f"[KBService] 恢复失败: {e}")
