@@ -416,6 +416,14 @@ class KnowledgeRuntimeService:
             # 恢复后强校验：仍不足则 raise，不再静默吞——让 kb-refresh schedule 标 failed 被看门狗抓到
             self._assert_preserved_restored(preserved_count, restored)
 
+        # sync 的全量 rebuild 写入大量数据撑大 WAL；持久读连接又钉住 WAL 无法自动 checkpoint
+        # → 长期累积到数十 G 拖垮写入(U 态 wedge)。每次 sync 末尾主动 checkpoint(TRUNCATE) 兜底收缩
+        # (有读者时降级为部分 checkpoint，仍能遏制无界增长)。
+        try:
+            self.hybrid_index.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception as _e:
+            print(f"[KBService] sync 末尾 WAL checkpoint 失败(非致命): {_e}")
+
         return {
             "ok": True,
             "sources": manifest["sources"],
