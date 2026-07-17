@@ -30,11 +30,13 @@ cp .env.example .env
 # 编辑 .env：填写 JIRA_BASE_URL 和至少一个 LLM API Key
 
 # 2. 启动
-docker compose up
+docker compose up -d
 
-# 3. 打开
+# 3. 创建首个管理员账号（系统不预置默认账号）
+docker compose exec aiticket python -m bootstrap.seed_admin --username admin --password '你的强密码'
+
+# 4. 打开，用上一步创建的账号登录
 open http://localhost:18000
-# 默认账号：admin / admin（首次登录请立即修改密码）
 ```
 
 > **最低要求**：Docker 20.10+、4 GB 内存、10 GB 磁盘
