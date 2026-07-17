@@ -190,8 +190,9 @@ cp APP/backend/config/deployment.yaml.example APP/backend/config/deployment.yaml
 cp .env.example .env
 # 编辑 .env 填写 LLM API Key
 docker compose up -d
-docker compose exec aiticket-api python -m bootstrap.seed_admin
-# → 打开浏览器 http://服务器IP
+# 创建首个管理员（compose 服务名 = aiticket；系统不预置默认账号）
+docker compose exec aiticket python -m bootstrap.seed_admin --username admin --password '你的强密码'
+# → 打开浏览器 http://服务器IP ，用上面创建的账号登录
 ```
 
 ---
