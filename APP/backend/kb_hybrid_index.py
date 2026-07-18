@@ -36,9 +36,19 @@ _PRESERVED_SOURCE_KINDS: tuple[str, ...] = (
     'reply_example',
 )
 
-# 单文档 chunk 上限：防止大型转换文档(统计 xlsx/长 PDF 等)铺平成天量文本时切出
-# 数十万 chunk 撑爆整库(历史事故: 一个统计表 565383 chunk → 67G 库)。超限截断 + 告警。
-_MAX_CHUNKS_PER_DOC = 2000
+# 单文档 chunk 上限：防止大型转换文档(统计 xlsx/长 PDF/手册红皮书等)铺平成天量文本时
+# 切出数十万 chunk 撑爆整库、并让长驻 daemon 反复把巨库载入内存导致泄漏。超限截断 + 告警。
+#
+# 为什么是 500（2026-07 数据实证 + 覆盖率权衡）:
+#   实测过切文档的 chunk 平均长度 ~880 字符、99.9% 的 chunk >=700 字符——即 chunk 已切到
+#   max_chars=900 的目标粒度，根因不是「切得太碎」而是「文档本身超大」(TOP 文档正文达
+#   ~176 万字符/篇)。serving 嵌入 bge-base-zh-v1.5 的 max_seq_length=512 token(约 500
+#   中文字符) < 900，再调大 chunk 只会丢向量尾——故唯一有效杠杆是压低单文档上限。
+#   正常手册(约 10 万字符)自然切成 ~130 片、落在 50-200 区间不受此上限影响；本上限只对
+#   少数「超大转换文档」这一病灶生效。500（而非更省内存的 300）是覆盖率权衡：给大手册
+#   保留前 ~45 万字符/篇进检索，同时把全库从 ~63 万压到约 18 万 chunk、封住单文档内存天花板。
+#   历史事故: 一个统计表 565383 chunk → 67G 库。
+_MAX_CHUNKS_PER_DOC = 500
 
 
 class LocalHashEmbeddingFunction:
@@ -96,6 +106,34 @@ class KnowledgeHybridIndex:
         from services.chroma_factory import get_chroma_client
         self.client = get_chroma_client(persist_path=str(self.chroma_path))
         self.collection = self._create_collection_with_recovery()
+
+    def reload(self) -> None:
+        """失效并原地重开本进程的 sqlite/chroma 句柄，反映外部进程(kb_sync_worker 子进程)
+        写入磁盘的最新状态。
+
+        为什么需要：deployable 同进程既 serve 又调度 KB sync。当 sync 改由独立子进程执行后
+        (根治长驻进程 chroma 内存累积泄漏)，本进程内的 chroma PersistentClient 仍缓存旧的
+        HNSW 内存段、sqlite 连接也停在旧快照 → 检索会读到陈旧结果。此方法在子进程 sync 成功后
+        被调用，重开连接消陈旧。
+
+        原地更新 self.conn / self.client / self.collection（不替换 self 对象、也不新建
+        KnowledgeHybridIndex 实例），保持本索引对象身份不变——使所有在构造期就捕获了本
+        hybrid_index 引用的下游(board/compile/auto_import 等)一并见到最新磁盘状态。
+        get_chroma_client 每次返回全新 PersistentClient(工厂不缓存)，故新 client 直接读盘。
+        """
+        with self._lock:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            self.conn = sqlite3.connect(self.sqlite_path, check_same_thread=False, timeout=30.0)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA synchronous=NORMAL")
+            self.conn.execute("PRAGMA busy_timeout=30000")
+            from services.chroma_factory import get_chroma_client
+            self.client = get_chroma_client(persist_path=str(self.chroma_path))
+            self.collection = self._create_collection_with_recovery()
 
     def rebuild(self, items: list[dict[str, Any]], text_loader: Callable[[dict[str, Any]], str]) -> dict[str, int]:
         """全量重建索引。fcntl flock 防止多进程同时 rebuild 损坏文件。

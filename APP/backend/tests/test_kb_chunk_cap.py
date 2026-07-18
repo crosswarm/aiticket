@@ -18,7 +18,9 @@ def test_chunk_cap_truncates_oversized_doc():
     text = "\n".join(f"line{i} " + "x" * 200 for i in range(10000))
     out = khi.KnowledgeHybridIndex._chunk_text(_idx(), text)
     assert len(out) == khi._MAX_CHUNKS_PER_DOC
-    assert khi._MAX_CHUNKS_PER_DOC == 2000
+    # 2026-07 实证下调：过切根因是「文档超大」而非「切太碎」(chunk 已达 900 目标粒度)，
+    # 且 bge-base-zh 512-token 窗口 < 900 使调大粒度无益 → 唯一杠杆是压低单文档上限。
+    assert khi._MAX_CHUNKS_PER_DOC == 500
 
 
 def test_chunk_cap_leaves_small_doc_untouched():

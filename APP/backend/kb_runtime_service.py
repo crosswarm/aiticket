@@ -121,6 +121,22 @@ class KnowledgeRuntimeService:
         self._topics: list[TopicNode] | None = None
         self._manifest_cache: dict[str, Any] | None = None
 
+    def reload_index(self) -> None:
+        """子进程 kb_sync_worker 改盘后，失效本进程内所有陈旧 KB 句柄与派生缓存。
+
+        deployable 无 jobmaster：同一进程既 serve 又调度 KB sync。sync 改为独立子进程执行
+        (根治长驻进程 chroma 内存累积泄漏)后，本进程内的 hybrid_index(sqlite 连接 + chroma
+        内存段) 与 manifest/topic 缓存都会停在 sync 前的旧快照 → 检索陈旧。故子进程 sync
+        成功后调用本方法：原地重开 hybrid_index(见 KnowledgeHybridIndex.reload)、清空
+        manifest 与 topic 缓存。全程原地重置(不替换本 service 对象)，使 board/compile 等
+        持有本 service 或其 hybrid_index 共享引用的下游一并刷新。"""
+        try:
+            self.hybrid_index.reload()
+        except Exception as e:
+            print(f"[KBService] reload_index: hybrid_index 重开失败(非致命): {e}")
+        self._manifest_cache = None
+        self._topics = None
+
     def get_topics(self) -> list[dict[str, Any]]:
         return [self._topic_to_dict(topic) for topic in self._load_topics()]
 

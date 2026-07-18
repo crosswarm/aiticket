@@ -6897,15 +6897,36 @@ if _RUN_BG and ENABLE_SCHEDULER:
 
         # 注册任务处理器：KB 增量 sync（每 30 分钟）
         def _task_kb_refresh_incremental(**kwargs):
-            """每 30 分钟：增量 sync KB（build + sync），仅处理变更文件"""
+            """每 30 分钟：增量 sync KB。改为独立子进程(scripts/kb_sync_worker.py)执行：
+            根治长驻进程内 chroma 索引段跨次 sync 内存累积不释放导致的泄漏——子进程退出即由
+            OS 完整回收内存。子进程改盘成功后重置本进程 KB 单例句柄(reload_index)以避免检索陈旧。"""
+            import subprocess as _sp
+            import sys as _sys
+            import json as _json
+            from pathlib import Path as _Path
             from services.feishu_notifier import get_notifier
             notifier = get_notifier()
+            _worker = _Path(__file__).resolve().parent / "scripts" / "kb_sync_worker.py"
             try:
-                result = kb_runtime_service.sync()
-                logger.info(
-                    f"[Scheduler] KB incremental sync done: chunks={result.get('chunk_count')}, "
-                    f"local_manifest={result.get('local_manifest_count')}"
+                _proc = _sp.run(
+                    [_sys.executable, str(_worker), "--mode", "incremental"],
+                    capture_output=True, text=True, timeout=1800,
+                    env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"},
                 )
+                if _proc.returncode != 0:
+                    raise RuntimeError(
+                        f"kb_sync_worker incremental rc={_proc.returncode} "
+                        f"stderr尾:\n{(_proc.stderr or '')[-600:]}"
+                    )
+                _lines = [ln for ln in (_proc.stdout or "").strip().splitlines() if ln.strip()]
+                _payload = _json.loads(_lines[-1]) if _lines else {}
+                logger.info(
+                    f"[Scheduler] KB incremental sync done (subprocess): "
+                    f"chunks={_payload.get('chunk_count')}, "
+                    f"local_manifest={_payload.get('local_manifest_count')}"
+                )
+                # 子进程已改盘 → 失效本进程内陈旧的 sqlite/chroma 句柄，使检索读到最新数据
+                kb_runtime_service.reload_index()
             except Exception as e:
                 logger.error(f"[Scheduler] KB incremental sync failed: {e}")
                 try:
@@ -6921,39 +6942,44 @@ if _RUN_BG and ENABLE_SCHEDULER:
 
         # 注册任务处理器：KB 全量 sync + compile（每日凌晨 2:00）
         def _task_kb_refresh_full(**kwargs):
-            """每日凌晨 2:00：全量 force_refresh sync + compile_all，防 KB 漂移"""
+            """每日凌晨 2:00：全量 force_refresh sync + compile_all，防 KB 漂移。改为独立子进程
+            (scripts/kb_sync_worker.py --mode full)执行：根治长驻进程 chroma 内存累积泄漏；worker
+            内部已含 sync(force_refresh=True) + compile_all，故 sync 或 compile 任一失败都会让子
+            进程非 0 退出、在此统一走 get_notifier() 告警。子进程改盘成功后重置本进程 KB 单例
+            句柄(reload_index)以避免检索陈旧。"""
+            import subprocess as _sp
+            import sys as _sys
+            import json as _json
+            from pathlib import Path as _Path
             from services.feishu_notifier import get_notifier
             notifier = get_notifier()
+            _worker = _Path(__file__).resolve().parent / "scripts" / "kb_sync_worker.py"
             try:
-                sync_result = kb_runtime_service.sync(force_refresh=True)
-                logger.info(
-                    f"[Scheduler] KB full sync done: chunks={sync_result.get('chunk_count')}, "
-                    f"local_manifest={sync_result.get('local_manifest_count')}"
+                _proc = _sp.run(
+                    [_sys.executable, str(_worker), "--mode", "full"],
+                    capture_output=True, text=True, timeout=7200,
+                    env={**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"},
                 )
+                if _proc.returncode != 0:
+                    raise RuntimeError(
+                        f"kb_sync_worker full rc={_proc.returncode} "
+                        f"stderr尾:\n{(_proc.stderr or '')[-600:]}"
+                    )
+                _lines = [ln for ln in (_proc.stdout or "").strip().splitlines() if ln.strip()]
+                _payload = _json.loads(_lines[-1]) if _lines else {}
+                logger.info(
+                    f"[Scheduler] KB full sync+compile done (subprocess): "
+                    f"chunks={_payload.get('chunk_count')}, "
+                    f"local_manifest={_payload.get('local_manifest_count')}, "
+                    f"compiled_topics={_payload.get('compiled_topics')}"
+                )
+                # 子进程已改盘(含 compile 写入 kb_compiled) → 失效本进程内陈旧句柄
+                kb_runtime_service.reload_index()
             except Exception as e:
                 logger.error(f"[Scheduler] KB full sync failed: {e}")
                 try:
                     notifier.send_message(
                         f"⚠️ KB 全量 sync 失败\n"
-                        f"原因：{str(e)[:300]}\n"
-                        f"任务：kb_refresh_full"
-                    )
-                except Exception:
-                    pass
-                return  # sync 失败不继续 compile
-            try:
-                from kb_compile_service import get_compile_service
-                compile_svc = get_compile_service()
-                if compile_svc is not None:
-                    compiled = compile_svc.compile_all()
-                    logger.info(f"[Scheduler] KB full compile done: {len(compiled)} topics compiled")
-                else:
-                    logger.warning("[Scheduler] KB full compile skipped: compile_service not initialized")
-            except Exception as e:
-                logger.error(f"[Scheduler] KB full compile failed: {e}")
-                try:
-                    notifier.send_message(
-                        f"⚠️ KB 全量 compile 失败\n"
                         f"原因：{str(e)[:300]}\n"
                         f"任务：kb_refresh_full"
                     )
