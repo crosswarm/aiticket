@@ -596,12 +596,24 @@ window.DSLLMConfig = (function () {
       '" style="' +
       inputStyle +
       '"></label>' +
-      '<label style="font-size:var(--ds-text-sm);color:var(--ds-text-secondary);">Model Name' +
+      '<label style="font-size:var(--ds-text-sm);color:var(--ds-text-secondary);">Model Name (默认模型)' +
       '<input id="ds-llm-model" value="' +
       _esc(current.model_name) +
       '" style="' +
       inputStyle +
       '" placeholder="e.g. gemini-2.0-flash"></label>' +
+      '<label style="font-size:var(--ds-text-sm);color:var(--ds-text-secondary);">更多模型 (同一 Base URL 下，逗号分隔，可选)' +
+      '<input id="ds-llm-models" value="' +
+      _esc(
+        (current.models || [])
+          .filter(function (m) {
+            return m && m !== current.model_name;
+          })
+          .join(", "),
+      ) +
+      '" style="' +
+      inputStyle +
+      '" placeholder="如 qwen-max, qwen-plus（共用上面的 Key/Base URL）"></label>' +
       '<label style="font-size:var(--ds-text-sm);color:var(--ds-text-secondary);">Base URL (可选)' +
       '<input id="ds-llm-baseurl" value="' +
       _esc(current.base_url) +
@@ -734,12 +746,24 @@ window.DSLLMConfig = (function () {
       '" style="' +
       inputStyle +
       '"></label>' +
-      '<label style="font-size:var(--ds-text-sm);color:#92400e;">Model Name' +
+      '<label style="font-size:var(--ds-text-sm);color:#92400e;">Model Name (默认模型)' +
       '<input id="ds-sys-model" value="' +
       _esc(current.model_name) +
       '" style="' +
       inputStyle +
       '" placeholder="e.g. gemini-2.0-flash"></label>' +
+      '<label style="font-size:var(--ds-text-sm);color:#92400e;">更多模型 (同一 Base URL 下，逗号分隔，可选)' +
+      '<input id="ds-sys-models" value="' +
+      _esc(
+        (current.models || [])
+          .filter(function (m) {
+            return m && m !== current.model_name;
+          })
+          .join(", "),
+      ) +
+      '" style="' +
+      inputStyle +
+      '" placeholder="如 qwen-max, qwen-plus（共用上面的 Key/Base URL）"></label>' +
       '<label style="font-size:var(--ds-text-sm);color:#92400e;">Base URL (可选)' +
       '<input id="ds-sys-baseurl" value="' +
       _esc(current.base_url) +
@@ -759,11 +783,21 @@ window.DSLLMConfig = (function () {
 
   function saveSystem() {
     var provider = document.getElementById("ds-sys-provider").value;
+    var sysModel = document.getElementById("ds-sys-model").value;
+    var sysModelsEl = document.getElementById("ds-sys-models");
+    var sysExtra = ((sysModelsEl && sysModelsEl.value) || "")
+      .split(",")
+      .map(function (s) {
+        return s.trim();
+      })
+      .filter(Boolean);
+    var sysModels = [sysModel].concat(sysExtra).filter(Boolean);
     var payload = {
       provider: provider,
       api_key: document.getElementById("ds-sys-apikey").value,
-      model_name: document.getElementById("ds-sys-model").value,
+      model_name: sysModel,
       base_url: document.getElementById("ds-sys-baseurl").value,
+      models: sysModels,
     };
     fetch(SYSTEM_API, {
       method: "POST",
@@ -782,6 +816,7 @@ window.DSLLMConfig = (function () {
             api_key: payload.api_key,
             model_name: payload.model_name,
             base_url: payload.base_url,
+            models: payload.models,
           };
           if (typeof showToast === "function")
             showToast("系统级配置已保存", "success");
@@ -843,6 +878,8 @@ window.DSLLMConfig = (function () {
         var routing = data.routing || {};
         var features = data.features || [];
         var providers = data.available_providers || [];
+        var providerModels = data.provider_models || {};
+        var featureModels = data.feature_models || {};
         var fallback = data.fallback || {};
         var defaultProvider = routing._default || "";
 
@@ -858,20 +895,57 @@ window.DSLLMConfig = (function () {
         }
 
         function makeSelect(featureId, selected) {
+          // selected 可能是字符串（裸源或 源:model 端点 ref）或降级链数组；
+          // 数组时取首个用于回显（此简易单选 UI 不编辑整链，保存时覆盖为单值）。
+          var sel = Array.isArray(selected)
+            ? selected[0] || ""
+            : selected || "";
+          // 后端把 model 覆盖解耦存到 feature_models；回显时重建成 "源:model" 以匹配端点 option
+          var mdl = featureModels[featureId];
+          if (sel && mdl && sel.indexOf(":") === -1) sel = sel + ":" + mdl;
+          var matched = false;
           var opts =
             '<option value=""' +
-            (!selected ? " selected" : "") +
+            (!sel ? " selected" : "") +
             ">使用默认</option>";
           providers.forEach(function (p) {
+            var models = providerModels[p] || [];
+            opts += '<optgroup label="' + _esc(p) + '">';
+            // 裸源 = 跟随该源默认 model（动态）
+            if (p === sel) matched = true;
             opts +=
               '<option value="' +
-              p +
+              _esc(p) +
               '"' +
-              (p === selected ? " selected" : "") +
+              (p === sel ? " selected" : "") +
               ">" +
-              p +
-              "</option>";
+              _esc(p) +
+              " (默认模型)</option>";
+            // 端点 = 钉死到该源的具体 model
+            models.forEach(function (m) {
+              var ep = p + ":" + m;
+              if (ep === sel) matched = true;
+              opts +=
+                '<option value="' +
+                _esc(ep) +
+                '"' +
+                (ep === sel ? " selected" : "") +
+                ">" +
+                _esc(ep) +
+                "</option>";
+            });
+            opts += "</optgroup>";
           });
+          // 当前值未匹配任何 option（源被删/model 变更）→ 追加"已失效"兜底 option 并选中，
+          // 避免浏览器 fallback 到首项"使用默认"后被保存静默清掉原配置。
+          if (sel && !matched) {
+            opts +=
+              '<option value="' +
+              _esc(sel) +
+              '" selected>⚠ ' +
+              _esc(sel) +
+              "（当前值·已失效）</option>";
+          }
           return (
             '<select id="ds-fr-' +
             featureId +
@@ -971,11 +1045,21 @@ window.DSLLMConfig = (function () {
     var apiKey = document.getElementById("ds-llm-apikey").value;
     var modelName = document.getElementById("ds-llm-model").value;
     var baseUrl = document.getElementById("ds-llm-baseurl").value;
+    var modelsEl = document.getElementById("ds-llm-models");
+    var extraModels = ((modelsEl && modelsEl.value) || "")
+      .split(",")
+      .map(function (s) {
+        return s.trim();
+      })
+      .filter(Boolean);
+    // 默认模型排最前 + 其他模型；后端会再做去重/归一化
+    var models = [modelName].concat(extraModels).filter(Boolean);
     var payload = {
       provider: provider,
       api_key: apiKey,
       model_name: modelName,
       base_url: baseUrl,
+      models: models,
     };
     fetch(API, {
       method: "POST",
@@ -1002,6 +1086,7 @@ window.DSLLMConfig = (function () {
           api_key: apiKey,
           model_name: modelName,
           base_url: baseUrl,
+          models: models,
         };
         _cacheProvider(provider, payload);
         if (typeof showToast === "function")
@@ -1019,9 +1104,16 @@ window.DSLLMConfig = (function () {
     var keyEl = document.getElementById("ds-llm-apikey");
     var modelEl = document.getElementById("ds-llm-model");
     var baseEl = document.getElementById("ds-llm-baseurl");
+    var modelsEl = document.getElementById("ds-llm-models");
     if (keyEl) keyEl.value = c.api_key || "";
     if (modelEl) modelEl.value = c.model_name || "";
     if (baseEl) baseEl.value = c.base_url || "";
+    if (modelsEl)
+      modelsEl.value = (c.models || [])
+        .filter(function (m) {
+          return m && m !== c.model_name;
+        })
+        .join(", ");
   }
 
   function test() {

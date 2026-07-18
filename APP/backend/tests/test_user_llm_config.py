@@ -111,10 +111,11 @@ def test_get_user_llm_config_empty_user_id(tmp_path):
 class _FakeAuthService:
     """最小桩：只实现 resolve_feature_llm_runtime 用到的两个方法。"""
 
-    def __init__(self, routing, user_cfg, fallback_override=None):
+    def __init__(self, routing, user_cfg, fallback_override=None, model_map=None):
         self._routing = routing
         self._user_cfg = user_cfg
         self._fallback_override = fallback_override or {}
+        self._model_map = model_map or {}
 
     def get_system_setting(self, key, default=None):
         import main
@@ -122,6 +123,8 @@ class _FakeAuthService:
             return self._routing
         if key == main.LLM_FEATURE_FALLBACK_KEY:
             return self._fallback_override
+        if key == main.LLM_FEATURE_MODEL_KEY:
+            return self._model_map
         return default
 
     def get_user_llm_config(self, user_id):
@@ -139,8 +142,8 @@ def main_mod():
     return main
 
 
-def _patch(main, monkeypatch, *, routing, user_cfg, system_cfg, fallback_override=None):
-    fake = _FakeAuthService(routing, user_cfg, fallback_override)
+def _patch(main, monkeypatch, *, routing, user_cfg, system_cfg, fallback_override=None, model_map=None):
+    fake = _FakeAuthService(routing, user_cfg, fallback_override, model_map)
     monkeypatch.setattr(main, "auth_service", fake)
     monkeypatch.setattr(main, "load_llm_config", lambda: system_cfg)
 
@@ -299,3 +302,184 @@ def test_exclude_providers_applies_to_user_fallback(main_mod, monkeypatch):
     )
     rt = main_mod.resolve_feature_llm_runtime("smart_reply", user_id="u1", exclude_providers=["deepseek"])
     assert rt.get("_blocked") is True
+
+
+# ─────────────── D. 源→多 model：端点 ref 解析 + 归一化 helper ───────────────
+
+def test_parse_endpoint_ref(main_mod):
+    assert main_mod._parse_endpoint_ref("deepseek") == ("deepseek", None)
+    assert main_mod._parse_endpoint_ref("dashscope:glm-5") == ("dashscope", "glm-5")
+    assert main_mod._parse_endpoint_ref("  dashscope : glm-5 ") == ("dashscope", "glm-5")
+    assert main_mod._parse_endpoint_ref("") == (None, None)
+    assert main_mod._parse_endpoint_ref(None) == (None, None)
+
+
+def test_source_models_helper(main_mod):
+    # 旧条目无 models → 退化 [model_name]
+    assert main_mod._source_models({"model_name": "glm-5"}) == ["glm-5"]
+    # 有 models 且默认不在其中 → 默认排最前
+    assert main_mod._source_models({"model_name": "glm-5", "models": ["qwen-max"]}) == ["glm-5", "qwen-max"]
+    # 默认已在 models → 保序去重，默认在前
+    assert main_mod._source_models({"model_name": "glm-5", "models": ["glm-5", "qwen-max", "glm-5"]}) == ["glm-5", "qwen-max"]
+    # 无 model_name 无 models → 空
+    assert main_mod._source_models({}) == []
+
+
+# ─────────────── E. 源→多 model：resolver 按 ref 选 model ───────────────
+
+def test_endpoint_ref_selects_specific_model_user(main_mod, monkeypatch):
+    # 用户配了 dashscope(默认 glm-5)，路由指定 dashscope:qwen-max → 用 qwen-max + 用户 key
+    _patch(
+        main_mod, monkeypatch,
+        routing={"smart_reply": "dashscope:qwen-max"},
+        user_cfg={"u1": {"dashscope": {"api_key": "sk-user", "model_name": "glm-5", "base_url": "https://d"}}},
+        system_cfg={},
+    )
+    rt = main_mod.resolve_feature_llm_runtime("smart_reply", user_id="u1")
+    assert rt["_source"] == "user"
+    assert rt["provider"] == "dashscope"
+    assert rt["model_name"] == "qwen-max"   # ref 指定优先于源默认
+    assert rt["api_key"] == "sk-user"
+
+
+def test_bare_source_ref_uses_default_model_system(main_mod, monkeypatch):
+    # 裸源 ref → 用该源默认 model（系统兜底路径）
+    _patch(
+        main_mod, monkeypatch,
+        routing={"darwin_eval": "dashscope"},
+        user_cfg={},
+        system_cfg={"dashscope": {"api_key": "sk-sys", "model_name": "glm-5", "models": ["glm-5", "qwen-max"]}},
+    )
+    rt = main_mod.resolve_feature_llm_runtime("darwin_eval", user_id=None)
+    assert rt["_source"] == "system"
+    assert rt["model_name"] == "glm-5"
+
+
+def test_two_features_same_source_different_models_user(main_mod, monkeypatch):
+    # 同一个源(用户一把 key)，两功能路由到不同 model → 各自命中，均用用户 key
+    _patch(
+        main_mod, monkeypatch,
+        routing={"smart_reply": "dashscope:glm-5", "classification": "dashscope:qwen-max"},
+        user_cfg={"u1": {"dashscope": {"api_key": "sk-user", "model_name": "glm-5", "base_url": "https://d"}}},
+        system_cfg={},
+    )
+    r1 = main_mod.resolve_feature_llm_runtime("smart_reply", user_id="u1")
+    r2 = main_mod.resolve_feature_llm_runtime("classification", user_id="u1")
+    assert r1["model_name"] == "glm-5" and r1["_source"] == "user"
+    assert r2["model_name"] == "qwen-max" and r2["_source"] == "user"
+    assert r1["api_key"] == r2["api_key"] == "sk-user"   # 同一把 key
+    assert r1["provider"] == r2["provider"] == "dashscope"
+
+
+def test_exclude_source_skips_all_its_endpoints(main_mod, monkeypatch):
+    # 降级链含同源两个 model + 另一源；排除该源 → 其名下所有端点一并跳过，落到下一个源
+    _patch(
+        main_mod, monkeypatch,
+        routing={"smart_reply": ["dashscope:glm-5", "dashscope:qwen-max", "deepseek"]},
+        user_cfg={"u1": {"deepseek": {"api_key": "sk-ds", "model_name": "deepseek-v4", "base_url": "https://ds"}}},
+        system_cfg={},
+    )
+    rt = main_mod.resolve_feature_llm_runtime("smart_reply", user_id="u1", exclude_providers=["dashscope"])
+    assert rt["_source"] == "user"
+    assert rt["provider"] == "deepseek"
+    assert rt["model_name"] == "deepseek-v4"
+
+
+# ─────────────── F. auth_service: 用户级 models 往返 + 兜底 ───────────────
+
+def test_user_models_roundtrip(tmp_path):
+    service, uid = _make_service(tmp_path)
+    service.set_user_llm_provider(
+        uid, "dashscope", api_key="sk-u", model_name="glm-5",
+        base_url="https://d", models=["glm-5", "qwen-max"],
+    )
+    cfg = service.get_user_llm_config(uid)
+    assert cfg["dashscope"]["model_name"] == "glm-5"
+    assert cfg["dashscope"]["models"] == ["glm-5", "qwen-max"]
+    assert cfg["dashscope"]["api_key"] == "sk-u"
+
+
+def test_user_models_backfill_from_model_name(tmp_path):
+    # 不传 models → 退化为 [model_name]（模拟老行语义）
+    service, uid = _make_service(tmp_path)
+    service.set_user_llm_provider(uid, "deepseek", api_key="k", model_name="deepseek-v4")
+    cfg = service.get_user_llm_config(uid)
+    assert cfg["deepseek"]["models"] == ["deepseek-v4"]
+
+
+def test_user_models_default_prepended_and_deduped(tmp_path):
+    # 默认 model 不在 models 里 → 补到最前；重复去重
+    service, uid = _make_service(tmp_path)
+    service.set_user_llm_provider(
+        uid, "dashscope", api_key="k", model_name="glm-5",
+        models=["qwen-max", "qwen-max", "glm-5"],
+    )
+    cfg = service.get_user_llm_config(uid)
+    assert cfg["dashscope"]["models"] == ["glm-5", "qwen-max"]
+
+
+# ─────── G. Option B：routing 落盘只存裸 provider + model 解耦到 feature_model 映射 ───────
+# 根治 H1：~10 处直接读 llm_feature_routing.json 的后台消费方只认裸 provider，
+# 故写入侧必须把 "源:model" 拆开，文件里永不出现 ':'。
+
+def test_split_routing_endpoints(main_mod):
+    bare, mm = main_mod._split_routing_endpoints({
+        "smart_reply": "dashscope:qwen-max",
+        "weekly_report": "deepseek",
+        "darwin_eval": ["dashscope:glm-5", "deepseek"],
+        "_default": "minimax",
+    })
+    # 裸 routing 不含任何 ':'（护住直接读者）
+    assert bare["smart_reply"] == "dashscope"
+    assert bare["weekly_report"] == "deepseek"
+    assert bare["darwin_eval"] == ["dashscope", "deepseek"]
+    assert bare["_default"] == "minimax"
+    for v in bare.values():
+        flat = v if isinstance(v, list) else [v]
+        assert all(":" not in x for x in flat)
+    # model 覆盖被拆到独立映射
+    assert mm["smart_reply"] == "qwen-max"
+    assert mm["darwin_eval"] == "glm-5"   # list 取首元素 model
+    assert "weekly_report" not in mm
+
+
+def test_feature_model_map_applied_system(main_mod, monkeypatch):
+    # M3：bare routing + feature_model 映射 → 系统兜底路径用映射里的 model
+    _patch(
+        main_mod, monkeypatch,
+        routing={"darwin_eval": "dashscope"},          # 裸 provider
+        user_cfg={},
+        system_cfg={"dashscope": {"api_key": "sk-sys", "model_name": "glm-5", "models": ["glm-5", "qwen-max"]}},
+        model_map={"darwin_eval": "qwen-max"},          # 解耦的 model 覆盖
+    )
+    rt = main_mod.resolve_feature_llm_runtime("darwin_eval", user_id=None)
+    assert rt["_source"] == "system"
+    assert rt["provider"] == "dashscope"
+    assert rt["model_name"] == "qwen-max"               # 映射覆盖生效
+
+
+def test_feature_model_map_applied_user(main_mod, monkeypatch):
+    # bare routing + feature_model 映射 → 用户级路径也用映射 model + 用户 key
+    _patch(
+        main_mod, monkeypatch,
+        routing={"smart_reply": "dashscope"},
+        user_cfg={"u1": {"dashscope": {"api_key": "sk-user", "model_name": "glm-5", "base_url": "https://d"}}},
+        system_cfg={},
+        model_map={"smart_reply": "qwen-max"},
+    )
+    rt = main_mod.resolve_feature_llm_runtime("smart_reply", user_id="u1")
+    assert rt["_source"] == "user"
+    assert rt["api_key"] == "sk-user"
+    assert rt["model_name"] == "qwen-max"
+
+
+def test_legacy_ref_in_routing_still_tolerant(main_mod, monkeypatch):
+    # 向后兼容：即使 routing 值残留 "源:model"（老数据/手工），resolver 仍能拆并生效
+    _patch(
+        main_mod, monkeypatch,
+        routing={"smart_reply": "dashscope:qwen-max"},
+        user_cfg={"u1": {"dashscope": {"api_key": "sk-user", "model_name": "glm-5", "base_url": "https://d"}}},
+        system_cfg={},
+    )
+    rt = main_mod.resolve_feature_llm_runtime("smart_reply", user_id="u1")
+    assert rt["model_name"] == "qwen-max" and rt["_source"] == "user"

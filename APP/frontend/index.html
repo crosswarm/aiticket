@@ -267,10 +267,16 @@
             <!-- Advanced Config for OpenAI Compatible -->
             <div id="advancedConfig" class="hidden space-y-4 mb-4 border-t pt-4">
                 <div>
-                    <label class="block text-sm font-bold mb-2">Model Name</label>
+                    <label class="block text-sm font-bold mb-2">Model Name（默认模型）</label>
                     <input type="text" id="modelNameInput"
                         class="w-full p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
                         placeholder="e.g. deepseek-chat">
+                </div>
+                <div>
+                    <label class="block text-sm font-bold mb-2">更多模型（同一 Base URL 下，逗号分隔，可选）</label>
+                    <input type="text" id="modelsInput"
+                        class="w-full p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                        placeholder="如 qwen-max, qwen-plus（共用上面的 Key/Base URL）">
                 </div>
                 <div>
                     <label class="block text-sm font-bold mb-2">Base URL</label>
@@ -485,7 +491,8 @@
             return {
                 apiKey: '',
                 modelName: PRESETS[provider]?.model || '',
-                baseUrl: PRESETS[provider]?.base || ''
+                baseUrl: PRESETS[provider]?.base || '',
+                models: []
             };
         }
 
@@ -502,7 +509,8 @@
                         localStorage.setItem(`llm_config_${p}`, JSON.stringify({
                             apiKey: c.api_key || '',
                             modelName: c.model_name || '',
-                            baseUrl: c.base_url || ''
+                            baseUrl: c.base_url || '',
+                            models: c.models || []
                         }));
                     } catch (e) {}
                 });
@@ -532,6 +540,12 @@
             document.getElementById('apiKeyInput').value = config.apiKey || '';
             document.getElementById('modelNameInput').value = config.modelName || '';
             document.getElementById('baseUrlInput').value = config.baseUrl || '';
+            const modelsEl = document.getElementById('modelsInput');
+            if (modelsEl) {
+                modelsEl.value = (config.models || [])
+                    .filter(m => m && m !== config.modelName)
+                    .join(', ');
+            }
         }
 
         function closeSettings() {
@@ -652,13 +666,18 @@
             const key = document.getElementById('apiKeyInput').value.trim();
             const model = document.getElementById('modelNameInput').value.trim();
             const base = document.getElementById('baseUrlInput').value.trim();
+            const modelsEl = document.getElementById('modelsInput');
+            const extraModels = ((modelsEl && modelsEl.value) || '')
+                .split(',').map(s => s.trim()).filter(Boolean);
+            // 默认模型排最前 + 其他模型；后端再做去重/归一化
+            const models = [model].concat(extraModels).filter(Boolean);
 
             if (!(key || provider === 'none')) {
                 showToast('请输入 API Key', 'error');
                 return;
             }
 
-            const config = { apiKey: key, modelName: model, baseUrl: base };
+            const config = { apiKey: key, modelName: model, baseUrl: base, models: models };
             // localStorage 仅作本地缓存/离线回显
             localStorage.setItem(`llm_config_${provider}`, JSON.stringify(config));
             localStorage.setItem('llm_last_provider', provider);
@@ -672,7 +691,7 @@
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         credentials: 'include',
-                        body: JSON.stringify({ provider, api_key: key, model_name: model, base_url: base })
+                        body: JSON.stringify({ provider, api_key: key, model_name: model, base_url: base, models: models })
                     });
                     if (!r.ok) {
                         const j = await r.json().catch(() => ({}));

@@ -171,8 +171,10 @@ class AuthService:
                 )"""
             )
 
-            # 用户级 LLM 凭据表（每个用户对每个 provider 的 api_key/model/base_url）
-            # api_key 加密存储（_fernet），与 jira_bindings 同样的加密范式
+            # 用户级 LLM 凭据表（每个用户对每个 provider/源 的 api_key/base_url）
+            # api_key 加密存储（_fernet），与 jira_bindings 同样的加密范式。
+            # 一个源(base_url+key)下可挂多个 model：model_name = 该源默认 model，
+            # models_json = 该源挂的 model 列表（JSON 数组，空/缺省 → 视作 [model_name]）。
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS user_llm_config (
                   user_id    TEXT NOT NULL,
@@ -180,11 +182,20 @@ class AuthService:
                   api_key    TEXT NOT NULL DEFAULT '',
                   model_name TEXT NOT NULL DEFAULT '',
                   base_url   TEXT NOT NULL DEFAULT '',
+                  models_json TEXT NOT NULL DEFAULT '[]',
                   updated_at TEXT NOT NULL,
                   PRIMARY KEY (user_id, provider),
                   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                 )"""
             )
+            # 迁移：老库缺 models_json 列 → 幂等补列。只吞"重复列"，其它 OperationalError
+            # （database is locked / disk I/O 等）必须冒泡，否则后续 SELECT models_json 会
+            # 抛 no such column 且无软失败路径（get_user_llm_config 直接报错）。
+            try:
+                conn.execute("ALTER TABLE user_llm_config ADD COLUMN models_json TEXT NOT NULL DEFAULT '[]'")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
 
             # 用户默认 provider（智能回复等用户面功能的"我的默认模型"）
             conn.execute(
@@ -968,19 +979,21 @@ class AuthService:
 
     # ── 用户级 LLM 凭据 ────────────────────────────────────────────────────────
 
-    def get_user_llm_config(self, user_id: str) -> dict[str, dict[str, str]]:
-        """返回 {provider: {api_key, model_name, base_url}}（api_key 已解密）。
+    def get_user_llm_config(self, user_id: str) -> dict[str, dict[str, object]]:
+        """返回 {provider: {api_key, model_name, base_url, models}}（api_key 已解密）。
 
+        一个源(provider)可挂多个 model：model_name = 该源默认 model，
+        models = 该源挂的 model 列表（旧行 models_json 空 → 退化为 [model_name]）。
         无 user_id 或无记录返回 {}。解密失败的条目跳过（不让坏数据拖垮整个路由）。
         """
         if not user_id:
             return {}
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT provider, api_key, model_name, base_url FROM user_llm_config WHERE user_id=?",
+                "SELECT provider, api_key, model_name, base_url, models_json FROM user_llm_config WHERE user_id=?",
                 (user_id,),
             ).fetchall()
-        result: dict[str, dict[str, str]] = {}
+        result: dict[str, dict[str, object]] = {}
         for row in rows:
             enc = row["api_key"] or ""
             try:
@@ -988,10 +1001,29 @@ class AuthService:
             except Exception:
                 # 加密损坏/密钥轮换：跳过该条，避免污染路由
                 continue
+            model_name = row["model_name"] or ""
+            # models_json → list；空/损坏 → 退化为 [model_name]
+            models: list = []
+            raw = (row["models_json"] if "models_json" in row.keys() else "") or ""
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        models = [m.strip() for m in parsed if isinstance(m, str) and m.strip()]
+                except Exception:
+                    models = []
+            # 默认 model 强制排最前，其余保序去重
+            _ordered = ([model_name] if model_name else []) + [m for m in models if m != model_name]
+            _seen, _out = set(), []
+            for m in _ordered:
+                if m and m not in _seen:
+                    _seen.add(m)
+                    _out.append(m)
             result[row["provider"]] = {
                 "api_key": api_key,
-                "model_name": row["model_name"] or "",
+                "model_name": model_name,
                 "base_url": row["base_url"] or "",
+                "models": _out,
             }
         return result
 
@@ -1002,8 +1034,13 @@ class AuthService:
         api_key: str = "",
         model_name: str = "",
         base_url: str = "",
+        models: list = None,
     ) -> None:
-        """UPSERT 用户对某 provider 的凭据。api_key 加密存储。"""
+        """UPSERT 用户对某 provider/源 的凭据。api_key 加密存储。
+
+        models = 该源挂的 model 列表（可选）；缺省时按 [model_name] 兜底存储，
+        保证默认 model 一定在列表内且排最前。
+        """
         if not user_id:
             raise ValueError("user_id is required")
         provider = (provider or "").strip()
@@ -1013,17 +1050,30 @@ class AuthService:
         encrypted_api_key = (
             self._fernet.encrypt(api_key.encode("utf-8")).decode("ascii") if api_key else ""
         )
+        model_name = (model_name or "").strip()
+        # 归一化 models：去空去重，默认 model 强制排最前
+        norm_models: list = []
+        if isinstance(models, list):
+            norm_models = [m.strip() for m in models if isinstance(m, str) and m.strip()]
+        ordered = ([model_name] if model_name else []) + [m for m in norm_models if m != model_name]
+        _seen, _dedup = set(), []
+        for m in ordered:
+            if m and m not in _seen:
+                _seen.add(m)
+                _dedup.append(m)
+        models_json = json.dumps(_dedup, ensure_ascii=False)
         now = _isoformat()
         with self._connect() as conn:
             conn.execute(
-                """INSERT INTO user_llm_config (user_id, provider, api_key, model_name, base_url, updated_at)
-                   VALUES (?,?,?,?,?,?)
+                """INSERT INTO user_llm_config (user_id, provider, api_key, model_name, base_url, models_json, updated_at)
+                   VALUES (?,?,?,?,?,?,?)
                    ON CONFLICT(user_id, provider) DO UPDATE SET
                      api_key=excluded.api_key,
                      model_name=excluded.model_name,
                      base_url=excluded.base_url,
+                     models_json=excluded.models_json,
                      updated_at=excluded.updated_at""",
-                (user_id, provider, encrypted_api_key, model_name or "", base_url or "", now),
+                (user_id, provider, encrypted_api_key, model_name, base_url or "", models_json, now),
             )
 
     def delete_user_llm_provider(self, user_id: str, provider: str) -> None:

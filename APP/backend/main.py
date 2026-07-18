@@ -5923,6 +5923,46 @@ def save_llm_config(config: dict, updated_by: str = None):
         json.dump(config, f, ensure_ascii=False, indent=2)
 
 
+def _source_models(entry: dict) -> list:
+    """一个源(provider)条目下挂的 model 列表。
+
+    向后兼容：旧条目无 `models` 键时，退化为 [model_name]（model_name 为默认 model）。
+    保证默认 model 一定在列表内且排在最前，去重保序。
+    """
+    if not isinstance(entry, dict):
+        return []
+    default = (entry.get("model_name") or "").strip()
+    raw = entry.get("models")
+    models = [m.strip() for m in raw if isinstance(m, str) and m.strip()] if isinstance(raw, list) else []
+    # 默认 model 强制排最前，其余保序去重
+    ordered = ([default] if default else []) + [m for m in models if m != default]
+    seen, out = set(), []
+    for m in ordered:
+        if m and m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
+
+def _parse_endpoint_ref(ref: str):
+    """把路由值元素解析成 (source, model_override)。
+
+    形态（向后兼容）：
+      "deepseek"        → ("deepseek", None)   # 用该源默认 model（= 现状语义）
+      "dashscope:glm-5" → ("dashscope", "glm-5")  # 指定源的指定 model
+    非字符串 / 空 → (None, None)。source 名不含 ':'，按首个 ':' 切分。
+    """
+    if not isinstance(ref, str):
+        return (None, None)
+    ref = ref.strip()
+    if not ref:
+        return (None, None)
+    if ":" in ref:
+        src, mdl = ref.split(":", 1)
+        return (src.strip() or None, mdl.strip() or None)
+    return (ref, None)
+
+
 def resolve_default_llm_runtime() -> Dict[str, str]:
     config = load_llm_config()
     provider = config.get("last_provider") or "none"
@@ -5937,6 +5977,39 @@ def resolve_default_llm_runtime() -> Dict[str, str]:
 
 LLM_FEATURE_ROUTING_KEY = "llm_feature_routing"
 LLM_FEATURE_FALLBACK_KEY = "llm_feature_fallback"
+# 逐功能 model 覆盖：{feature: model_name}。与 routing 解耦存储 —— routing 文件里只放
+# 裸 provider 名（源），model 覆盖单独存这里。这样 llm_feature_routing.json 永远不含
+# "源:model" 形态，所有直接读该文件的后台消费方（identity_schema.resolve_llm_chain /
+# reply_supervisor / weekly_report / evaluator 等 ~10 处）拿到的仍是裸 provider，零改动不撑坏。
+LLM_FEATURE_MODEL_KEY = "llm_feature_model"
+
+
+def _split_routing_endpoints(routing: dict):
+    """把可能含 "源:model" 端点 ref 的 routing 拆成 (裸routing, model_map)。
+
+    - 字符串值 "源:model" → 裸 routing["f"]="源" + model_map["f"]="model"
+    - 字符串值 "源"        → 裸 routing["f"]="源"（无 model）
+    - list 值（降级链）    → 每个元素取裸源；首元素若带 :model 则记入 model_map（单选 UI 只产单值，
+                             list 主要来自手工/legacy，按裸源存以护住直接读者）
+    保证返回的 routing **不含任何 ':'**，可安全写入 llm_feature_routing.json。
+    """
+    bare, model_map = {}, {}
+    for feat, val in (routing or {}).items():
+        if isinstance(val, list):
+            srcs = []
+            for i, el in enumerate(val):
+                s, m = _parse_endpoint_ref(el)
+                if s:
+                    srcs.append(s)
+                    if i == 0 and m:
+                        model_map[feat] = m
+            bare[feat] = srcs
+        else:
+            s, m = _parse_endpoint_ref(val)
+            bare[feat] = s or (val if isinstance(val, str) else "")
+            if m:
+                model_map[feat] = m
+    return bare, model_map
 
 SYSTEM_LLM_FEATURES = [
     {"id": "req_analysis", "name": "需求分析"},
@@ -5999,28 +6072,44 @@ def resolve_feature_llm_runtime(
       3. 全部落空 → 返回 _blocked 标记 (_source="blocked")，由上层决定阻断/跳过。
     """
     routing = auth_service.get_system_setting(LLM_FEATURE_ROUTING_KEY) or {}
+    routing_models = auth_service.get_system_setting(LLM_FEATURE_MODEL_KEY) or {}
     val = routing.get(feature) or routing.get("_default") or ""
-    providers = val if isinstance(val, list) else ([val] if val else [])
+    refs = val if isinstance(val, list) else ([val] if val else [])
+    # 该功能的 model 覆盖：优先用 routing 值自带的 :model（容错，兼容 legacy 数据），
+    # 否则用解耦存储的 llm_feature_model 映射（当前 UI 写入路径）。
+    feature_model = routing_models.get(feature) if isinstance(routing_models, dict) else None
 
     skip = set(exclude_providers or [])
-    candidate_providers = [p for p in providers if p not in skip]
+    # 解析端点 ref → (source, model_override)。exclude 按源级跳过：429 是 key/base_url
+    # 维度，同源换 model 无意义，故被排除的源其名下所有 source:model 端点一并跳过。
+    candidates = []
+    for ref in refs:
+        src, mdl = _parse_endpoint_ref(ref)
+        if src and src not in skip:
+            candidates.append((src, mdl or feature_model))
+    candidate_sources = [s for s, _ in candidates]
+
+    def _model_for(pc, model_override):
+        # model 优先级：ref 指定 > 该源默认(model_name)
+        return model_override or (pc.get("model_name", "") if isinstance(pc, dict) else "")
 
     # ── 1. 用户级优先 ──
-    # 1a. 路由链中用户配过的 provider 优先（系统策略与用户凭据的交集最优）
+    # 1a. 路由链中用户配过的 source 优先（系统策略与用户凭据的交集最优）
     user_cfg = auth_service.get_user_llm_config(user_id) if user_id else {}
-    for provider_name in candidate_providers:
-        pc = user_cfg.get(provider_name) or {}
+    for source_name, model_override in candidates:
+        pc = user_cfg.get(source_name) or {}
         if pc.get("api_key"):
             return {
-                "provider": provider_name,
+                "provider": source_name,
                 "api_key": pc["api_key"],
-                "model_name": pc.get("model_name", ""),
+                "model_name": _model_for(pc, model_override),
                 "base_url": pc.get("base_url", ""),
                 "_source": "user",
             }
-    # 1b. 交集为空：退到用户自己的 last_provider → 其配置的任意 provider。
+    # 1b. 交集为空：退到用户自己的 last_provider → 其配置的任意 source。
     #     用户级语义=用户配了 key 就能用，路由链只约束系统级兜底，不拦用户自己的选择
     #     （bugfix: songshijia 配 deepseek 但 smart_reply 路由 minimax → 曾被误判 blocked）。
+    #     此路径无 ref model 约束，用该源默认 model。
     if user_cfg:
         _last = ""
         try:
@@ -6028,13 +6117,13 @@ def resolve_feature_llm_runtime(
         except Exception:
             pass
         _ordered = ([_last] if _last in user_cfg else []) + [p for p in user_cfg if p != _last]
-        for provider_name in _ordered:
-            if provider_name in skip:
+        for source_name in _ordered:
+            if source_name in skip:
                 continue
-            pc = user_cfg.get(provider_name) or {}
+            pc = user_cfg.get(source_name) or {}
             if pc.get("api_key"):
                 return {
-                    "provider": provider_name,
+                    "provider": source_name,
                     "api_key": pc["api_key"],
                     "model_name": pc.get("model_name", ""),
                     "base_url": pc.get("base_url", ""),
@@ -6045,13 +6134,13 @@ def resolve_feature_llm_runtime(
     allow_fallback = get_feature_fallback_map().get(feature, True)
     if allow_fallback:
         config = load_llm_config()
-        for provider_name in candidate_providers:
-            provider_config = config.get(provider_name, {})
+        for source_name, model_override in candidates:
+            provider_config = config.get(source_name, {})
             if provider_config.get("api_key"):
                 return {
-                    "provider": provider_name,
+                    "provider": source_name,
                     "api_key": provider_config["api_key"],
-                    "model_name": provider_config.get("model_name", ""),
+                    "model_name": _model_for(provider_config, model_override),
                     "base_url": provider_config.get("base_url", ""),
                     "_source": "system",
                 }
@@ -6063,7 +6152,7 @@ def resolve_feature_llm_runtime(
 
     # ── 3. 阻断：用户没配 + 不许兜底（或兜底也没 key）──
     return {
-        "provider": candidate_providers[0] if candidate_providers else "none",
+        "provider": candidate_sources[0] if candidate_sources else "none",
         "api_key": "",
         "model_name": "",
         "base_url": "",
@@ -6125,8 +6214,9 @@ def get_llm_config_endpoint(request: Request):
 class LLMConfigRequest(BaseModel):
     provider: str
     api_key: str = ""
-    model_name: str = ""
+    model_name: str = ""      # 该源默认 model
     base_url: str = ""
+    models: List[str] = []    # 该源挂的 model 列表（可选；空 → [model_name]）
 
 @app.post("/api/config/llm")
 def set_llm_config(request: LLMConfigRequest, raw_request: Request):
@@ -6139,6 +6229,7 @@ def set_llm_config(request: LLMConfigRequest, raw_request: Request):
         api_key=request.api_key,
         model_name=request.model_name,
         base_url=request.base_url,
+        models=request.models,
     )
     auth_service.set_user_last_provider(uid, request.provider)
     return {"status": "success", "provider": request.provider}
@@ -6166,14 +6257,18 @@ def get_system_llm_config(request: Request):
 
 @app.post("/api/config/llm/system")
 def set_system_llm_config(request: LLMConfigRequest, raw_request: Request):
-    """设置系统级 LLM 配置（仅管理员）"""
+    """设置系统级 LLM 配置（仅管理员）。一个源(provider)可挂多个 model。"""
     admin = require_admin_user(raw_request)
     config = load_llm_config()
-    config[request.provider] = {
+    entry = {
         "api_key": request.api_key,
-        "model_name": request.model_name,
+        "model_name": request.model_name,   # 该源默认 model
         "base_url": request.base_url,
+        "models": list(request.models or []),
     }
+    # models 归一化：默认 model 一定在列表内且排最前，去重保序
+    entry["models"] = _source_models(entry)
+    config[request.provider] = entry
     config["last_provider"] = request.provider
     save_llm_config(config, updated_by=admin["username"])
     # 同步 BoardService 的系统级回退配置
@@ -6191,13 +6286,26 @@ def get_feature_routing(request: Request):
     """获取功能级 LLM 路由配置 + 各功能"允许系统兜底"开关（需登录）"""
     require_authenticated_user(request)
     routing = auth_service.get_system_setting(LLM_FEATURE_ROUTING_KEY) or {}
+    feature_models = auth_service.get_system_setting(LLM_FEATURE_MODEL_KEY) or {}
     config = load_llm_config()
     available_providers = [k for k in config if k != "last_provider"]
+    # 端点清单：源 × models 展开为 "源:model"，供路由下拉精确选择；
+    # 同时给出每源的 models，便于前端分组渲染。裸源(=默认model)仍可选。
+    available_endpoints = []
+    provider_models = {}
+    for name in available_providers:
+        models = _source_models(config.get(name, {}))
+        provider_models[name] = models
+        for m in models:
+            available_endpoints.append(f"{name}:{m}")
     return {
         "routing": routing,
+        "feature_models": feature_models,
         "fallback": get_feature_fallback_map(),
         "features": SYSTEM_LLM_FEATURES,
         "available_providers": available_providers,
+        "available_endpoints": available_endpoints,
+        "provider_models": provider_models,
     }
 
 
@@ -6211,12 +6319,18 @@ class FeatureRoutingRequest(BaseModel):
 
 @app.post("/api/config/llm/features")
 def set_feature_routing(body: FeatureRoutingRequest, request: Request):
-    """设置功能级 LLM 路由 + 兜底开关（需管理员）"""
+    """设置功能级 LLM 路由 + 兜底开关（需管理员）。
+
+    前端下拉可能提交 "源:model" 端点值；这里落盘前拆成裸 routing + 独立 model 映射，
+    保证 llm_feature_routing.json 只含裸 provider（护住所有直接读该文件的后台消费方）。
+    """
     admin = require_admin_user(request)
-    auth_service.set_system_setting(LLM_FEATURE_ROUTING_KEY, body.routing, updated_by=admin["username"])
+    bare_routing, model_map = _split_routing_endpoints(body.routing)
+    auth_service.set_system_setting(LLM_FEATURE_ROUTING_KEY, bare_routing, updated_by=admin["username"])
+    auth_service.set_system_setting(LLM_FEATURE_MODEL_KEY, model_map, updated_by=admin["username"])
     routing_file = os.path.join(os.path.dirname(__file__), "llm_feature_routing.json")
     with open(routing_file, "w", encoding="utf-8") as f:
-        json.dump(body.routing, f, ensure_ascii=False, indent=2)
+        json.dump(bare_routing, f, ensure_ascii=False, indent=2)
     if body.fallback is not None:
         # 合并到现有覆盖（仅传入键生效，未传保持原值）
         existing = auth_service.get_system_setting(LLM_FEATURE_FALLBACK_KEY) or {}
