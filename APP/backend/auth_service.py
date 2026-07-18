@@ -212,6 +212,18 @@ class AuthService:
                 )"""
             )
 
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS skill_tokens (
+                  token_hash   TEXT PRIMARY KEY,
+                  user_id      TEXT NOT NULL,
+                  label        TEXT NOT NULL DEFAULT 'skill',
+                  created_at   TEXT NOT NULL,
+                  expires_at   TEXT,
+                  last_used_at TEXT,
+                  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                )"""
+            )
+
             # 匿名配额表（每日限制，按 client_id 和 IP 双重计数）
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS anon_quota (
@@ -375,6 +387,11 @@ class AuthService:
             rows = conn.execute("SELECT * FROM users ORDER BY created_at ASC").fetchall()
         return [self._sanitize_user_row(row) for row in rows]
 
+    def get_user_by_id(self, user_id: str) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return self._sanitize_user_row(row)
+
     def authenticate(self, username: str, password: str) -> Optional[dict[str, Any]]:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM users WHERE username = ? AND is_active = 1", ((username or "").strip(),)).fetchone()
@@ -457,20 +474,99 @@ class AuthService:
         with self._connect() as conn:
             conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
 
-    def update_user_role(self, user_id: str, role: str) -> dict[str, Any]:
-        if role not in VALID_ROLES:
+    def update_user_profile(
+        self,
+        user_id: str,
+        *,
+        display_name: Optional[str] = None,
+        role: Optional[str] = None,
+        is_active: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        if role is not None and role not in VALID_ROLES:
             raise ValueError("Invalid role")
 
-        now = _isoformat()
         with self._connect() as conn:
-            conn.execute(
-                "UPDATE users SET role = ?, updated_at = ? WHERE id = ?",
-                (role, now, user_id),
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            if current is None:
+                raise ValueError("User not found")
+
+            resolved_name = current["display_name"]
+            if display_name is not None:
+                resolved_name = display_name.strip()
+                if not resolved_name:
+                    raise ValueError("Display name is required")
+
+            resolved_role = role if role is not None else current["role"]
+            resolved_active = int(is_active) if is_active is not None else current["is_active"]
+            removes_active_admin = (
+                current["role"] == "admin"
+                and bool(current["is_active"])
+                and (resolved_role != "admin" or not resolved_active)
             )
+            if removes_active_admin:
+                admin_count = conn.execute(
+                    "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND is_active = 1"
+                ).fetchone()["count"]
+                if admin_count <= 1:
+                    raise ValueError("At least one active admin is required")
+
+            conn.execute(
+                """
+                UPDATE users
+                SET display_name = ?, role = ?, is_active = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (resolved_name, resolved_role, resolved_active, _isoformat(), user_id),
+            )
+            if not resolved_active:
+                self._revoke_credentials(conn, user_id)
             row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        if row is None:
-            raise ValueError("User not found")
         return self._sanitize_user_row(row)
+
+    @staticmethod
+    def _revoke_credentials(conn: sqlite3.Connection, user_id: str) -> None:
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.execute("UPDATE device_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM skill_tokens WHERE user_id = ?", (user_id,))
+
+    def reset_password(
+        self,
+        user_id: str,
+        new_password: str,
+    ) -> None:
+        if not new_password:
+            raise ValueError("Password is required")
+
+        password_hash = self._hash_password(new_password)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+            if current is None:
+                raise ValueError("User not found")
+            conn.execute(
+                "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                (password_hash, _isoformat(), user_id),
+            )
+            self._revoke_credentials(conn, user_id)
+
+    def change_password(self, user_id: str, current_password: str, new_password: str) -> None:
+        password_hash = self._hash_password(new_password)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT password_hash FROM users WHERE id = ? AND is_active = 1",
+                (user_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("User not found")
+            if not self._verify_password(current_password or "", row["password_hash"]):
+                raise ValueError("Current password is incorrect")
+            conn.execute(
+                "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                (password_hash, _isoformat(), user_id),
+            )
+            self._revoke_credentials(conn, user_id)
 
     def upsert_jira_binding(
         self,

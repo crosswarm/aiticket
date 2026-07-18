@@ -6,7 +6,7 @@
  *
  * 支持选项：
  *   requireAdmin   — true 时非 admin 用户重定向登录页
- *   onSettingsClick — 自定义"账号设置"点击回调；未提供则跳转 /board.html#settings
+ *   onSettingsClick — 自定义"账号设置"点击回调；未提供则跳转 /settings.html
  */
 window.UserMenu = (function () {
   var _currentUser = null;
@@ -126,7 +126,7 @@ window.UserMenu = (function () {
         } else {
           window.location.href =
             (typeof API_BASE !== "undefined" ? API_BASE : "") +
-            "/board.html#settings";
+            "/settings.html";
         }
       });
     }

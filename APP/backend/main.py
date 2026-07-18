@@ -92,6 +92,8 @@ import hashlib
 import json
 import re
 import requests
+import secrets
+from urllib.parse import urlsplit
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -898,11 +900,28 @@ class LoginRequest(BaseModel):
 
 class CreateUserRequest(BaseModel):
     username: str
-    password: str
+    password: Optional[str] = None
     display_name: str
     role: str = "member"
     current_project: Optional[str] = None
     project_modules: Optional[dict] = None
+
+
+class UpdateUserRequest(BaseModel):
+    display_name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+    current_project: Optional[str] = None
+    project_modules: Optional[dict] = None
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class ResetPasswordRequest(BaseModel):
+    confirm: bool = True
 
 
 class JiraBindingUpdateRequest(BaseModel):
@@ -1110,6 +1129,55 @@ def get_current_session_user(request: Request):
     return {"user": user}
 
 
+def _validate_new_password(password: str) -> str:
+    password = password or ""
+    if len(password) < 10:
+        raise HTTPException(status_code=400, detail="密码至少需要 10 个字符")
+    return password
+
+
+def _require_same_origin_json(request: Request) -> None:
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/json":
+        raise HTTPException(status_code=415, detail="请求必须使用 application/json")
+
+    origin = request.headers.get("origin", "").strip()
+    if origin:
+        try:
+            parsed_origin = urlsplit(origin)
+            origin_port = parsed_origin.port or (443 if parsed_origin.scheme == "https" else 80)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail="跨站请求已拒绝") from exc
+        request_port = request.url.port or (443 if request.url.scheme == "https" else 80)
+        origin_tuple = (parsed_origin.scheme.lower(), (parsed_origin.hostname or "").lower(), origin_port)
+        request_tuple = (request.url.scheme.lower(), (request.url.hostname or "").lower(), request_port)
+        if parsed_origin.scheme not in {"http", "https"} or origin_tuple != request_tuple:
+            raise HTTPException(status_code=403, detail="跨站请求已拒绝")
+        return
+
+    if request.headers.get("x-aiticket-csrf", "") != "1":
+        raise HTTPException(status_code=403, detail="缺少同源请求校验")
+
+
+@app.post("/api/user/change-password")
+def change_current_user_password(payload: ChangePasswordRequest, request: Request):
+    user = require_authenticated_user(request)
+    _require_same_origin_json(request)
+    new_password = _validate_new_password(payload.new_password)
+    if secrets.compare_digest(payload.current_password, new_password):
+        raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
+    try:
+        auth_service.change_password(user["id"], payload.current_password, new_password)
+    except ValueError as exc:
+        detail = "当前密码不正确" if str(exc) == "Current password is incorrect" else str(exc)
+        raise HTTPException(status_code=400, detail=detail) from exc
+
+    auth_service.log_audit(user["id"], "change_password", "user", user["id"], {})
+    response = JSONResponse(content={"status": "success"})
+    response.delete_cookie(SESSION_COOKIE_NAME)
+    return response
+
+
 # ── Skill Device Token 端点（/api/auth 前缀已在 PUBLIC_PREFIXES 内，无需额外白名单）────
 
 class DeviceTokenRequest(BaseModel):
@@ -1184,29 +1252,88 @@ def get_admin_users(request: Request):
 @app.post("/api/admin/users")
 def create_admin_user(payload: CreateUserRequest, request: Request):
     admin = require_admin_user(request)
-    user = auth_service.create_user(
-        payload.username,
-        payload.password,
-        payload.display_name,
-        role=payload.role,
-        created_by=admin["id"],
-        project_modules=payload.project_modules,
-    )
+    _require_same_origin_json(request)
+    username = payload.username.strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{1,63}", username):
+        raise HTTPException(status_code=400, detail="账号仅支持字母、数字、点、下划线和连字符")
+    generated_password = not payload.password
+    password = secrets.token_urlsafe(18) if generated_password else _validate_new_password(payload.password or "")
+    try:
+        user = auth_service.create_user(
+            username,
+            password,
+            payload.display_name,
+            role=payload.role,
+            created_by=admin["id"],
+            project_modules=payload.project_modules,
+        )
+    except ValueError as exc:
+        status_code = 409 if str(exc) == "Username already exists" else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     if payload.current_project:
         auth_service.update_current_project(user["id"], payload.current_project.strip().upper())
         user["current_project"] = payload.current_project.strip().upper()
     auth_service.log_audit(admin["id"], "create_user", "user", user["id"], {"role": user["role"]})
-    return {"status": "success", "user": user}
+    result = {"status": "success", "user": user}
+    if generated_password:
+        result["temporary_password"] = password
+    return result
 
 
 @app.patch("/api/admin/users/{user_id}")
-def update_admin_user(user_id: str, payload: dict, request: Request):
-    require_admin_user(request)
-    if "project_modules" in payload and isinstance(payload["project_modules"], dict):
-        auth_service.update_user_modules(user_id, payload["project_modules"])
-    if "current_project" in payload and payload["current_project"]:
-        auth_service.update_current_project(user_id, str(payload["current_project"]).strip().upper())
-    return {"status": "ok"}
+def update_admin_user(user_id: str, payload: UpdateUserRequest, request: Request):
+    admin = require_admin_user(request)
+    _require_same_origin_json(request)
+    target = auth_service.get_user_by_id(user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    if user_id == admin["id"]:
+        if payload.role is not None and payload.role != admin["role"]:
+            raise HTTPException(status_code=400, detail="不能修改自己的管理员角色")
+        if payload.is_active is False:
+            raise HTTPException(status_code=400, detail="不能停用自己的账号")
+
+    try:
+        updated = auth_service.update_user_profile(
+            user_id,
+            display_name=payload.display_name,
+            role=payload.role,
+            is_active=payload.is_active,
+        )
+    except ValueError as exc:
+        detail = "系统必须保留至少一个有效管理员" if str(exc) == "At least one active admin is required" else str(exc)
+        raise HTTPException(status_code=400, detail=detail) from exc
+
+    if payload.project_modules is not None:
+        auth_service.update_user_modules(user_id, payload.project_modules)
+    if payload.current_project:
+        auth_service.update_current_project(user_id, payload.current_project.strip().upper())
+    updated = auth_service.get_user_by_id(user_id)
+    auth_service.log_audit(
+        admin["id"],
+        "update_user",
+        "user",
+        user_id,
+        {"fields": sorted(payload.model_fields_set)},
+    )
+    return {"status": "ok", "user": updated}
+
+
+@app.post("/api/admin/users/{user_id}/reset-password")
+def reset_admin_user_password(user_id: str, payload: ResetPasswordRequest, request: Request):
+    admin = require_admin_user(request)
+    _require_same_origin_json(request)
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="请确认重置密码")
+    target = auth_service.get_user_by_id(user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+
+    temporary_password = secrets.token_urlsafe(18)
+    auth_service.reset_password(user_id, temporary_password)
+    auth_service.log_audit(admin["id"], "reset_password", "user", user_id, {})
+    return {"status": "success", "temporary_password": temporary_password}
 
 
 @app.post("/api/admin/jira-session/refresh")
