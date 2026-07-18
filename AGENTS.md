@@ -2,7 +2,7 @@
 
 ## 跨项目仓库血缘与发布规范（强制）
 
-执行跨仓移植、分支同步、Mini/172 发布、认证数据库或密钥变更、用户批量变更、发布验收前，所有 Agent 必须先完整读取 `docs/standards/repository-lineage-and-release.md`。该文件是权威规范，并与 `/Users/cfone/Studio/aiticket/docs/standards/repository-lineage-and-release.md` 保持内容一致。
+执行跨仓移植、分支同步、Mini/172 发布、认证数据库或密钥变更、用户批量变更、发布验收前，所有 Agent 必须先完整读取 `docs/standards/repository-lineage-and-release.md`。该文件是权威规范，并与 `/Users/cfone/Studio/aiticket/docs/standards/repository-lineage-and-release.md` 保持内容一致。deployable 的权威仓库是 `https://github.com/crosswarm/aiticket`；QCL 已废弃，旧文件中相冲突的 QCL 指令不再有效。
 
 ## 🤖 智能体通用行为准则
 

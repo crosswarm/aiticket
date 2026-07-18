@@ -10,6 +10,7 @@
   - `/Users/cfone/Studio/aiticket-deployable/docs/standards/repository-lineage-and-release.md`
 - `.claude/rules/aiticket-repository-lineage-and-release.md` 是 Claude Code 的自动发现入口；`AGENTS.md` 是 Codex 和通用 Agent 的强制入口。
 - Codex ad-hoc 记忆只保存索引和阶段快照，本文件是稳定规范的权威来源。
+- deployable 的权威 GitHub 仓库是 `https://github.com/crosswarm/aiticket`；QCL 已废弃，不属于当前 deployable 或发布链。
 - 本文件不得保存用户明文密码、API token、SSH 密钥或 Cookie。
 
 ## 1. 仓库与分支血缘
@@ -17,25 +18,26 @@
 - 主项目工作区：`/Users/cfone/Studio/aiticket`。
   - 本地主开发分支为 `main`。
   - `origin` 指向 `git@github.com:crosswarm/aiticket.git`。
-  - `deploy` 指向 `qcl:/opt/ai-ticket/repo.git`。
   - 工作区经常存在用户未提交改动。任何 Agent 必须先读取 `git status`，只暂存本任务的精确文件或 hunk，不得覆盖、清理或顺带提交其他改动。
 - 可部署项目工作区：`/Users/cfone/Studio/aiticket-deployable`。
-  - 本地 `main` 是 deployable 主线。
-  - `origin` 指向 `git@github.com:crosswarm/aiticket.git`。
+  - deployable 就是 GitHub 仓库 `https://github.com/crosswarm/aiticket`；本地 `origin` 的 SSH 地址 `git@github.com:crosswarm/aiticket.git` 与其等价。
+  - GitHub `origin/main` 是 deployable 权威主线；本地 `main` 是其发布工作副本，推送前必须确认远端仍是预期基点且只做 fast-forward。
   - `yyrd` 指向 `git@git.yyrd.com:hushuq/aiticket.git`，生产离线分支为 `offline-deploy`。
   - `main_repo` 指向 `/Users/cfone/Studio/aiticket`，仅用于只读比较或明确的跨仓移植。
+- QCL 已废弃。即使本地 Git 配置或旧文档仍残留 `qcl:/opt/ai-ticket/repo.git`、`git push deploy` 或 Mini/QCL 双端等文字，也不得把 QCL 当作 deployable、发布仓库或运行目标；这些旧指令均被本规范覆盖。
 - 截至 2026-07-18，deployable 本地 `main` 与 yyrd `offline-deploy` 没有共同 merge-base，属于不同根历史。禁止直接 merge；同一功能必须形成单一、可审查提交，再分别 cherry-pick 或外科式移植。
 - 标准发布落点：
   1. `/Users/cfone/Studio/aiticket` 本地 `main`；
-  2. `/Users/cfone/Studio/aiticket-deployable` 本地 `main`；
+  2. deployable 本地 `main` 与 `https://github.com/crosswarm/aiticket` 的 `main`；
   3. `git.yyrd.com:hushuq/aiticket.git` 的 `offline-deploy`；
   4. Mini 运行环境；
   5. 172 运行环境。
-- 不得默认推送 GitHub `origin/main`。只有用户明确授权并完成待推送集合审查后才能推送。
+- 推送 GitHub `origin/main` 前必须审查待推送提交集合并确认远端是本地主线祖先；禁止 force push。
 
 ## 2. 跨仓同步规则
 
 - 优先在与目标生产分支同血缘的功能分支实现、测试和审查，形成边界清晰的功能提交。
+- deployable 本地 `main` 更新后，先以 fast-forward 方式同步到 GitHub `origin/main`，并核验远端 SHA；QCL 不参与同步。
 - 推送 yyrd `offline-deploy` 前必须 fetch 或 `ls-remote`，确认远端仍是预期基点，只允许 fast-forward；远端已移动时停止并重新评估。
 - deployable 本地 `main` 使用临时 worktree cherry-pick，禁止为了同步而切换或污染当前脏工作区；验证后删除临时 worktree。
 - 主项目 `aiticket/main` 可能与 deployable 有主线差异。不得整文件覆盖共享核心文件，应基于当前主线语义手工合并，并精确暂存 hunk。
@@ -81,7 +83,8 @@
 
 ## 7. 2026-07-18 已验证快照
 
-- 用户管理与验收最终落点：deployable/yyrd `0cc510a2`；deployable 本地 `main` 为 `02e503a9`；主项目 `aiticket/main` 为 `d3edd199`。
+- 用户已纠正血缘事实：deployable 是 `https://github.com/crosswarm/aiticket`，QCL 已废弃；后续不得再把 QCL 写入当前发布链。
+- 用户管理功能与验收基线：yyrd `offline-deploy` 为 `0cc510a2`；deployable 本地 `main` 对应 `02e503a9`；主项目 `aiticket/main` 对应 `d3edd199`。后续文档提交会继续推进各分支 HEAD。
 - 172 已同步 pmlist：23 个缺失账号新建为普通用户；既有 `jiaah` 只更新显示名并保留原密码和管理员属性。
 - Mini 已移除范围澄清前创建的 24 个名单账号，仅保留原管理员；功能代码仍部署在 Mini 与 172。
 - Mini 和 172 均已使用持久 `/data/app_auth.key`；Jira 绑定状态不再因密钥漂移报 500 或误显示 HTTP 400 过期。
