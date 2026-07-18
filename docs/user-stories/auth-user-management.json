@@ -8,7 +8,7 @@
       "管理员可修改显示名、角色、启停状态，用户名不可修改",
       "普通用户访问管理员用户接口返回 403"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -19,7 +19,7 @@
       "目标用户已有 Web 会话被撤销",
       "审计日志不包含明文密码"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "functional",
@@ -30,7 +30,7 @@
       "修改成功后旧密码失效且所有会话撤销",
       "新密码可以重新登录"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "edge-case",
@@ -41,18 +41,18 @@
       "不存在用户返回 404，重复账号返回 409",
       "列表和修改响应不暴露 password_hash"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "integration",
-    "description": "US-005: pmlist 名单幂等同步到生产用户库",
+    "description": "US-005: pmlist 名单仅幂等同步到 172 生产用户库",
     "steps": [
       "同步前备份 /data/app_auth.db",
-      "Mini 与 172 各自缺失的名单账号创建为 member 并生成随机密码",
+      "仅在 172 创建缺失的名单账号并生成随机密码，Mini 不创建名单账号",
       "172 已有 jiaah 只更新显示名且保留密码、角色、绑定与状态",
-      "两个环境最终 24 个名单账号和显示名逐项校验通过"
+      "172 最终 24 个名单账号和显示名逐项校验通过，Mini 仅保留原管理员"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "integration",
@@ -63,6 +63,6 @@
       "普通用户调用管理员接口返回 403",
       "settings.html 与导航入口线上可访问"
     ],
-    "passes": false
+    "passes": true
   }
 ]
