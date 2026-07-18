@@ -481,6 +481,9 @@ class AuthService:
         display_name: Optional[str] = None,
         role: Optional[str] = None,
         is_active: Optional[bool] = None,
+        actor_username: Optional[str] = None,
+        project_modules: Optional[dict[str, Any]] = None,
+        current_project: Optional[str] = None,
     ) -> dict[str, Any]:
         if role is not None and role not in VALID_ROLES:
             raise ValueError("Invalid role")
@@ -490,6 +493,8 @@ class AuthService:
             current = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             if current is None:
                 raise ValueError("User not found")
+            if actor_username is not None and actor_username != "admin" and current["role"] == "admin":
+                raise PermissionError("Only built-in admin can manage admin accounts")
 
             resolved_name = current["display_name"]
             if display_name is not None:
@@ -499,6 +504,12 @@ class AuthService:
 
             resolved_role = role if role is not None else current["role"]
             resolved_active = int(is_active) if is_active is not None else current["is_active"]
+            resolved_modules = current["project_modules_json"]
+            if project_modules is not None:
+                resolved_modules = json.dumps(project_modules, ensure_ascii=False)
+            resolved_project = current["current_project"]
+            if current_project is not None:
+                resolved_project = current_project
             removes_active_admin = (
                 current["role"] == "admin"
                 and bool(current["is_active"])
@@ -514,10 +525,19 @@ class AuthService:
             conn.execute(
                 """
                 UPDATE users
-                SET display_name = ?, role = ?, is_active = ?, updated_at = ?
+                SET display_name = ?, role = ?, is_active = ?, project_modules_json = ?,
+                    current_project = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (resolved_name, resolved_role, resolved_active, _isoformat(), user_id),
+                (
+                    resolved_name,
+                    resolved_role,
+                    resolved_active,
+                    resolved_modules,
+                    resolved_project,
+                    _isoformat(),
+                    user_id,
+                ),
             )
             if not resolved_active:
                 self._revoke_credentials(conn, user_id)
@@ -534,6 +554,8 @@ class AuthService:
         self,
         user_id: str,
         new_password: str,
+        *,
+        actor_username: Optional[str] = None,
     ) -> None:
         if not new_password:
             raise ValueError("Password is required")
@@ -541,9 +563,11 @@ class AuthService:
         password_hash = self._hash_password(new_password)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            current = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+            current = conn.execute("SELECT id, role FROM users WHERE id = ?", (user_id,)).fetchone()
             if current is None:
                 raise ValueError("User not found")
+            if actor_username is not None and actor_username != "admin" and current["role"] == "admin":
+                raise PermissionError("Only built-in admin can manage admin accounts")
             conn.execute(
                 "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
                 (password_hash, _isoformat(), user_id),

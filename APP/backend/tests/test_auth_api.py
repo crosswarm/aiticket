@@ -255,3 +255,163 @@ def test_admin_user_management_and_member_password_change(monkeypatch, tmp_path)
         "/api/auth/login",
         json={"username": "alice", "password": reset_password},
     ).status_code == 200
+
+
+def test_only_builtin_admin_can_modify_or_reset_admin_accounts(monkeypatch, tmp_path):
+    main = load_main(monkeypatch, tmp_path)
+    owner_client = TestClient(main.app)
+
+    owner_client.post(
+        "/api/auth/bootstrap",
+        json={"username": "admin", "password": "owner-password", "display_name": "系统管理员"},
+    )
+    operator = owner_client.post(
+        "/api/admin/users",
+        headers=CSRF_HEADERS,
+        json={
+            "username": "opsadmin",
+            "password": "operator-password",
+            "display_name": "运维管理员",
+            "role": "admin",
+        },
+    ).json()["user"]
+    target_admin = owner_client.post(
+        "/api/admin/users",
+        headers=CSRF_HEADERS,
+        json={
+            "username": "targetadmin",
+            "password": "target-password",
+            "display_name": "目标管理员",
+            "role": "admin",
+        },
+    ).json()["user"]
+    member = owner_client.post(
+        "/api/admin/users",
+        headers=CSRF_HEADERS,
+        json={
+            "username": "member1",
+            "password": "member-password",
+            "display_name": "普通用户",
+            "role": "member",
+        },
+    ).json()["user"]
+
+    owner_update = owner_client.patch(
+        f"/api/admin/users/{target_admin['id']}",
+        headers=CSRF_HEADERS,
+        json={"display_name": "目标管理员-已更新"},
+    )
+    assert owner_update.status_code == 200
+    assert owner_client.post(
+        f"/api/admin/users/{target_admin['id']}/reset-password",
+        headers=CSRF_HEADERS,
+        json={"confirm": True},
+    ).status_code == 200
+
+    operator_client = TestClient(main.app)
+    assert operator_client.post(
+        "/api/auth/login",
+        json={"username": operator["username"], "password": "operator-password"},
+    ).status_code == 200
+
+    forbidden_update = operator_client.patch(
+        f"/api/admin/users/{target_admin['id']}",
+        headers=CSRF_HEADERS,
+        json={"display_name": "越权修改"},
+    )
+    assert forbidden_update.status_code == 403
+    assert forbidden_update.json()["detail"] == "仅内置 admin 可管理管理员账号"
+
+    forbidden_reset = operator_client.post(
+        f"/api/admin/users/{target_admin['id']}/reset-password",
+        headers=CSRF_HEADERS,
+        json={"confirm": True},
+    )
+    assert forbidden_reset.status_code == 403
+    assert forbidden_reset.json()["detail"] == "仅内置 admin 可管理管理员账号"
+
+    member_update = operator_client.patch(
+        f"/api/admin/users/{member['id']}",
+        headers=CSRF_HEADERS,
+        json={"display_name": "普通用户-已更新"},
+    )
+    assert member_update.status_code == 200
+    assert operator_client.post(
+        f"/api/admin/users/{member['id']}/reset-password",
+        headers=CSRF_HEADERS,
+        json={"confirm": True},
+    ).status_code == 200
+
+
+def test_admin_management_rechecks_target_role_inside_write_transaction(monkeypatch, tmp_path):
+    main = load_main(monkeypatch, tmp_path)
+    owner_client = TestClient(main.app)
+    owner_client.post(
+        "/api/auth/bootstrap",
+        json={"username": "admin", "password": "owner-password", "display_name": "系统管理员"},
+    )
+    operator = owner_client.post(
+        "/api/admin/users",
+        headers=CSRF_HEADERS,
+        json={
+            "username": "opsadmin",
+            "password": "operator-password",
+            "display_name": "运维管理员",
+            "role": "admin",
+        },
+    ).json()["user"]
+    profile_target = owner_client.post(
+        "/api/admin/users",
+        headers=CSRF_HEADERS,
+        json={
+            "username": "profiletarget",
+            "password": "profile-password",
+            "display_name": "待提升用户",
+            "role": "member",
+        },
+    ).json()["user"]
+    password_target = owner_client.post(
+        "/api/admin/users",
+        headers=CSRF_HEADERS,
+        json={
+            "username": "passwordtarget",
+            "password": "password-before-reset",
+            "display_name": "待提升密码用户",
+            "role": "member",
+        },
+    ).json()["user"]
+
+    operator_client = TestClient(main.app)
+    assert operator_client.post(
+        "/api/auth/login",
+        json={"username": operator["username"], "password": "operator-password"},
+    ).status_code == 200
+
+    original_get_user = main.auth_service.get_user_by_id
+    original_update_profile = main.auth_service.update_user_profile
+    promote_before_write = {profile_target["id"], password_target["id"]}
+
+    def get_user_then_promote(user_id):
+        snapshot = original_get_user(user_id)
+        if user_id in promote_before_write:
+            promote_before_write.remove(user_id)
+            original_update_profile(user_id, role="admin")
+        return snapshot
+
+    monkeypatch.setattr(main.auth_service, "get_user_by_id", get_user_then_promote)
+
+    forbidden_update = operator_client.patch(
+        f"/api/admin/users/{profile_target['id']}",
+        headers=CSRF_HEADERS,
+        json={"display_name": "竞态越权修改"},
+    )
+    assert forbidden_update.status_code == 403
+    assert original_get_user(profile_target["id"])["display_name"] == "待提升用户"
+
+    forbidden_reset = operator_client.post(
+        f"/api/admin/users/{password_target['id']}/reset-password",
+        headers=CSRF_HEADERS,
+        json={"confirm": True},
+    )
+    assert forbidden_reset.status_code == 403
+    assert main.auth_service.authenticate("passwordtarget", "password-before-reset") is not None

@@ -1300,16 +1300,16 @@ def update_admin_user(user_id: str, payload: UpdateUserRequest, request: Request
             display_name=payload.display_name,
             role=payload.role,
             is_active=payload.is_active,
+            actor_username=admin["username"],
+            project_modules=payload.project_modules,
+            current_project=payload.current_project.strip().upper() if payload.current_project else None,
         )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="仅内置 admin 可管理管理员账号") from exc
     except ValueError as exc:
         detail = "系统必须保留至少一个有效管理员" if str(exc) == "At least one active admin is required" else str(exc)
         raise HTTPException(status_code=400, detail=detail) from exc
 
-    if payload.project_modules is not None:
-        auth_service.update_user_modules(user_id, payload.project_modules)
-    if payload.current_project:
-        auth_service.update_current_project(user_id, payload.current_project.strip().upper())
-    updated = auth_service.get_user_by_id(user_id)
     auth_service.log_audit(
         admin["id"],
         "update_user",
@@ -1331,7 +1331,10 @@ def reset_admin_user_password(user_id: str, payload: ResetPasswordRequest, reque
         raise HTTPException(status_code=404, detail="用户不存在")
 
     temporary_password = secrets.token_urlsafe(18)
-    auth_service.reset_password(user_id, temporary_password)
+    try:
+        auth_service.reset_password(user_id, temporary_password, actor_username=admin["username"])
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="仅内置 admin 可管理管理员账号") from exc
     auth_service.log_audit(admin["id"], "reset_password", "user", user_id, {})
     return {"status": "success", "temporary_password": temporary_password}
 

@@ -1,0 +1,35 @@
+{
+  "project": "AITicket",
+  "branchName": "fix/settings-nav-admin-permissions-20260718",
+  "description": "修复 settings 导航点击回归并收紧管理员账号管理权限",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "恢复 settings 左侧导航布局与点击",
+      "description": "作为已登录用户，我希望 settings 页面左侧所有入口正常显示且可点击，以便进入系统各功能页面。",
+      "acceptanceCriteria": [
+        "左侧导航区域没有透明层或内容层遮挡",
+        "所有可见导航入口可通过真实浏览器点击并到达各自目标 URL",
+        "桌面布局和窄屏布局不破坏现有导航样式",
+        "前端回归测试通过"
+      ],
+      "priority": 1,
+      "passes": false
+    },
+    {
+      "id": "US-002",
+      "title": "仅内置 admin 管理管理员账号",
+      "description": "作为系统所有者，我希望只有内置 admin 能修改或重置管理员账号，避免普通管理员相互接管。",
+      "acceptanceCriteria": [
+        "用户名不是 admin 的管理员修改管理员目标时返回 HTTP 403",
+        "用户名不是 admin 的管理员重置管理员目标密码时返回 HTTP 403",
+        "内置 admin 仍可修改和重置管理员目标",
+        "其他管理员仍可修改和重置普通用户",
+        "普通用户访问管理员接口仍返回 HTTP 403",
+        "定向认证测试通过"
+      ],
+      "priority": 1,
+      "passes": true
+    }
+  ]
+}

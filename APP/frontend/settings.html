@@ -4,11 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI 工单 - 账号与用户</title>
-    <script>const API_BASE = (window.location.pathname === '/demo' || window.location.pathname.startsWith('/demo/')) ? '/demo' : '';</script>
     <link rel="stylesheet" href="/assets/responsive.css">
     <link rel="stylesheet" href="/assets/ds/tokens.css">
     <link rel="stylesheet" href="/assets/ds/base.css">
     <link rel="stylesheet" href="/assets/ds/components.css">
+    <link rel="stylesheet" href="/assets/ds/command-palette.css">
     <style>
         .settings-shell { max-width: 1120px; margin: 0 auto; padding: 24px 20px 56px; }
         .settings-card { background: var(--ds-bg-surface, #fff); border: 1px solid var(--ds-border, #e2e8f0); border-radius: 14px; padding: 22px; box-shadow: 0 8px 24px rgba(15,23,42,.05); }
@@ -211,6 +211,11 @@
             body.innerHTML = managedUsers.map(user => {
                 const roleClass = user.role === 'admin' ? 'badge-admin' : 'badge-member';
                 const activeClass = user.is_active ? 'badge-active' : 'badge-disabled';
+                const canManage = currentUser.username === 'admin' || user.role !== 'admin';
+                const actions = canManage
+                    ? `<button class="ds-btn ds-btn-ghost" type="button" onclick="openEditUserModal('${user.id}')">修改</button>
+                       <button class="ds-btn ds-btn-ghost" type="button" onclick="resetUserPassword('${user.id}')">重置密码</button>`
+                    : '<span class="muted">仅内置 admin 可管理</span>';
                 return `<tr>
                     <td><strong>${escapeHtml(user.display_name)}</strong></td>
                     <td><code>${escapeHtml(user.username)}</code></td>
@@ -218,8 +223,7 @@
                     <td><span class="badge ${activeClass}">${user.is_active ? '启用' : '停用'}</span></td>
                     <td>${escapeHtml((user.updated_at || '').replace('T', ' ').slice(0, 19))}</td>
                     <td style="white-space:nowrap">
-                        <button class="ds-btn ds-btn-ghost" type="button" onclick="openEditUserModal('${user.id}')">修改</button>
-                        <button class="ds-btn ds-btn-ghost" type="button" onclick="resetUserPassword('${user.id}')">重置密码</button>
+                        ${actions}
                     </td>
                 </tr>`;
             }).join('');
@@ -336,5 +340,6 @@
     <script src="/assets/nav.js"></script>
     <script src="/assets/ds/theme.js"></script>
     <script src="/assets/ds/sidebar.js"></script>
+    <script src="/assets/ds/command-palette.js"></script>
 </body>
 </html>
