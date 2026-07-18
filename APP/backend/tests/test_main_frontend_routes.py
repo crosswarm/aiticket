@@ -24,3 +24,11 @@ def test_settings_page_contains_password_and_admin_user_management_contracts():
     assert "/reset-password" in settings_source
     assert "admin-user-management" in settings_source
     assert "settings.html" in nav_source
+
+
+def test_docker_compose_persists_auth_database_and_encryption_key():
+    compose_path = os.path.join(os.path.dirname(FRONTEND_DIR), "..", "docker-compose.yml")
+    compose_source = open(compose_path, encoding="utf-8").read()
+
+    assert "APP_AUTH_DB_PATH=/data/app_auth.db" in compose_source
+    assert "APP_AUTH_SECRET_PATH=/data/app_auth.key" in compose_source
