@@ -327,8 +327,9 @@ def test_source_models_helper(main_mod):
 
 # ─────────────── E. 源→多 model：resolver 按 ref 选 model ───────────────
 
-def test_endpoint_ref_selects_specific_model_user(main_mod, monkeypatch):
-    # 用户配了 dashscope(默认 glm-5)，路由指定 dashscope:qwen-max → 用 qwen-max + 用户 key
+def test_configured_user_uses_own_model_not_routing_ref(main_mod, monkeypatch):
+    # 语义 A：用户配了自己的源+生效 model → 用用户自己的默认 model(glm-5)，
+    # 系统路由的 dashscope:qwen-max 不改用户的选择（只对未配用户/系统兜底生效）。
     _patch(
         main_mod, monkeypatch,
         routing={"smart_reply": "dashscope:qwen-max"},
@@ -338,7 +339,7 @@ def test_endpoint_ref_selects_specific_model_user(main_mod, monkeypatch):
     rt = main_mod.resolve_feature_llm_runtime("smart_reply", user_id="u1")
     assert rt["_source"] == "user"
     assert rt["provider"] == "dashscope"
-    assert rt["model_name"] == "qwen-max"   # ref 指定优先于源默认
+    assert rt["model_name"] == "glm-5"    # 用户自己的生效 model，覆盖路由 ref
     assert rt["api_key"] == "sk-user"
 
 
@@ -355,8 +356,9 @@ def test_bare_source_ref_uses_default_model_system(main_mod, monkeypatch):
     assert rt["model_name"] == "glm-5"
 
 
-def test_two_features_same_source_different_models_user(main_mod, monkeypatch):
-    # 同一个源(用户一把 key)，两功能路由到不同 model → 各自命中，均用用户 key
+def test_configured_user_same_model_all_features(main_mod, monkeypatch):
+    # 语义 A：配了自己 model 的用户，所有功能都用他的生效 model(glm-5)，
+    # 系统级给不同功能配的不同 model 不改变已配用户。
     _patch(
         main_mod, monkeypatch,
         routing={"smart_reply": "dashscope:glm-5", "classification": "dashscope:qwen-max"},
@@ -365,9 +367,9 @@ def test_two_features_same_source_different_models_user(main_mod, monkeypatch):
     )
     r1 = main_mod.resolve_feature_llm_runtime("smart_reply", user_id="u1")
     r2 = main_mod.resolve_feature_llm_runtime("classification", user_id="u1")
-    assert r1["model_name"] == "glm-5" and r1["_source"] == "user"
-    assert r2["model_name"] == "qwen-max" and r2["_source"] == "user"
-    assert r1["api_key"] == r2["api_key"] == "sk-user"   # 同一把 key
+    assert r1["model_name"] == r2["model_name"] == "glm-5"   # 都用用户生效 model
+    assert r1["_source"] == r2["_source"] == "user"
+    assert r1["api_key"] == r2["api_key"] == "sk-user"
     assert r1["provider"] == r2["provider"] == "dashscope"
 
 
@@ -458,8 +460,9 @@ def test_feature_model_map_applied_system(main_mod, monkeypatch):
     assert rt["model_name"] == "qwen-max"               # 映射覆盖生效
 
 
-def test_feature_model_map_applied_user(main_mod, monkeypatch):
-    # bare routing + feature_model 映射 → 用户级路径也用映射 model + 用户 key
+def test_configured_user_ignores_feature_model_map(main_mod, monkeypatch):
+    # 语义 A：feature_model 映射(qwen-max)只对系统兜底/未配用户生效；
+    # 已配自己 model 的用户仍用自己的生效 model(glm-5)。
     _patch(
         main_mod, monkeypatch,
         routing={"smart_reply": "dashscope"},
@@ -470,19 +473,21 @@ def test_feature_model_map_applied_user(main_mod, monkeypatch):
     rt = main_mod.resolve_feature_llm_runtime("smart_reply", user_id="u1")
     assert rt["_source"] == "user"
     assert rt["api_key"] == "sk-user"
-    assert rt["model_name"] == "qwen-max"
+    assert rt["model_name"] == "glm-5"   # 用户自己的生效 model 覆盖映射
 
 
-def test_legacy_ref_in_routing_still_tolerant(main_mod, monkeypatch):
-    # 向后兼容：即使 routing 值残留 "源:model"（老数据/手工），resolver 仍能拆并生效
+def test_unconfigured_user_gets_system_feature_model(main_mod, monkeypatch):
+    # 语义 A 对照：没自配的用户 + 允许兜底 → 走系统级，用 feature_model 映射的 model
     _patch(
         main_mod, monkeypatch,
-        routing={"smart_reply": "dashscope:qwen-max"},
-        user_cfg={"u1": {"dashscope": {"api_key": "sk-user", "model_name": "glm-5", "base_url": "https://d"}}},
-        system_cfg={},
+        routing={"weekly_report": "dashscope"},
+        user_cfg={},
+        system_cfg={"dashscope": {"api_key": "sk-sys", "model_name": "glm-5", "models": ["glm-5", "qwen-max"]}},
+        model_map={"weekly_report": "qwen-max"},
     )
-    rt = main_mod.resolve_feature_llm_runtime("smart_reply", user_id="u1")
-    assert rt["model_name"] == "qwen-max" and rt["_source"] == "user"
+    rt = main_mod.resolve_feature_llm_runtime("weekly_report", user_id="u1")
+    assert rt["_source"] == "system"
+    assert rt["model_name"] == "qwen-max"   # 系统路由的模块级 model 生效
 
 
 # ─────── H. per-model 记录：源下每个 model 单独增删/保存（用户级）───────

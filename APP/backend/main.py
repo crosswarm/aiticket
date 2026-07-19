@@ -6093,23 +6093,12 @@ def resolve_feature_llm_runtime(
         # model 优先级：ref 指定 > 该源默认(model_name)
         return model_override or (pc.get("model_name", "") if isinstance(pc, dict) else "")
 
-    # ── 1. 用户级优先 ──
-    # 1a. 路由链中用户配过的 source 优先（系统策略与用户凭据的交集最优）
+    # ── 1. 用户级：用户配了就用「用户自己选中的生效 model」，覆盖系统路由的 model ──
+    #     语义（用户裁定 A）：用户选中的生效 model 用于该用户所有 AI 功能；系统级按模块的
+    #     model 路由只对「没自配的用户 / 系统兜底 / 后台」生效，不改也不拦用户自己的选择。
+    #     全局生效 = 用户 last_provider 源 + 该源默认(生效) model；last_provider 不可用
+    #     （未设/被 exclude 失效）则顺延到用户其它源。exclude 支持 429 失败切下一个源。
     user_cfg = auth_service.get_user_llm_config(user_id) if user_id else {}
-    for source_name, model_override in candidates:
-        pc = user_cfg.get(source_name) or {}
-        if pc.get("api_key"):
-            return {
-                "provider": source_name,
-                "api_key": pc["api_key"],
-                "model_name": _model_for(pc, model_override),
-                "base_url": pc.get("base_url", ""),
-                "_source": "user",
-            }
-    # 1b. 交集为空：退到用户自己的 last_provider → 其配置的任意 source。
-    #     用户级语义=用户配了 key 就能用，路由链只约束系统级兜底，不拦用户自己的选择
-    #     （bugfix: songshijia 配 deepseek 但 smart_reply 路由 minimax → 曾被误判 blocked）。
-    #     此路径无 ref model 约束，用该源默认 model。
     if user_cfg:
         _last = ""
         try:
@@ -6125,7 +6114,7 @@ def resolve_feature_llm_runtime(
                 return {
                     "provider": source_name,
                     "api_key": pc["api_key"],
-                    "model_name": pc.get("model_name", ""),
+                    "model_name": pc.get("model_name", ""),  # 用户该源的生效(默认) model
                     "base_url": pc.get("base_url", ""),
                     "_source": "user",
                 }
@@ -6249,14 +6238,21 @@ def set_llm_config(request: LLMConfigRequest, raw_request: Request):
 
 @app.post("/api/config/llm/model")
 def add_user_model(request: LLMModelRequest, raw_request: Request):
-    """在当前用户某源下单独新增一个 model（源凭据须已保存）。"""
+    """在当前用户某源下单独新增一个 model（源凭据须已保存）。
+
+    set_default=True 表示把该 model 设为「生效」：既设为该源默认，又把该源设为用户
+    全局生效源(last_provider) —— 用户所有 AI 功能随即改用这个 model（语义 A）。
+    """
     user = require_authenticated_user(raw_request)
+    uid = user["id"]
     try:
-        auth_service.add_user_model(user["id"], request.provider, request.model, request.set_default)
+        auth_service.add_user_model(uid, request.provider, request.model, request.set_default)
     except ValueError as e:
         if str(e) == "provider_not_configured":
             return {"status": "error", "message": "请先保存该源的凭据（API Key）再添加模型"}
         return {"status": "error", "message": str(e)}
+    if request.set_default:
+        auth_service.set_user_last_provider(uid, request.provider)   # 该源成为全局生效源
     return {"status": "success", "provider": request.provider, "model": request.model}
 
 

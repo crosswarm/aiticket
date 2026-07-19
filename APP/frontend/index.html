@@ -279,7 +279,7 @@
                         placeholder="https://api.deepseek.com/v1">
                 </div>
                 <div>
-                    <label class="block text-sm font-bold mb-2">模型（共用该源的 Key / Base URL；单独增删，选中=默认）</label>
+                    <label class="block text-sm font-bold mb-2">模型（共用该源的 Key / Base URL；单独增删，选中=当前生效，你所有 AI 功能都用它）</label>
                     <div id="modelRowsInline" class="space-y-1"></div>
                     <div class="flex gap-2 mt-2">
                         <input type="text" id="addModelInput" placeholder="新模型名，如 qwen-max"
@@ -565,7 +565,7 @@
                     return '<div class="flex items-center gap-2 py-1" data-model="' + m.replace(/"/g, '&quot;') + '">' +
                         '<label class="flex items-center gap-2 flex-1 text-sm cursor-pointer">' +
                         '<input type="radio" name="inline-default"' + (isDef ? ' checked' : '') + ' onchange="setInlineDefault(this)">' +
-                        m.replace(/</g, '&lt;') + (isDef ? ' <span class="text-xs text-indigo-500">默认</span>' : '') +
+                        m.replace(/</g, '&lt;') + (isDef ? ' <span class="text-xs text-indigo-500">生效</span>' : '') +
                         '</label>' +
                         '<button type="button" onclick="delInlineModel(this)" class="text-xs text-rose-500 hover:underline">删除</button>' +
                         '</div>';

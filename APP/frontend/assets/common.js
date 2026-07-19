@@ -594,7 +594,7 @@ window.DSLLMConfig = (function () {
           scope +
           "',this)\" style=\"cursor:pointer;\">" +
           _esc(m) +
-          (isDef ? ' <span style="font-size:var(--ds-text-xs);color:var(--ds-accent);">默认</span>' : "") +
+          (isDef ? ' <span style="font-size:var(--ds-text-xs);color:var(--ds-accent);">' + (scope === "sys" ? "默认" : "生效") + "</span>" : "") +
           "</label>" +
           '<button onclick="DSLLMConfig._delModel(\'' +
           scope +
@@ -626,7 +626,11 @@ window.DSLLMConfig = (function () {
       '<div style="border-top:1px dashed var(--ds-border-subtle);padding-top:10px;">' +
       '<div style="font-size:var(--ds-text-sm);color:' +
       color +
-      ';margin-bottom:4px;">模型（共用上面的 Key / Base URL；选中=默认模型）</div>' +
+      ';margin-bottom:4px;">' +
+      (scope === "sys"
+        ? "模型（共用上面的 Key / Base URL；选中=该源默认模型）"
+        : "模型（共用上面的 Key / Base URL；选中=当前生效模型，你所有 AI 功能都用它）") +
+      "</div>" +
       (rows || '<div style="font-size:var(--ds-text-xs);color:var(--ds-text-muted);">还没有模型，在下方添加一个</div>') +
       addRow +
       hint +
