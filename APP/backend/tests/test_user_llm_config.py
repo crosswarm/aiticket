@@ -483,3 +483,69 @@ def test_legacy_ref_in_routing_still_tolerant(main_mod, monkeypatch):
     )
     rt = main_mod.resolve_feature_llm_runtime("smart_reply", user_id="u1")
     assert rt["model_name"] == "qwen-max" and rt["_source"] == "user"
+
+
+# ─────── H. per-model 记录：源下每个 model 单独增删/保存（用户级）───────
+
+def test_add_user_model_individual(tmp_path):
+    service, uid = _make_service(tmp_path)
+    # 先存源凭据（默认 glm-5）
+    service.set_user_llm_provider(uid, "dashscope", api_key="sk-u", model_name="glm-5", base_url="https://d")
+    # 单独加一个 model
+    service.add_user_model(uid, "dashscope", "qwen-max")
+    cfg = service.get_user_llm_config(uid)
+    assert cfg["dashscope"]["models"] == ["glm-5", "qwen-max"]
+    assert cfg["dashscope"]["model_name"] == "glm-5"   # 默认不变
+    assert cfg["dashscope"]["api_key"] == "sk-u"        # 共用源凭据
+
+
+def test_add_user_model_set_default(tmp_path):
+    service, uid = _make_service(tmp_path)
+    service.set_user_llm_provider(uid, "dashscope", api_key="sk-u", model_name="glm-5")
+    service.add_user_model(uid, "dashscope", "qwen-max", set_default=True)
+    cfg = service.get_user_llm_config(uid)
+    assert cfg["dashscope"]["model_name"] == "qwen-max"          # 默认切换
+    assert cfg["dashscope"]["models"] == ["qwen-max", "glm-5"]   # 默认置首
+
+
+def test_add_user_model_requires_source(tmp_path):
+    service, uid = _make_service(tmp_path)
+    with pytest.raises(ValueError) as ei:
+        service.add_user_model(uid, "dashscope", "glm-5")   # 源未保存
+    assert str(ei.value) == "provider_not_configured"
+
+
+def test_remove_user_model_and_default_promotes(tmp_path):
+    service, uid = _make_service(tmp_path)
+    service.set_user_llm_provider(uid, "dashscope", api_key="sk-u", model_name="glm-5")
+    service.add_user_model(uid, "dashscope", "qwen-max")
+    service.add_user_model(uid, "dashscope", "qwen-plus")
+    # 删非默认
+    service.remove_user_model(uid, "dashscope", "qwen-plus")
+    assert service.get_user_llm_config(uid)["dashscope"]["models"] == ["glm-5", "qwen-max"]
+    # 删默认 → 顺延
+    service.remove_user_model(uid, "dashscope", "glm-5")
+    cfg = service.get_user_llm_config(uid)
+    assert cfg["dashscope"]["model_name"] == "qwen-max"
+    assert cfg["dashscope"]["models"] == ["qwen-max"]
+
+
+def test_set_source_preserves_models(tmp_path):
+    # 只改源凭据(models=None) → 已配 model 列表保留不丢
+    service, uid = _make_service(tmp_path)
+    service.set_user_llm_provider(uid, "dashscope", api_key="sk-old", model_name="glm-5")
+    service.add_user_model(uid, "dashscope", "qwen-max")
+    # 轮换 key，不传 models
+    service.set_user_llm_provider(uid, "dashscope", api_key="sk-new", base_url="https://d2")
+    cfg = service.get_user_llm_config(uid)
+    assert cfg["dashscope"]["api_key"] == "sk-new"
+    assert cfg["dashscope"]["base_url"] == "https://d2"
+    assert cfg["dashscope"]["models"] == ["glm-5", "qwen-max"]   # 保留
+    assert cfg["dashscope"]["model_name"] == "glm-5"             # 默认沿用
+
+
+def test_norm_models_default_first(tmp_path):
+    from auth_service import AuthService
+    assert AuthService._norm_models("glm-5", ["qwen-max", "glm-5", "qwen-max"]) == ["glm-5", "qwen-max"]
+    assert AuthService._norm_models("", ["a", "a", "b"]) == ["a", "b"]
+    assert AuthService._norm_models("x", []) == ["x"]

@@ -1027,6 +1027,39 @@ class AuthService:
             }
         return result
 
+    @staticmethod
+    def _norm_models(default: str, models: list) -> list:
+        """默认 model 强制排最前，其余保序去空去重。"""
+        default = (default or "").strip()
+        clean = [m.strip() for m in (models or []) if isinstance(m, str) and m.strip()]
+        ordered = ([default] if default else []) + [m for m in clean if m != default]
+        seen, out = set(), []
+        for m in ordered:
+            if m and m not in seen:
+                seen.add(m)
+                out.append(m)
+        return out
+
+    def _read_provider_models(self, conn, user_id: str, provider: str):
+        """返回 (存在?, model_name默认, models列表)。"""
+        row = conn.execute(
+            "SELECT model_name, models_json FROM user_llm_config WHERE user_id=? AND provider=?",
+            (user_id, provider),
+        ).fetchone()
+        if not row:
+            return (False, "", [])
+        default = row["model_name"] or ""
+        models = []
+        raw = row["models_json"] or ""
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    models = [m for m in parsed if isinstance(m, str) and m.strip()]
+            except Exception:
+                models = []
+        return (True, default, models)
+
     def set_user_llm_provider(
         self,
         user_id: str,
@@ -1036,10 +1069,11 @@ class AuthService:
         base_url: str = "",
         models: list = None,
     ) -> None:
-        """UPSERT 用户对某 provider/源 的凭据。api_key 加密存储。
+        """UPSERT 用户对某源(provider=base_url+key)的凭据。api_key 加密存储。
 
-        models = 该源挂的 model 列表（可选）；缺省时按 [model_name] 兜底存储，
-        保证默认 model 一定在列表内且排最前。
+        源与 model 解耦：本方法保存源凭据 + 默认 model；model 列表用
+        add/remove_user_model 单独增删。`models=None`（默认）→**保留现有 models**
+        （只改 key/base_url/默认 model，不动已配的 model 列表）；显式传 list → 整体替换。
         """
         if not user_id:
             raise ValueError("user_id is required")
@@ -1051,19 +1085,17 @@ class AuthService:
             self._fernet.encrypt(api_key.encode("utf-8")).decode("ascii") if api_key else ""
         )
         model_name = (model_name or "").strip()
-        # 归一化 models：去空去重，默认 model 强制排最前
-        norm_models: list = []
-        if isinstance(models, list):
-            norm_models = [m.strip() for m in models if isinstance(m, str) and m.strip()]
-        ordered = ([model_name] if model_name else []) + [m for m in norm_models if m != model_name]
-        _seen, _dedup = set(), []
-        for m in ordered:
-            if m and m not in _seen:
-                _seen.add(m)
-                _dedup.append(m)
-        models_json = json.dumps(_dedup, ensure_ascii=False)
         now = _isoformat()
         with self._connect() as conn:
+            exists, cur_default, cur_models = self._read_provider_models(conn, user_id, provider)
+            if models is None:
+                base_models = cur_models              # 保留现有 model 列表
+                if not model_name:
+                    model_name = cur_default          # 未显式给默认则沿用
+            else:
+                base_models = models
+            final = self._norm_models(model_name, base_models)
+            models_json = json.dumps(final, ensure_ascii=False)
             conn.execute(
                 """INSERT INTO user_llm_config (user_id, provider, api_key, model_name, base_url, models_json, updated_at)
                    VALUES (?,?,?,?,?,?,?)
@@ -1074,6 +1106,47 @@ class AuthService:
                      models_json=excluded.models_json,
                      updated_at=excluded.updated_at""",
                 (user_id, provider, encrypted_api_key, model_name, base_url or "", models_json, now),
+            )
+
+    def add_user_model(self, user_id: str, provider: str, model: str, set_default: bool = False) -> None:
+        """在某源下单独新增/更新一个 model（源凭据须已存在）。set_default 或该源尚无默认时设为默认。"""
+        if not user_id:
+            raise ValueError("user_id is required")
+        provider = (provider or "").strip()
+        model = (model or "").strip()
+        if not provider or not model:
+            raise ValueError("provider and model are required")
+        now = _isoformat()
+        with self._connect() as conn:
+            exists, default, models = self._read_provider_models(conn, user_id, provider)
+            if not exists:
+                raise ValueError("provider_not_configured")   # 先保存源凭据再加 model
+            if model not in models:
+                models.append(model)
+            if set_default or not default:
+                default = model
+            final = self._norm_models(default, models)
+            conn.execute(
+                "UPDATE user_llm_config SET model_name=?, models_json=?, updated_at=? WHERE user_id=? AND provider=?",
+                (default, json.dumps(final, ensure_ascii=False), now, user_id, provider),
+            )
+
+    def remove_user_model(self, user_id: str, provider: str, model: str) -> None:
+        """删除某源下的一个 model；若删的是默认，默认顺延为剩余首个。"""
+        provider = (provider or "").strip()
+        model = (model or "").strip()
+        now = _isoformat()
+        with self._connect() as conn:
+            exists, default, models = self._read_provider_models(conn, user_id, provider)
+            if not exists:
+                return
+            models = [m for m in models if m != model]
+            if default == model:
+                default = models[0] if models else ""
+            final = self._norm_models(default, models)
+            conn.execute(
+                "UPDATE user_llm_config SET model_name=?, models_json=?, updated_at=? WHERE user_id=? AND provider=?",
+                (default, json.dumps(final, ensure_ascii=False), now, user_id, provider),
             )
 
     def delete_user_llm_provider(self, user_id: str, provider: str) -> None:

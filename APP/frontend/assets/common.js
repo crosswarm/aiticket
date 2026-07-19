@@ -567,6 +567,137 @@ window.DSLLMConfig = (function () {
   }
 
   // 渲染当前用户个人配置表单（后端为真相源），admin 额外渲染系统级区
+  // 渲染「模型列表」区块：源(base_url+key)下每个 model 一行，单独增删；radio=默认。
+  // scope: "my"（用户级）| "sys"（系统级）。current = 该源当前配置。
+  function _renderModelsBlock(scope, current) {
+    var models = (current.models && current.models.length)
+      ? current.models
+      : (current.model_name ? [current.model_name] : []);
+    var def = current.model_name || (models[0] || "");
+    var hasKey = !!(current.api_key);
+    var color = scope === "sys" ? "#92400e" : "var(--ds-text-secondary)";
+    var rows = models
+      .map(function (m) {
+        var isDef = m === def;
+        return (
+          '<div class="ds-model-row" data-model="' +
+          _esc(m) +
+          '" style="display:flex;align-items:center;gap:8px;padding:4px 0;">' +
+          '<label style="display:flex;align-items:center;gap:6px;flex:1;font-size:var(--ds-text-sm);color:' +
+          color +
+          ';cursor:pointer;">' +
+          '<input type="radio" name="ds-' +
+          scope +
+          '-default"' +
+          (isDef ? " checked" : "") +
+          ' onchange="DSLLMConfig._setDefault(\'' +
+          scope +
+          "',this)\" style=\"cursor:pointer;\">" +
+          _esc(m) +
+          (isDef ? ' <span style="font-size:var(--ds-text-xs);color:var(--ds-accent);">默认</span>' : "") +
+          "</label>" +
+          '<button onclick="DSLLMConfig._delModel(\'' +
+          scope +
+          "',this)\" style=\"" +
+          btnStyle +
+          ';padding:2px 8px;color:var(--ds-danger);" title="删除该模型">删除</button>' +
+          "</div>"
+        );
+      })
+      .join("");
+    var addRow =
+      '<div style="display:flex;gap:8px;margin-top:6px;">' +
+      '<input id="ds-' +
+      scope +
+      '-newmodel" placeholder="新模型名，如 qwen-max（回车或点添加）" ' +
+      "onkeydown=\"if(event.key==='Enter'){event.preventDefault();DSLLMConfig._addModel('" +
+      scope +
+      "');}\" style=\"" +
+      inputStyle +
+      ';margin:0;flex:1;"><button onclick="DSLLMConfig._addModel(\'' +
+      scope +
+      "')\" style=\"" +
+      btnStyle +
+      '">添加模型</button></div>';
+    var hint = hasKey
+      ? ""
+      : '<p style="margin:4px 0 0;font-size:var(--ds-text-xs);color:#b45309;">请先保存上面的凭据(API Key)，再添加模型</p>';
+    return (
+      '<div style="border-top:1px dashed var(--ds-border-subtle);padding-top:10px;">' +
+      '<div style="font-size:var(--ds-text-sm);color:' +
+      color +
+      ';margin-bottom:4px;">模型（共用上面的 Key / Base URL；选中=默认模型）</div>' +
+      (rows || '<div style="font-size:var(--ds-text-xs);color:var(--ds-text-muted);">还没有模型，在下方添加一个</div>') +
+      addRow +
+      hint +
+      "</div>"
+    );
+  }
+
+  // 取某 scope 当前 provider 名
+  function _scopeProvider(scope) {
+    var el = document.getElementById(scope === "sys" ? "ds-sys-provider" : "ds-llm-provider");
+    return el ? el.value : "";
+  }
+
+  function _addModel(scope) {
+    var el = document.getElementById("ds-" + scope + "-newmodel");
+    var model = (el && el.value ? el.value : "").trim();
+    if (!model) return;
+    var provider = _scopeProvider(scope);
+    var url = (scope === "sys" ? SYSTEM_API : API) + "/model";
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ provider: provider, model: model }),
+    })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+      .then(function (res) {
+        if (res.ok && res.body.status !== "error") {
+          if (scope === "sys") loadSystemConfig();
+          else loadConfig();
+        } else if (typeof showToast === "function") {
+          showToast(res.body.message || res.body.detail || "添加失败", "error");
+        }
+      })
+      .catch(function () { if (typeof showToast === "function") showToast("添加失败", "error"); });
+  }
+
+  function _delModel(scope, btn) {
+    var row = btn.closest(".ds-model-row");
+    var model = row ? row.getAttribute("data-model") : "";
+    if (!model) return;
+    var provider = _scopeProvider(scope);
+    var url = (scope === "sys" ? SYSTEM_API : API) + "/model";
+    fetch(url, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ provider: provider, model: model }),
+    })
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function () { if (scope === "sys") loadSystemConfig(); else loadConfig(); })
+      .catch(function () { if (typeof showToast === "function") showToast("删除失败", "error"); });
+  }
+
+  function _setDefault(scope, radio) {
+    var row = radio.closest(".ds-model-row");
+    var model = row ? row.getAttribute("data-model") : "";
+    if (!model) return;
+    var provider = _scopeProvider(scope);
+    var url = (scope === "sys" ? SYSTEM_API : API) + "/model";
+    fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ provider: provider, model: model, set_default: true }),
+    })
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function () { if (scope === "sys") loadSystemConfig(); else loadConfig(); })
+      .catch(function () { if (typeof showToast === "function") showToast("设置默认失败", "error"); });
+  }
+
   function _renderMyConfig(provider) {
     var body = document.getElementById("ds-llm-config-body");
     if (!body) return;
@@ -596,30 +727,13 @@ window.DSLLMConfig = (function () {
       '" style="' +
       inputStyle +
       '"></label>' +
-      '<label style="font-size:var(--ds-text-sm);color:var(--ds-text-secondary);">Model Name (默认模型)' +
-      '<input id="ds-llm-model" value="' +
-      _esc(current.model_name) +
-      '" style="' +
-      inputStyle +
-      '" placeholder="e.g. gemini-2.0-flash"></label>' +
-      '<label style="font-size:var(--ds-text-sm);color:var(--ds-text-secondary);">更多模型 (同一 Base URL 下，逗号分隔，可选)' +
-      '<input id="ds-llm-models" value="' +
-      _esc(
-        (current.models || [])
-          .filter(function (m) {
-            return m && m !== current.model_name;
-          })
-          .join(", "),
-      ) +
-      '" style="' +
-      inputStyle +
-      '" placeholder="如 qwen-max, qwen-plus（共用上面的 Key/Base URL）"></label>' +
       '<label style="font-size:var(--ds-text-sm);color:var(--ds-text-secondary);">Base URL (可选)' +
       '<input id="ds-llm-baseurl" value="' +
       _esc(current.base_url) +
       '" style="' +
       inputStyle +
       '" placeholder="留空使用默认"></label>' +
+      _renderModelsBlock("my", current) +
       '<div id="ds-llm-test-result" style="display:none;padding:8px 12px;border-radius:var(--ds-radius-md);font-size:var(--ds-text-sm);margin-top:4px;"></div>' +
       '<div style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:8px;">' +
       '<button onclick="DSLLMConfig.test()" id="ds-llm-test-btn" style="' +
@@ -628,10 +742,10 @@ window.DSLLMConfig = (function () {
       '<div style="display:flex;gap:8px;">' +
       '<button onclick="DSLLMConfig.deleteProvider()" style="' +
       btnStyle +
-      ';color:var(--ds-danger);" title="删除当前 provider 的个人配置">删除</button>' +
+      ';color:var(--ds-danger);" title="删除当前源的个人配置">删除源</button>' +
       '<button onclick="DSLLMConfig.save()" style="' +
       btnPrimaryStyle +
-      '">保存</button>' +
+      '" title="保存该源的 API Key / Base URL（模型在下方单独增删）">保存源凭据</button>' +
       "</div></div>" +
       // admin 专属系统级区占位（loadSystemConfig 异步填充）
       (_isAdmin ? '<div id="ds-llm-system-region"></div>' : "") +
@@ -746,34 +860,17 @@ window.DSLLMConfig = (function () {
       '" style="' +
       inputStyle +
       '"></label>' +
-      '<label style="font-size:var(--ds-text-sm);color:#92400e;">Model Name (默认模型)' +
-      '<input id="ds-sys-model" value="' +
-      _esc(current.model_name) +
-      '" style="' +
-      inputStyle +
-      '" placeholder="e.g. gemini-2.0-flash"></label>' +
-      '<label style="font-size:var(--ds-text-sm);color:#92400e;">更多模型 (同一 Base URL 下，逗号分隔，可选)' +
-      '<input id="ds-sys-models" value="' +
-      _esc(
-        (current.models || [])
-          .filter(function (m) {
-            return m && m !== current.model_name;
-          })
-          .join(", "),
-      ) +
-      '" style="' +
-      inputStyle +
-      '" placeholder="如 qwen-max, qwen-plus（共用上面的 Key/Base URL）"></label>' +
       '<label style="font-size:var(--ds-text-sm);color:#92400e;">Base URL (可选)' +
       '<input id="ds-sys-baseurl" value="' +
       _esc(current.base_url) +
       '" style="' +
       inputStyle +
       '" placeholder="留空使用默认"></label>' +
-      '<div style="display:flex;justify-content:flex-end;">' +
+      _renderModelsBlock("sys", current) +
+      '<div style="display:flex;justify-content:flex-end;margin-top:8px;">' +
       '<button onclick="DSLLMConfig._saveSystem()" style="' +
       btnPrimaryStyle +
-      ';background:#d97706;">保存系统级配置</button>' +
+      ';background:#d97706;" title="保存该源的 Key/Base URL（模型在下方单独增删）">保存源凭据</button>' +
       "</div></div></div>";
   }
 
@@ -782,22 +879,12 @@ window.DSLLMConfig = (function () {
   }
 
   function saveSystem() {
+    // 只保存系统级源凭据；model 在下方单独增删（空 models → 后端保留现有）
     var provider = document.getElementById("ds-sys-provider").value;
-    var sysModel = document.getElementById("ds-sys-model").value;
-    var sysModelsEl = document.getElementById("ds-sys-models");
-    var sysExtra = ((sysModelsEl && sysModelsEl.value) || "")
-      .split(",")
-      .map(function (s) {
-        return s.trim();
-      })
-      .filter(Boolean);
-    var sysModels = [sysModel].concat(sysExtra).filter(Boolean);
     var payload = {
       provider: provider,
       api_key: document.getElementById("ds-sys-apikey").value,
-      model_name: sysModel,
       base_url: document.getElementById("ds-sys-baseurl").value,
-      models: sysModels,
     };
     fetch(SYSTEM_API, {
       method: "POST",
@@ -812,14 +899,9 @@ window.DSLLMConfig = (function () {
       })
       .then(function (res) {
         if (res.ok && res.body.status !== "error") {
-          _sysCfg[provider] = {
-            api_key: payload.api_key,
-            model_name: payload.model_name,
-            base_url: payload.base_url,
-            models: payload.models,
-          };
           if (typeof showToast === "function")
-            showToast("系统级配置已保存", "success");
+            showToast("系统级源凭据已保存，可在下方添加模型", "success");
+          loadSystemConfig();
         } else {
           if (typeof showToast === "function")
             showToast(
@@ -1041,26 +1123,11 @@ window.DSLLMConfig = (function () {
   }
 
   function save() {
+    // 只保存源凭据（key/base_url）；model 在下方单独增删。空 models → 后端保留现有。
     var provider = document.getElementById("ds-llm-provider").value;
     var apiKey = document.getElementById("ds-llm-apikey").value;
-    var modelName = document.getElementById("ds-llm-model").value;
     var baseUrl = document.getElementById("ds-llm-baseurl").value;
-    var modelsEl = document.getElementById("ds-llm-models");
-    var extraModels = ((modelsEl && modelsEl.value) || "")
-      .split(",")
-      .map(function (s) {
-        return s.trim();
-      })
-      .filter(Boolean);
-    // 默认模型排最前 + 其他模型；后端会再做去重/归一化
-    var models = [modelName].concat(extraModels).filter(Boolean);
-    var payload = {
-      provider: provider,
-      api_key: apiKey,
-      model_name: modelName,
-      base_url: baseUrl,
-      models: models,
-    };
+    var payload = { provider: provider, api_key: apiKey, base_url: baseUrl };
     fetch(API, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1081,45 +1148,37 @@ window.DSLLMConfig = (function () {
             );
           return;
         }
-        // 后端为准：更新内存缓存 + 本地离线缓存
-        _myCfg[provider] = {
+        _cacheProvider(provider, {
           api_key: apiKey,
-          model_name: modelName,
+          model_name: (_myCfg[provider] || {}).model_name || "",
           base_url: baseUrl,
-          models: models,
-        };
-        _cacheProvider(provider, payload);
+        });
         if (typeof showToast === "function")
-          showToast("个人 AI 配置已保存", "success");
-        close();
+          showToast("源凭据已保存，可在下方添加模型", "success");
+        loadConfig(); // 重渲染：源已存，下方模型区可增删
       })
       .catch(function () {
         if (typeof showToast === "function") showToast("保存失败", "error");
       });
   }
 
-  // 切换 provider 时从已加载的后端缓存回显，避免重复请求
+  // 切换 provider → 整块重渲染（模型列表依赖该 provider）
   function onProviderChange(provider) {
-    var c = _myCfg[provider] || _readCache(provider) || {};
-    var keyEl = document.getElementById("ds-llm-apikey");
-    var modelEl = document.getElementById("ds-llm-model");
-    var baseEl = document.getElementById("ds-llm-baseurl");
-    var modelsEl = document.getElementById("ds-llm-models");
-    if (keyEl) keyEl.value = c.api_key || "";
-    if (modelEl) modelEl.value = c.model_name || "";
-    if (baseEl) baseEl.value = c.base_url || "";
-    if (modelsEl)
-      modelsEl.value = (c.models || [])
-        .filter(function (m) {
-          return m && m !== c.model_name;
-        })
-        .join(", ");
+    _renderMyConfig(provider);
   }
 
   function test() {
     var provider = document.getElementById("ds-llm-provider").value;
     var apiKey = document.getElementById("ds-llm-apikey").value;
-    var model = document.getElementById("ds-llm-model").value;
+    // 用当前选中的默认模型测试
+    var model = "";
+    var checked = document.querySelector(
+      '.ds-model-row input[name="ds-my-default"]:checked',
+    );
+    if (checked) {
+      var r = checked.closest(".ds-model-row");
+      if (r) model = r.getAttribute("data-model") || "";
+    }
     var baseUrl = document.getElementById("ds-llm-baseurl").value;
     var resultEl = document.getElementById("ds-llm-test-result");
     var testBtn = document.getElementById("ds-llm-test-btn");
@@ -1185,5 +1244,8 @@ window.DSLLMConfig = (function () {
     _saveSystem: saveSystem,
     _switchTab: switchTab,
     _saveFeatureRouting: saveFeatureRouting,
+    _addModel: _addModel,
+    _delModel: _delModel,
+    _setDefault: _setDefault,
   };
 })();

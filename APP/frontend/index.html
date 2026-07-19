@@ -273,16 +273,21 @@
                         placeholder="e.g. deepseek-chat">
                 </div>
                 <div>
-                    <label class="block text-sm font-bold mb-2">更多模型（同一 Base URL 下，逗号分隔，可选）</label>
-                    <input type="text" id="modelsInput"
-                        class="w-full p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-                        placeholder="如 qwen-max, qwen-plus（共用上面的 Key/Base URL）">
-                </div>
-                <div>
                     <label class="block text-sm font-bold mb-2">Base URL</label>
                     <input type="text" id="baseUrlInput"
                         class="w-full p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
                         placeholder="https://api.deepseek.com/v1">
+                </div>
+                <div>
+                    <label class="block text-sm font-bold mb-2">模型（共用该源的 Key / Base URL；单独增删，选中=默认）</label>
+                    <div id="modelRowsInline" class="space-y-1"></div>
+                    <div class="flex gap-2 mt-2">
+                        <input type="text" id="addModelInput" placeholder="新模型名，如 qwen-max"
+                            class="flex-1 p-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                            onkeydown="if(event.key==='Enter'){event.preventDefault();addInlineModel();}">
+                        <button type="button" onclick="addInlineModel()" class="px-3 py-2 bg-slate-100 rounded-lg hover:bg-slate-200 text-sm whitespace-nowrap">添加模型</button>
+                    </div>
+                    <p id="addModelHint" class="text-xs text-amber-600 mt-1 hidden">请先保存下方凭据(API Key)，再添加模型</p>
                 </div>
             </div>
 
@@ -540,12 +545,70 @@
             document.getElementById('apiKeyInput').value = config.apiKey || '';
             document.getElementById('modelNameInput').value = config.modelName || '';
             document.getElementById('baseUrlInput').value = config.baseUrl || '';
-            const modelsEl = document.getElementById('modelsInput');
-            if (modelsEl) {
-                modelsEl.value = (config.models || [])
-                    .filter(m => m && m !== config.modelName)
-                    .join(', ');
+            renderInlineModelRows(config);
+        }
+
+        // 渲染个人配置里的「模型」行：每个 model 单独增删，radio=默认
+        function renderInlineModelRows(config) {
+            const box = document.getElementById('modelRowsInline');
+            if (!box) return;
+            const models = (config.models && config.models.length)
+                ? config.models
+                : (config.modelName ? [config.modelName] : []);
+            const def = config.modelName || (models[0] || '');
+            const hasKey = !!(config.apiKey);
+            const hint = document.getElementById('addModelHint');
+            if (hint) hint.classList.toggle('hidden', hasKey);
+            box.innerHTML = models.length
+                ? models.map(m => {
+                    const isDef = m === def;
+                    return '<div class="flex items-center gap-2 py-1" data-model="' + m.replace(/"/g, '&quot;') + '">' +
+                        '<label class="flex items-center gap-2 flex-1 text-sm cursor-pointer">' +
+                        '<input type="radio" name="inline-default"' + (isDef ? ' checked' : '') + ' onchange="setInlineDefault(this)">' +
+                        m.replace(/</g, '&lt;') + (isDef ? ' <span class="text-xs text-indigo-500">默认</span>' : '') +
+                        '</label>' +
+                        '<button type="button" onclick="delInlineModel(this)" class="text-xs text-rose-500 hover:underline">删除</button>' +
+                        '</div>';
+                }).join('')
+                : '<div class="text-xs text-slate-400">还没有模型，在下方添加一个</div>';
+        }
+
+        function _inlineProvider() { return document.getElementById('providerSelect').value; }
+
+        async function _inlineModelReq(method, model, setDefault) {
+            const provider = _inlineProvider();
+            const r = await fetch(`${API_BASE}/api/config/llm/model`, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ provider, model, set_default: !!setDefault })
+            });
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok || j.status === 'error') {
+                showToast(j.message || j.detail || '操作失败', 'error');
+                return false;
             }
+            await syncMyLLMConfigFromServer();
+            currentConfig = loadConfigForProvider(_inlineProvider());
+            renderInlineModelRows(currentConfig);
+            return true;
+        }
+
+        async function addInlineModel() {
+            const el = document.getElementById('addModelInput');
+            const model = (el && el.value || '').trim();
+            if (!model) return;
+            if (await _inlineModelReq('POST', model, false)) el.value = '';
+        }
+        function delInlineModel(btn) {
+            const row = btn.closest('[data-model]');
+            if (row) _inlineModelReq('DELETE', row.getAttribute('data-model'), false);
+        }
+        function setInlineDefault(radio) {
+            const row = radio.closest('[data-model]');
+            if (row) _inlineModelReq('POST', row.getAttribute('data-model'), true).then(() => {
+                document.getElementById('modelNameInput').value = row.getAttribute('data-model');
+            });
         }
 
         function closeSettings() {
@@ -666,32 +729,29 @@
             const key = document.getElementById('apiKeyInput').value.trim();
             const model = document.getElementById('modelNameInput').value.trim();
             const base = document.getElementById('baseUrlInput').value.trim();
-            const modelsEl = document.getElementById('modelsInput');
-            const extraModels = ((modelsEl && modelsEl.value) || '')
-                .split(',').map(s => s.trim()).filter(Boolean);
-            // 默认模型排最前 + 其他模型；后端再做去重/归一化
-            const models = [model].concat(extraModels).filter(Boolean);
 
             if (!(key || provider === 'none')) {
                 showToast('请输入 API Key', 'error');
                 return;
             }
 
-            const config = { apiKey: key, modelName: model, baseUrl: base, models: models };
+            // 只存源凭据 + 默认 model；其余 model 用「添加模型」单独增删。保留现有 model 列表。
+            const prevModels = (currentConfig && currentConfig.models) || (model ? [model] : []);
+            const config = { apiKey: key, modelName: model, baseUrl: base, models: prevModels };
             // localStorage 仅作本地缓存/离线回显
             localStorage.setItem(`llm_config_${provider}`, JSON.stringify(config));
             localStorage.setItem('llm_last_provider', provider);
             currentProvider = provider;
             currentConfig = config;
 
-            // 真相源是后端：把个人配置写到当前用户（'none' 仅本地关闭，不入库）
+            // 真相源是后端：把源凭据写到当前用户（不带 models → 后端保留现有 model 列表）
             if (provider !== 'none') {
                 try {
                     const r = await fetch(`${API_BASE}/api/config/llm`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         credentials: 'include',
-                        body: JSON.stringify({ provider, api_key: key, model_name: model, base_url: base, models: models })
+                        body: JSON.stringify({ provider, api_key: key, model_name: model, base_url: base })
                     });
                     if (!r.ok) {
                         const j = await r.json().catch(() => ({}));
@@ -706,8 +766,17 @@
                 }
             }
 
-            showToast('个人配置已保存');
-            closeSettings();
+            // 存的是源凭据；保持面板打开并刷新模型区，方便接着单独添加模型
+            if (provider !== 'none') {
+                await syncMyLLMConfigFromServer();
+                currentConfig = loadConfigForProvider(provider);
+                renderInlineModelRows(currentConfig);
+                document.getElementById('modelNameInput').value = currentConfig.modelName || model;
+                showToast('源凭据已保存，可在下方添加模型');
+            } else {
+                showToast('已关闭 AI 分析');
+                closeSettings();
+            }
         }
 
         // Image Handling

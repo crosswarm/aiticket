@@ -6216,11 +6216,23 @@ class LLMConfigRequest(BaseModel):
     api_key: str = ""
     model_name: str = ""      # 该源默认 model
     base_url: str = ""
-    models: List[str] = []    # 该源挂的 model 列表（可选；空 → [model_name]）
+    models: List[str] = []    # 显式整体替换该源 model 列表（可选；空=只存源凭据、保留现有 model）
+
+
+class LLMModelRequest(BaseModel):
+    """在某源下单独增删一个 model。"""
+    provider: str
+    model: str
+    set_default: bool = False
+
 
 @app.post("/api/config/llm")
 def set_llm_config(request: LLMConfigRequest, raw_request: Request):
-    """保存当前用户的 LLM 凭据（用户级，不写系统级）"""
+    """保存当前用户对某源(provider)的凭据（key/base_url/默认model）。
+
+    源与 model 解耦：本端点只存源凭据；model 用 /api/config/llm/model 单独增删。
+    models 为空 → 保留该源现有 model 列表（只更新凭据）。
+    """
     user = require_authenticated_user(raw_request)
     uid = user["id"]
     auth_service.set_user_llm_provider(
@@ -6229,10 +6241,31 @@ def set_llm_config(request: LLMConfigRequest, raw_request: Request):
         api_key=request.api_key,
         model_name=request.model_name,
         base_url=request.base_url,
-        models=request.models,
+        models=request.models or None,   # 空→保留现有
     )
     auth_service.set_user_last_provider(uid, request.provider)
     return {"status": "success", "provider": request.provider}
+
+
+@app.post("/api/config/llm/model")
+def add_user_model(request: LLMModelRequest, raw_request: Request):
+    """在当前用户某源下单独新增一个 model（源凭据须已保存）。"""
+    user = require_authenticated_user(raw_request)
+    try:
+        auth_service.add_user_model(user["id"], request.provider, request.model, request.set_default)
+    except ValueError as e:
+        if str(e) == "provider_not_configured":
+            return {"status": "error", "message": "请先保存该源的凭据（API Key）再添加模型"}
+        return {"status": "error", "message": str(e)}
+    return {"status": "success", "provider": request.provider, "model": request.model}
+
+
+@app.delete("/api/config/llm/model")
+def delete_user_model(request: LLMModelRequest, raw_request: Request):
+    """删除当前用户某源下的一个 model。"""
+    user = require_authenticated_user(raw_request)
+    auth_service.remove_user_model(user["id"], request.provider, request.model)
+    return {"status": "success", "provider": request.provider, "model": request.model}
 
 
 class LLMProviderDeleteRequest(BaseModel):
@@ -6257,28 +6290,86 @@ def get_system_llm_config(request: Request):
 
 @app.post("/api/config/llm/system")
 def set_system_llm_config(request: LLMConfigRequest, raw_request: Request):
-    """设置系统级 LLM 配置（仅管理员）。一个源(provider)可挂多个 model。"""
+    """保存系统级某源(provider)的凭据（key/base_url/默认model）。仅管理员。
+
+    源与 model 解耦：本端点只存源凭据 + 默认 model；具体 model 用
+    /api/config/llm/system/model 单独增删。models 为空 → 保留该源现有 model 列表。
+    """
     admin = require_admin_user(raw_request)
     config = load_llm_config()
+    existing = config.get(request.provider) if isinstance(config.get(request.provider), dict) else {}
+    # models 为空=保留现有；显式传=整体替换
+    base_models = list(request.models) if request.models else _source_models(existing)
     entry = {
         "api_key": request.api_key,
-        "model_name": request.model_name,   # 该源默认 model
+        "model_name": request.model_name or (existing.get("model_name", "") if existing else ""),
         "base_url": request.base_url,
-        "models": list(request.models or []),
+        "models": base_models,
     }
-    # models 归一化：默认 model 一定在列表内且排最前，去重保序
-    entry["models"] = _source_models(entry)
+    entry["models"] = _source_models(entry)   # 默认置首去重
     config[request.provider] = entry
     config["last_provider"] = request.provider
     save_llm_config(config, updated_by=admin["username"])
-    # 同步 BoardService 的系统级回退配置
     board_service.update_llm_config(
         provider=request.provider,
         api_key=request.api_key,
-        model_name=request.model_name,
+        model_name=entry["model_name"],
         base_url=request.base_url,
     )
     return {"status": "success", "provider": request.provider}
+
+
+def _mutate_system_model(provider: str, fn, admin_name: str):
+    """系统级某源 model 列表的读-改-写：fn(default, models)->(default, models)。"""
+    config = load_llm_config()
+    entry = config.get(provider)
+    if not isinstance(entry, dict):
+        return False
+    default = entry.get("model_name", "") or ""
+    models = _source_models(entry)
+    new_default, new_models = fn(default, list(models))
+    entry["model_name"] = new_default
+    entry["models"] = _source_models({"model_name": new_default, "models": new_models})
+    config[provider] = entry
+    save_llm_config(config, updated_by=admin_name)
+    return True
+
+
+@app.post("/api/config/llm/system/model")
+def add_system_model(request: LLMModelRequest, raw_request: Request):
+    """在系统级某源下单独新增一个 model（源须已保存）。仅管理员。"""
+    admin = require_admin_user(raw_request)
+    model = (request.model or "").strip()
+    if not model:
+        return {"status": "error", "message": "model 不能为空"}
+
+    def _fn(default, models):
+        if model not in models:
+            models.append(model)
+        if request.set_default or not default:
+            default = model
+        return (default, models)
+
+    ok = _mutate_system_model(request.provider, _fn, admin["username"])
+    if not ok:
+        return {"status": "error", "message": "请先保存该源的凭据再添加模型"}
+    return {"status": "success", "provider": request.provider, "model": model}
+
+
+@app.delete("/api/config/llm/system/model")
+def delete_system_model(request: LLMModelRequest, raw_request: Request):
+    """删除系统级某源下的一个 model；删的是默认则默认顺延。仅管理员。"""
+    admin = require_admin_user(raw_request)
+    model = (request.model or "").strip()
+
+    def _fn(default, models):
+        models = [m for m in models if m != model]
+        if default == model:
+            default = models[0] if models else ""
+        return (default, models)
+
+    _mutate_system_model(request.provider, _fn, admin["username"])
+    return {"status": "success", "provider": request.provider, "model": model}
 
 
 @app.get("/api/config/llm/features")
