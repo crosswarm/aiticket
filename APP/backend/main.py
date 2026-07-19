@@ -7074,6 +7074,45 @@ if _RUN_BG and ENABLE_SCHEDULER:
 
         register_task_handler("reply_training", _task_reply_training)
 
+        def _task_pattern_learning(**kwargs):
+            """每周：跑 pattern_learning_agent.py — 分析看板移动/分配历史(move_history/
+            auto_move_log)，提取路由关键词/swimlane/assignee 模式写入 learned_patterns.json
+            暂存区(人工审核后并入 gate2_routing 路由表，不自动改路由)。用 sys.executable 以在
+            容器内可用(不硬编码本机 python 路径)。"""
+            import subprocess as _sp
+            import sys as _sys
+            from pathlib import Path as _Path
+            from services.feishu_notifier import get_notifier
+            notifier = get_notifier()
+            _script = _Path(__file__).resolve().parent / "scripts" / "pattern_learning_agent.py"
+            try:
+                _proc = _sp.run(
+                    [_sys.executable, str(_script)],
+                    capture_output=True, text=True, timeout=2 * 3600,
+                    cwd=str(_Path(__file__).resolve().parent), env={**os.environ},
+                )
+                if _proc.returncode == 0:
+                    logger.info("[Scheduler] pattern_learning done")
+                else:
+                    logger.error(
+                        f"[Scheduler] pattern_learning failed rc={_proc.returncode}: "
+                        f"{(_proc.stderr or '')[:300]}"
+                    )
+                    try:
+                        notifier.send_message(
+                            f"⚠️ pattern_learning 失败 (rc={_proc.returncode})\n{(_proc.stderr or '')[:300]}"
+                        )
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.error(f"[Scheduler] pattern_learning exception: {exc}")
+                try:
+                    notifier.send_message(f"⚠️ pattern_learning 异常: {exc}")
+                except Exception:
+                    pass
+
+        register_task_handler("pattern_learning", _task_pattern_learning)
+
 
         def _task_vacation_schedule_cleanup(purpose: str = "vacation_window_2026_05", **kwargs):
             """假期结束后自动 disable 所有临时调度（防止污染正常工作日）。"""
