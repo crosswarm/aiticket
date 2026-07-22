@@ -871,11 +871,79 @@ window.DSLLMConfig = (function () {
       inputStyle +
       '" placeholder="留空使用默认"></label>' +
       _renderModelsBlock("sys", current) +
-      '<div style="display:flex;justify-content:flex-end;margin-top:8px;">' +
+      '<div id="ds-sys-test-result" style="display:none;padding:8px 12px;border-radius:var(--ds-radius-md);font-size:var(--ds-text-sm);margin-top:6px;"></div>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">' +
+      '<button onclick="DSLLMConfig._testSystem()" id="ds-sys-test-btn" style="' +
+      btnStyle +
+      '" title="用系统级 Key/Base URL + 生效模型测试连接">测试连接</button>' +
       '<button onclick="DSLLMConfig._saveSystem()" style="' +
       btnPrimaryStyle +
       ';background:#d97706;" title="保存该源的 Key/Base URL（模型在下方单独增删）">保存源凭据</button>' +
       "</div></div></div>";
+  }
+
+  // 系统级测试连接：用 ds-sys 凭据 + 当前选中的默认(生效)model 打 /api/llm/test
+  function testSystem() {
+    var provider = document.getElementById("ds-sys-provider").value;
+    var apiKey = document.getElementById("ds-sys-apikey").value;
+    var baseUrl = document.getElementById("ds-sys-baseurl").value;
+    var model = "";
+    var checked = document.querySelector(
+      '.ds-model-row input[name="ds-sys-default"]:checked',
+    );
+    if (checked) {
+      var r = checked.closest(".ds-model-row");
+      if (r) model = r.getAttribute("data-model") || "";
+    }
+    var resultEl = document.getElementById("ds-sys-test-result");
+    var btn = document.getElementById("ds-sys-test-btn");
+    if (!apiKey) {
+      resultEl.style.display = "block";
+      resultEl.style.cssText +=
+        ";background:var(--ds-warning-bg,#fef3c7);color:#92400e;";
+      resultEl.textContent = "请先填写系统级 API Key";
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "测试中...";
+    resultEl.style.display = "block";
+    resultEl.style.cssText +=
+      ";background:var(--ds-bg-muted,#f8fafc);color:var(--ds-text-muted,#64748b);";
+    resultEl.textContent = "正在测试连接...";
+    fetch(BASE + "/api/llm/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        provider: provider,
+        api_key: apiKey,
+        model_name: model,
+        base_url: baseUrl,
+      }),
+    })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (res) {
+        btn.disabled = false;
+        btn.textContent = "测试连接";
+        if (res.success || res.status === "success") {
+          resultEl.style.cssText +=
+            ";background:var(--ds-success-bg,#f0fdf4);color:#166534;";
+          resultEl.textContent = "连接成功" + (res.model ? " " + res.model : "");
+        } else {
+          resultEl.style.cssText +=
+            ";background:var(--ds-danger-bg,#fef2f2);color:#991b1b;";
+          resultEl.textContent = res.message || res.error || "连接失败";
+        }
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        btn.textContent = "测试连接";
+        resultEl.style.cssText +=
+          ";background:var(--ds-danger-bg,#fef2f2);color:#991b1b;";
+        resultEl.textContent = "请求失败: " + e.message;
+      });
   }
 
   function onSysProviderChange(provider) {
@@ -1246,6 +1314,7 @@ window.DSLLMConfig = (function () {
     _onProviderChange: onProviderChange,
     _onSysProviderChange: onSysProviderChange,
     _saveSystem: saveSystem,
+    _testSystem: testSystem,
     _switchTab: switchTab,
     _saveFeatureRouting: saveFeatureRouting,
     _addModel: _addModel,
