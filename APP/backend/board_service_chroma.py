@@ -26,7 +26,7 @@ PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__f
 # 新的依赖
 from vector_store import VectorStore
 from search_chroma import SemanticSearchEngine
-from llm_service import LLMService
+from llm_service import LLMService, normalize_openai_base_url
 from reply_cache_service import get_cached_reply, get_cached_reply_entry, save_cached_reply
 from reply_trainer import ReplyTrainer, STYLE_RULES_FILE
 from kb_runtime_service import KnowledgeRuntimeService
@@ -3775,7 +3775,7 @@ class BoardService:
                 try:
                     client = _OpenAI(
                         api_key=provider_cfg["api_key"],
-                        base_url=provider_cfg.get("base_url", ""),
+                        base_url=normalize_openai_base_url(provider_cfg.get("base_url", "")),
                         timeout=15,  # 图片分析非核心路径，严格限时避免阻塞线程池
                     )
                     resp = client.chat.completions.create(

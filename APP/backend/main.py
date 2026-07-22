@@ -37,7 +37,7 @@ from board_service_chroma import BoardService as ChromaBoardService
 # from search import SearchEngine
 # from board_service import BoardService
 
-from llm_service import LLMService
+from llm_service import LLMService, normalize_openai_base_url
 from kb_analysis import get_kb_analyzer
 from kb_runtime_service import KnowledgeRuntimeService
 from jira_service import jira_service as jira_svc, JiraService
@@ -6475,7 +6475,7 @@ def test_llm_connection(request: LLMTestRequest, raw_request: Request):
         else:
             # OpenAI兼容接口
             from openai import OpenAI
-            base_url = request.base_url or "https://api.openai.com/v1"
+            base_url = normalize_openai_base_url(request.base_url or "https://api.openai.com/v1")  # 容忍带不带 /v1
             print(f"[LLM Test] 使用OpenAI兼容接口: provider={request.provider}, base_url={base_url}, model={request.model_name}")
             # timeout=10/max_retries=0：base_url 不可达时快速失败，避免浏览器 fetch 显示 "Load failed"
             client = OpenAI(api_key=request.api_key, base_url=base_url, timeout=10.0, max_retries=0)

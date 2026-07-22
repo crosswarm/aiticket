@@ -112,7 +112,8 @@ def _routing_chain() -> list[str]:
 
 def _try_provider(llm: dict, messages: list, max_tokens: int = 800) -> tuple[str, Optional[str]]:
     """单次调用，返回 (content, error_or_None)。"""
-    base_url = llm["base_url"] or "https://api.openai.com/v1"
+    from llm_service import normalize_openai_base_url as _norm_burl
+    base_url = _norm_burl(llm["base_url"] or "https://api.openai.com/v1")  # 容忍带不带 /v1
     try:
         r = requests.post(
             f"{base_url}/chat/completions",

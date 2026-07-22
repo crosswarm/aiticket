@@ -554,3 +554,24 @@ def test_norm_models_default_first(tmp_path):
     assert AuthService._norm_models("glm-5", ["qwen-max", "glm-5", "qwen-max"]) == ["glm-5", "qwen-max"]
     assert AuthService._norm_models("", ["a", "a", "b"]) == ["a", "b"]
     assert AuthService._norm_models("x", []) == ["x"]
+
+
+# ─────── I. base_url 归一化：OpenAI 兼容，容忍带不带 /v1 ───────
+
+def test_normalize_openai_base_url():
+    from llm_service import normalize_openai_base_url as n
+    # 裸 host（无路径 / 仅 '/'）→ 补 /v1
+    assert n("https://token.yyrd.com/") == "https://token.yyrd.com/v1"
+    assert n("https://token.yyrd.com") == "https://token.yyrd.com/v1"
+    assert n("https://api.deepseek.com/") == "https://api.deepseek.com/v1"
+    # 已带 /v1 → 原样（去尾斜杠）；幂等
+    assert n("https://token.yyrd.com/v1") == "https://token.yyrd.com/v1"
+    assert n("https://token.yyrd.com/v1/") == "https://token.yyrd.com/v1"
+    assert n(n("https://token.yyrd.com/")) == "https://token.yyrd.com/v1"
+    # 其它版本/路径段 → 不误伤
+    assert n("https://open.bigmodel.cn/api/coding/paas/v4") == "https://open.bigmodel.cn/api/coding/paas/v4"
+    assert n("https://coding.dashscope.aliyuncs.com/v1") == "https://coding.dashscope.aliyuncs.com/v1"
+    assert n("https://api.kimi.com/coding/") == "https://api.kimi.com/coding"
+    # 空值原样
+    assert n("") == ""
+    assert n(None) is None

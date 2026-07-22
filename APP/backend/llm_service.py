@@ -14,6 +14,31 @@ MAX_DELAY = 10.0  # seconds
 DELAY_MULTIPLIER = 2.0
 OPENAI_REQUEST_TIMEOUT = 30.0
 
+
+def normalize_openai_base_url(base_url: str) -> str:
+    """OpenAI 兼容 base_url 归一化，容忍用户填不填 `/v1`。
+
+    OpenAI SDK 会在 base_url 后拼 `/chat/completions`，若 base_url 是裸 host
+    （无路径或只有 '/'），拼出的地址缺版本段——很多聚合网关(New API/one-api 等)对
+    未知路径返回 HTML 首页 → SDK 得到 HTML → 报 `'str' object has no attribute 'choices'`
+    （表面像 SDK/网络 bug，实为 base_url 少 /v1）。故：
+      - 裸 host（path 空或仅 '/'）→ 自动补 '/v1'
+      - 已带路径（/v1、/v4、/api/.../v4、/coding/ …）→ 原样(仅去尾斜杠)，不误伤
+    空值原样返回。幂等：`.../v1` 再归一化仍是 `.../v1`。
+    """
+    if not base_url or not str(base_url).strip():
+        return base_url
+    u = str(base_url).strip()
+    try:
+        from urllib.parse import urlparse
+        path = (urlparse(u).path or "").rstrip("/")
+    except Exception:
+        path = ""
+    if path == "":                 # 无路径 / 仅 '/' → 补 /v1
+        return u.rstrip("/") + "/v1"
+    return u.rstrip("/")           # 已有路径 → 原样(去尾斜杠)
+
+
 class LLMService:
     def __init__(self):
         pass
@@ -179,6 +204,7 @@ class LLMService:
     def _call_openai(self, api_key: str, model_name: str, base_url: str, system_prompt: str, query: str, images: List[str], temperature: float = None, max_tokens: int = None):
         if not base_url:
             base_url = "https://api.openai.com/v1" # Fallback
+        base_url = normalize_openai_base_url(base_url)  # 容忍带不带 /v1
 
         import httpx as _httpx
         _is_local = bool(base_url) and any(h in base_url for h in ("localhost", "127.0.0.1"))
