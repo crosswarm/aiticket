@@ -2590,6 +2590,93 @@ def kb_quick_note(req: dict):
     return {"status": "ok", "topic": topic, "indexed": n}
 
 
+# ── Badcase 上报端点 ──────────────────────────────────────────────────────────
+# 消费端早已存在（services/reply_reuse_evaluator 的两层压制 + mtime 热重载），
+# 这里补上产生端：快捷笔记弹窗的 Badcase tab、G3「不该推荐」按钮都打这个端点。
+
+_BADCASE_RATE: dict = {}  # {issue_key: [ts, ...]}
+_BADCASE_WINDOW = 300     # 5 分钟窗口
+_BADCASE_MAX = 10         # 每工单最多 10 次
+
+
+class BadcaseMarkRequest(BaseModel):
+    issue_key: str
+    candidate_key: str
+    reason: str = ""
+
+
+@app.post("/api/badcase/mark")
+def badcase_mark(req: BadcaseMarkRequest, request: Request):
+    """标记错误推荐/回复，写入负配对集合供实时压制。"""
+    require_authenticated_user(request)
+
+    now = time.time()
+    bucket = _BADCASE_RATE.setdefault(req.issue_key, [])
+    bucket[:] = [t for t in bucket if now - t < _BADCASE_WINDOW]
+    if len(bucket) >= _BADCASE_MAX:
+        raise HTTPException(status_code=429, detail="标记过于频繁，请 5 分钟后再试")
+    bucket.append(now)
+
+    _ROOT_DATA = Path(__file__).parent
+
+    # 1. 追加到 eval/badcases.jsonl（人读 / 离线评测）
+    badcases_path = _ROOT_DATA / "eval" / "badcases.jsonl"
+    badcases_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "issue_key": req.issue_key,
+        "candidate_key": req.candidate_key,
+        "reason": req.reason,
+        "source": "ui_button",
+    }
+    with open(badcases_path, "a", encoding="utf-8") as _f:
+        _f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    # 2. 追加到 badcase_negative_pairs.jsonl（供 evaluate_reuse 两层压制消费）。
+    #    - query_issue_key：精确对硬屏蔽必读（确定性跳过该工单的此复用，不依赖嵌入）。
+    #    - query_embedding：软压制用，须嵌入【与运行时一致的工单查询正文】，
+    #      而非 issue_key 字符串——否则 cos(embed(ID串), embed(工单正文))≈0.22≪0.75 阈值，
+    #      软压制永不触发。
+    #    即使嵌入失败也写入（emb=None）：硬屏蔽仍据 query_issue_key 生效。
+    pairs_path = _ROOT_DATA / "data" / "badcase_negative_pairs.jsonl"
+    try:
+        from services.reply_reuse_evaluator import _embed_text
+        import services.reply_reuse_evaluator as _rre_mod
+
+        # 构造与 board_service Gate3 一致的查询正文（build_issue_query/max_len=300）
+        query_text = ""
+        try:
+            from services.query_builder import build_issue_query
+            _ai = {}
+            try:
+                _cache_file = _ROOT_DATA / "data_cache" / "analysis_cache.json"
+                if _cache_file.exists():
+                    _ai = (json.loads(_cache_file.read_text(encoding="utf-8")) or {}).get(req.issue_key, {}) or {}
+            except Exception:
+                _ai = {}
+            _cache_fn = getattr(board_service, "_get_issue_from_cache", None)
+            query_text = build_issue_query(req.issue_key, _ai, max_len=300, cache_fn=_cache_fn)
+        except Exception as _eq:
+            logging.getLogger(__name__).warning("[BadcaseMark] 构造查询正文失败（仅硬屏蔽生效）: %s", _eq)
+
+        emb = _embed_text(query_text) if query_text else None
+        pair_entry = {
+            "ts": entry["ts"],
+            "wrong_ticket": req.candidate_key,
+            "query_issue_key": req.issue_key,
+            "query_text": (query_text or "")[:500],
+            "query_embedding": emb,
+        }
+        with open(pairs_path, "a", encoding="utf-8") as _f:
+            _f.write(json.dumps(pair_entry, ensure_ascii=False) + "\n")
+        # 失效缓存：重置 mtime 哨兵，下次请求立即重载两层映射
+        _rre_mod._neg_pairs_mtime = -1.0
+    except Exception as _e:
+        logging.getLogger(__name__).warning("[BadcaseMark] 负配对写入失败（非致命）: %s", _e)
+
+    return {"ok": True, "message": "已标记，下次刷新立即过滤"}
+
+
 @app.post("/api/kb/lint")
 def kb_lint():
     """KB 健康检查：覆盖率 + 缺失话题"""
