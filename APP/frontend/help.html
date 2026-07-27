@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>使用手册 - AI 工单智能助手</title>
+    <link rel="stylesheet" href="/assets/responsive.css">
+    <link rel="stylesheet" href="/assets/ds/tokens.css">
+    <link rel="stylesheet" href="/assets/ds/base.css">
+    <link rel="stylesheet" href="/assets/ds/components.css">
+    <link rel="stylesheet" href="/assets/ds/command-palette.css">
+    <style>
+        .help-shell {
+            max-width: 1180px;
+            margin: 0 auto;
+            padding: 24px 20px 80px;
+            display: grid;
+            grid-template-columns: 200px minmax(0, 1fr);
+            gap: 32px;
+            align-items: start;
+        }
+
+        /* ── 目录 ── */
+        .help-toc {
+            position: sticky;
+            top: 20px;
+            font-size: 13px;
+        }
+
+        .help-toc-title {
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+            color: var(--ds-text-muted);
+            margin: 0 0 10px 10px;
+        }
+
+        .help-toc a {
+            display: block;
+            padding: 6px 10px;
+            border-left: 2px solid transparent;
+            color: var(--ds-text-secondary);
+            text-decoration: none;
+            border-radius: 0 6px 6px 0;
+            transition: all .12s;
+            line-height: 1.4;
+        }
+
+        .help-toc a:hover {
+            background: var(--ds-bg-muted);
+            color: var(--ds-text-primary);
+        }
+
+        .help-toc a.active {
+            border-left-color: var(--ds-accent);
+            background: var(--ds-accent-subtle);
+            color: var(--ds-accent-text);
+            font-weight: 600;
+        }
+
+        /* ── 内容 ── */
+        .help-body {
+            min-width: 0;
+        }
+
+        .help-hero {
+            border: 1px solid var(--ds-border);
+            background: var(--ds-bg-surface);
+            border-radius: 14px;
+            padding: 26px 28px;
+            margin-bottom: 26px;
+        }
+
+        .help-hero h1 {
+            margin: 0 0 8px;
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--ds-text-primary);
+        }
+
+        .help-hero p {
+            margin: 0;
+            font-size: 14px;
+            line-height: 1.75;
+            color: var(--ds-text-secondary);
+        }
+
+        .help-section {
+            border: 1px solid var(--ds-border);
+            background: var(--ds-bg-surface);
+            border-radius: 14px;
+            padding: 24px 28px 28px;
+            margin-bottom: 22px;
+            scroll-margin-top: 20px;
+        }
+
+        .help-section > h2 {
+            margin: 0 0 6px;
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--ds-text-primary);
+            display: flex;
+            align-items: center;
+            gap: 9px;
+        }
+
+        .help-section > h2 .sec-num {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            border-radius: 7px;
+            background: var(--ds-accent-subtle);
+            color: var(--ds-accent-text);
+            font-size: 12px;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+
+        .help-section > .lead {
+            margin: 0 0 18px;
+            font-size: 13px;
+            color: var(--ds-text-muted);
+            line-height: 1.7;
+        }
+
+        .help-section h3 {
+            margin: 24px 0 10px;
+            font-size: 14.5px;
+            font-weight: 650;
+            color: var(--ds-text-primary);
+        }
+
+        .help-section p,
+        .help-section li {
+            font-size: 13.5px;
+            line-height: 1.85;
+            color: var(--ds-text-secondary);
+        }
+
+        .help-section p { margin: 0 0 12px; }
+
+        .help-section ul { margin: 0 0 12px; padding-left: 20px; }
+        .help-section ul li { margin-bottom: 5px; }
+
+        .help-section strong { color: var(--ds-text-primary); font-weight: 650; }
+
+        .help-section a { color: var(--ds-accent-text); }
+
+        code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12.5px;
+            background: var(--ds-bg-muted);
+            border: 1px solid var(--ds-border-subtle);
+            border-radius: 4px;
+            padding: 1px 5px;
+            color: var(--ds-text-primary);
+        }
+
+        kbd {
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 11.5px;
+            background: var(--ds-bg-muted);
+            border: 1px solid var(--ds-border-emphasis);
+            border-bottom-width: 2px;
+            border-radius: 5px;
+            padding: 1px 6px;
+            color: var(--ds-text-primary);
+            white-space: nowrap;
+        }
+
+        /* ── 编号步骤 ── */
+        .steps { list-style: none; padding: 0; margin: 0 0 8px; counter-reset: step; }
+
+        .steps > li {
+            position: relative;
+            padding: 0 0 20px 38px;
+            margin: 0;
+            border-left: 2px solid var(--ds-border);
+            counter-increment: step;
+        }
+
+        .steps > li:last-child { border-left-color: transparent; padding-bottom: 0; }
+
+        .steps > li::before {
+            content: counter(step);
+            position: absolute;
+            left: -13px;
+            top: -2px;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: var(--ds-accent);
+            color: #fff;
+            font-size: 12px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .steps > li > .step-title {
+            display: block;
+            font-size: 14px;
+            font-weight: 650;
+            color: var(--ds-text-primary);
+            margin-bottom: 4px;
+            line-height: 1.5;
+        }
+
+        /* ── 提示块 ── */
+        .note {
+            border-radius: 9px;
+            padding: 11px 14px;
+            font-size: 13px;
+            line-height: 1.75;
+            margin: 0 0 14px;
+            border: 1px solid;
+        }
+
+        .note :last-child { margin-bottom: 0; }
+        .note p { font-size: 13px; margin-bottom: 8px; }
+
+        .note-tip {
+            background: var(--ds-accent-subtle);
+            border-color: var(--ds-accent);
+            color: var(--ds-text-secondary);
+        }
+
+        .note-warn {
+            background: var(--ds-warning-subtle);
+            border-color: var(--ds-warning);
+            color: var(--ds-text-secondary);
+        }
+
+        .note-ok {
+            background: var(--ds-success-subtle);
+            border-color: var(--ds-success);
+            color: var(--ds-text-secondary);
+        }
+
+        .note b { color: var(--ds-text-primary); }
+
+        /* ── 截图 ── */
+        .shot { margin: 14px 0 18px; }
+
+        .shot-frame {
+            border: 1px solid var(--ds-border);
+            border-radius: 10px;
+            overflow: hidden;
+            background: var(--ds-bg-muted);
+            line-height: 0;
+            /* 截图是 2x 高清图，按自然尺寸的一半展示才不会显得过大 */
+            max-width: 620px;
+        }
+
+        .shot-frame img { display: block; width: 100%; height: auto; }
+
+        /* 宽图（含侧栏的整页图）单独放宽 */
+        .shot-wide .shot-frame { max-width: 820px; }
+
+        .shot-frame.is-missing {
+            line-height: 1.6;
+            border-style: dashed;
+            padding: 34px 16px;
+            text-align: center;
+            font-size: 12.5px;
+            color: var(--ds-text-muted);
+        }
+
+        .shot figcaption {
+            margin-top: 7px;
+            font-size: 12px;
+            color: var(--ds-text-muted);
+            line-height: 1.65;
+        }
+
+        /* ── 三步上手卡片 ── */
+        .quickstart {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+            margin-top: 4px;
+        }
+
+        .qs-card {
+            display: block;
+            border: 1px solid var(--ds-border);
+            border-radius: 11px;
+            padding: 16px;
+            background: var(--ds-bg-page);
+            text-decoration: none;
+            transition: all .14s;
+        }
+
+        .qs-card:hover {
+            border-color: var(--ds-accent);
+            transform: translateY(-2px);
+            box-shadow: var(--ds-shadow-md, 0 6px 18px rgba(15, 23, 42, .07));
+        }
+
+        .qs-step {
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: .06em;
+            color: var(--ds-accent-text);
+        }
+
+        .qs-card h3 { margin: 5px 0 5px; font-size: 14.5px; color: var(--ds-text-primary); }
+        .qs-card p { margin: 0; font-size: 12.5px; color: var(--ds-text-muted); line-height: 1.65; }
+
+        /* ── 功能列表 ── */
+        .feat { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+
+        .feat-item {
+            border: 1px solid var(--ds-border-subtle);
+            border-radius: 10px;
+            padding: 14px 16px;
+            background: var(--ds-bg-page);
+        }
+
+        .feat-item h3 { margin: 0 0 6px; font-size: 14px; }
+        .feat-item p { margin: 0 0 8px; font-size: 12.5px; line-height: 1.7; }
+        .feat-item a { font-size: 12.5px; font-weight: 600; text-decoration: none; }
+        .feat-item a:hover { text-decoration: underline; }
+
+        /* ── 表格 ── */
+        .help-table { width: 100%; border-collapse: collapse; margin: 0 0 14px; font-size: 13px; }
+        .help-table th, .help-table td {
+            border: 1px solid var(--ds-border);
+            padding: 8px 11px;
+            text-align: left;
+            color: var(--ds-text-secondary);
+            vertical-align: top;
+        }
+        .help-table th { background: var(--ds-bg-muted); color: var(--ds-text-primary); font-weight: 650; }
+
+        .table-wrap { overflow-x: auto; }
+
+        /* ── FAQ ── */
+        .faq details {
+            border: 1px solid var(--ds-border-subtle);
+            border-radius: 9px;
+            padding: 10px 14px;
+            margin-bottom: 9px;
+            background: var(--ds-bg-page);
+        }
+
+        .faq summary {
+            cursor: pointer;
+            font-size: 13.5px;
+            font-weight: 600;
+            color: var(--ds-text-primary);
+            outline: none;
+        }
+
+        .faq details[open] summary { margin-bottom: 8px; }
+        .faq details p { margin: 0 0 6px; font-size: 13px; }
+        .faq details :last-child { margin-bottom: 0; }
+
+        .btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 0; }
+
+        @media (max-width: 960px) {
+            .help-shell { grid-template-columns: 1fr; gap: 16px; padding: 16px 12px 60px; }
+            .help-toc {
+                position: static;
+                display: flex;
+                gap: 4px;
+                overflow-x: auto;
+                padding-bottom: 6px;
+                -webkit-overflow-scrolling: touch;
+            }
+            .help-toc-title { display: none; }
+            .help-toc a {
+                border-left: none;
+                border-bottom: 2px solid transparent;
+                border-radius: 6px 6px 0 0;
+                white-space: nowrap;
+            }
+            .help-toc a.active { border-left: none; border-bottom-color: var(--ds-accent); }
+            .help-section { padding: 18px 16px 22px; }
+            .quickstart, .feat { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+
+<body style="background:var(--ds-bg-page);color:var(--ds-text-primary);min-height:100vh">
+    <aside id="ds-sidebar" class="ds-sidebar"></aside>
+    <div id="ds-sidebar-overlay" class="ds-sidebar-overlay"></div>
+    <div id="ds-main" class="ds-main">
+        <div class="ds-page-header">
+            <div class="ds-page-header-left">
+                <button class="ds-hamburger" onclick="DSSidebar.open()" aria-label="打开导航">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
+                    </svg>
+                </button>
+                <h1 class="ds-page-title">使用手册</h1>
+                <nav class="ds-breadcrumb ds-hide-mobile">
+                    <span class="ds-breadcrumb-sep"></span>
+                    <span class="ds-breadcrumb-current">新手入门</span>
+                </nav>
+            </div>
+            <div class="ds-page-header-actions">
+                <div id="user-menu-container"></div>
+            </div>
+        </div>
+
+        <main class="help-shell">
+            <nav class="help-toc" id="help-toc" aria-label="目录">
+                <div class="help-toc-title">目录</div>
+                <a href="#start">三步上手</a>
+                <a href="#features">核心功能</a>
+                <a href="#jira">绑定 Jira</a>
+                <a href="#pm">绑定 PM 系统</a>
+                <a href="#project">项目与范围</a>
+                <a href="#llm">配置大模型</a>
+                <a href="#style">AI 学你的写法</a>
+                <a href="#badcase">回复不对怎么办</a>
+                <a href="#faq">常见问题</a>
+            </nav>
+
+            <div class="help-body">
+                <div class="help-hero">
+                    <h1>欢迎使用 AI 工单智能助手 👋</h1>
+                    <p>
+                        这套系统把你的 Jira 工单接进来，用 AI 帮你分类、找相似历史案例、起草回复。
+                        新账号刚登录时看板可能是空的 —— 那是正常的，因为还没把你的 Jira 账号绑上去。
+                        照着下面三步走完，大约 3 分钟就能开始干活。
+                    </p>
+                </div>
+
+                <!-- 1 三步上手 -->
+                <section class="help-section" id="start">
+                    <h2><span class="sec-num">1</span>三步上手</h2>
+                    <p class="lead">按顺序做，每一步都能点开对应章节看图文详解。</p>
+                    <div class="quickstart">
+                        <a class="qs-card" href="#jira">
+                            <div class="qs-step">STEP 1</div>
+                            <h3>绑定 Jira 会话</h3>
+                            <p>不绑定看板就没有数据。推荐用「复制 cURL」一键导入，10 秒搞定。</p>
+                        </a>
+                        <a class="qs-card" href="#project">
+                            <div class="qs-step">STEP 2</div>
+                            <h3>设置默认项目</h3>
+                            <p>决定你每次登录默认看哪个项目、关注哪些模块。</p>
+                        </a>
+                        <a class="qs-card" href="#llm">
+                            <div class="qs-step">STEP 3</div>
+                            <h3>配置大模型 API Key</h3>
+                            <p>AI 分析、智能回复都靠它。这是你的个人配置，不影响别人。</p>
+                        </a>
+                    </div>
+                </section>
+
+                <!-- 2 核心功能 -->
+                <section class="help-section" id="features">
+                    <h2><span class="sec-num">2</span>这套系统能帮你做什么</h2>
+                    <p class="lead">左侧栏就是全部入口，下面按你最可能用到的顺序介绍。</p>
+                    <div class="feat">
+                        <div class="feat-item">
+                            <h3>🗂️ 智能看板</h3>
+                            <p>把 Jira 工单按状态拉成看板。每张卡片会自动跑 AI 分析：判断问题类型、推荐处理团队、
+                                给出置信度，并起草一份回复。你可以直接在卡片上转交、移动工单、回复并关闭。</p>
+                            <a href="/board.html">打开智能看板 →</a>
+                        </div>
+                        <div class="feat-item">
+                            <h3>🔍 问题分析</h3>
+                            <p>不依赖具体工单，直接描述一个问题，系统会做语义检索，把历史上处理过的相似工单
+                                和知识库里的相关条目找出来，再综合给一份解决思路。</p>
+                            <a href="/index.html">打开问题分析 →</a>
+                        </div>
+                        <div class="feat-item">
+                            <h3>📚 知识库</h3>
+                            <p>把自家的产品文档、FAQ、排查手册向量化后语义检索，同时作为智能回复的知识来源。
+                                支持在线提问、编辑条目和手动同步。</p>
+                            <a href="/kb.html">打开知识库 →</a>
+                        </div>
+                        <div class="feat-item">
+                            <h3>📋 PM 任务看板</h3>
+                            <p>对接 PM 系统的原始需求 / 协作需求，把工单侧发现的需求推到产品侧跟进。
+                                需要先绑定 PM 系统会话。</p>
+                            <a href="/pm_board.html">打开 PM 任务看板 →</a>
+                        </div>
+                        <div class="feat-item">
+                            <h3>🧭 操作指引</h3>
+                            <p>上传一组操作截图，AI 帮你整理成分步骤的操作说明，可以直接贴给客户。</p>
+                            <a href="/guide.html">打开操作指引 →</a>
+                        </div>
+                        <div class="feat-item">
+                            <h3>⚙️ 账号与用户</h3>
+                            <p>改自己的登录密码。管理员还能在这里新增用户、调整角色、重置密码。</p>
+                            <a href="/settings.html">打开账号与用户 →</a>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 3 绑定 Jira -->
+                <section class="help-section" id="jira">
+                    <h2><span class="sec-num">3</span>绑定 Jira 会话（最关键的一步）</h2>
+                    <p class="lead">
+                        系统需要用<b>你自己的</b> Jira 身份去读工单，所以要把浏览器里已登录的会话交给它。
+                        最省事的做法是复制一条 cURL 命令粘进来 —— 里面该有的信息全都有，系统会自动解析。
+                    </p>
+
+                    <div class="note note-tip">
+                        <b>为什么推荐「复制 cURL」？</b> 因为这一步会同时带上 <code>JSESSIONID</code>、
+                        <code>atlassian.xsrf.token</code> 和<b>你公司 Jira 的网址</b>，
+                        三样东西一次全自动提取，你不用一个个手抄，也不用手填地址。
+                    </div>
+
+                    <ol class="steps">
+                        <li>
+                            <span class="step-title">用 Chrome 打开公司 Jira，正常登录完</span>
+                            <p>如果有短信 / 令牌等二次验证，走完整个流程，确认能正常看到工单页面。
+                                没登录成功就复制，拿到的是一个空会话，后面一定失败。</p>
+                        </li>
+                        <li>
+                            <span class="step-title">按 <kbd>F12</kbd> 打开开发者工具，切到 <b>Network</b>（网络）面板</span>
+                            <figure class="shot">
+                                <div class="shot-frame">
+                                    <img src="/assets/help/01-devtools-network.png" loading="lazy"
+                                        alt="Chrome 开发者工具的 Network 网络面板" onerror="helpImgFallback(this)">
+                                </div>
+                                <figcaption>图中以本平台页面为例演示，实际请在你已登录的 Jira 页面上操作。</figcaption>
+                            </figure>
+                        </li>
+                        <li>
+                            <span class="step-title">按 <kbd>F5</kbd> 刷新一次页面</span>
+                            <p>刷新后 Network 列表里会刷出一堆请求，这是正常的。</p>
+                        </li>
+                        <li>
+                            <span class="step-title">在任意一条请求上<b>右键 → Copy → Copy as cURL</b></span>
+                            <p>Windows 上菜单里写的是 <code>Copy as cURL (cmd)</code>，选它也可以。</p>
+                            <figure class="shot">
+                                <div class="shot-frame">
+                                    <img src="/assets/help/02-copy-as-curl.png" loading="lazy"
+                                        alt="右键菜单中选择 Copy as cURL" onerror="helpImgFallback(this)">
+                                </div>
+                                <figcaption>挑请求的小技巧：选类型是 <code>document</code> 或路径带 <code>rest/api</code>
+                                    的那种；别选 <code>.png</code> / <code>.js</code> 这类静态资源。</figcaption>
+                            </figure>
+                        </li>
+                        <li>
+                            <span class="step-title">回到本平台，打开<b>账号设置</b></span>
+                            <p>点右上角你的头像 → <b>账号设置</b>，找到「🔑 Jira 账号绑定」，
+                                认证方式保持默认的 <b>浏览器 Session（推荐）</b>。</p>
+                            <div class="btn-row">
+                                <a class="ds-btn ds-btn-primary" href="/board.html#account-settings">直接打开账号设置 →</a>
+                            </div>
+                        </li>
+                        <li>
+                            <span class="step-title">点「📋 粘贴 cURL 导入」，整段粘贴，再点「🧪 解析并保存+测试」</span>
+                            <p>整段粘贴就行，不用挑内容、不用删东西。</p>
+                            <figure class="shot">
+                                <div class="shot-frame">
+                                    <img src="/assets/help/03-paste-curl-modal.png" loading="lazy"
+                                        alt="一键导入 Jira Session 弹窗" onerror="helpImgFallback(this)">
+                                </div>
+                                <figcaption>弹窗也接受另外两种粘贴内容：请求头里的整行 Cookie，或只有
+                                    <code>JSESSIONID=…; atlassian.xsrf.token=…</code> 的 Cookie 字符串。</figcaption>
+                            </figure>
+                        </li>
+                        <li>
+                            <span class="step-title">看到「✅ 绑定成功！Jira 连接 OK」就完成了</span>
+                            <p>页面会在 3 秒后自动刷新并开始加载工单数据。</p>
+                            <figure class="shot">
+                                <div class="shot-frame">
+                                    <img src="/assets/help/04-bind-success.png" loading="lazy"
+                                        alt="绑定成功提示" onerror="helpImgFallback(this)">
+                                </div>
+                            </figure>
+                        </li>
+                    </ol>
+
+                    <h3>手动填写（备选方案）</h3>
+                    <p>如果不方便复制 cURL，也可以手工填：<kbd>F12</kbd> → <b>Application</b> → 左侧
+                        <b>Cookies</b> → 选你的 Jira 域名 → 找到 <code>JSESSIONID</code>，复制它的值粘到输入框；
+                        有 <code>atlassian.xsrf.token</code> 的话一并填上（可选）。这种方式需要你自己在
+                        「Base URL」里填公司 Jira 的网址。</p>
+
+                    <h3>关于安全和有效期</h3>
+                    <ul>
+                        <li>你的会话信息是<b>加密后</b>存在服务端的，并且<b>只对你自己的账号生效</b>，其他人看不到、也用不了。</li>
+                        <li>Jira 的会话过几天会自然过期。等到看板突然没数据、或提示 401 未授权时，
+                            把上面第 1～7 步再做一遍就行，大约 10 秒。</li>
+                    </ul>
+
+                    <div class="note note-warn">
+                        <b>如果提示「无法解析域名」</b>，那不是会话过期，而是网络问题：请确认填进去的 Jira 地址是对的，
+                        并且这台服务器本身能访问到它（内网 Jira 通常要接入公司网络）。
+                    </div>
+                </section>
+
+                <!-- 4 绑定 PM -->
+                <section class="help-section" id="pm">
+                    <h2><span class="sec-num">4</span>绑定 PM 系统（用到 PM 看板才需要）</h2>
+                    <p class="lead">方法和 Jira 完全一样，只是换个网站复制。</p>
+                    <ol class="steps">
+                        <li>
+                            <span class="step-title">用 Chrome 打开并登录 PM 系统</span>
+                        </li>
+                        <li>
+                            <span class="step-title"><kbd>F12</kbd> → Network → <kbd>F5</kbd> 刷新 → 右键任意请求 → Copy as cURL</span>
+                        </li>
+                        <li>
+                            <span class="step-title">账号设置 → 「🔑 PM 系统绑定」→ 点「📋 粘贴 cURL 导入」→ 整段粘贴</span>
+                            <p>系统会自动提取 <code>yht_access_token</code> 和全部 <code>ycap_*</code> 凭据，
+                                并显示这次会话的有效期。</p>
+                        </li>
+                    </ol>
+                    <div class="note note-tip">
+                        只用工单看板、不用 PM 看板的话，这一步可以跳过，不影响其它功能。
+                    </div>
+                </section>
+
+                <!-- 5 项目 -->
+                <section class="help-section" id="project">
+                    <h2><span class="sec-num">5</span>默认项目、切换项目、查看全部项目</h2>
+                    <p class="lead">这里有两个入口，作用不一样，容易混，先分清楚。</p>
+
+                    <div class="table-wrap">
+                        <table class="help-table">
+                            <thead>
+                                <tr><th style="width:110px">入口</th><th>作用</th><th style="width:130px">影响范围</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><b>账号设置</b><br>默认项目与关注模块</td>
+                                    <td>设定你每次登录后<b>默认</b>看到的项目和模块</td>
+                                    <td>跟着账号走，换电脑也生效</td>
+                                </tr>
+                                <tr>
+                                    <td><b>顶栏「作用域」</b></td>
+                                    <td><b>临时</b>切到别的项目看一眼，不改默认设置</td>
+                                    <td>只影响当前这台浏览器</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <h3>设定默认项目（推荐先做）</h3>
+                    <ol class="steps">
+                        <li>
+                            <span class="step-title">头像 → 账号设置 → 找到「🏷️ 默认项目与关注模块」</span>
+                        </li>
+                        <li>
+                            <span class="step-title">在「默认项目」框里搜项目名或项目编码，点选中</span>
+                        </li>
+                        <li>
+                            <span class="step-title">按需勾选「关注领域模块」，然后点「保存默认范围」</span>
+                            <p>模块<b>一个都不选就代表全部模块</b>，不用担心漏掉。</p>
+                            <figure class="shot">
+                                <div class="shot-frame">
+                                    <img src="/assets/help/05-default-scope.png" loading="lazy"
+                                        alt="默认项目与关注模块设置" onerror="helpImgFallback(this)">
+                                </div>
+                            </figure>
+                        </li>
+                    </ol>
+
+                    <h3>临时切换项目 / 查看全部项目</h3>
+                    <p>页面右上角有一个作用域按钮，上面写着当前范围（形如 <code>ABC · 全部模块</code>）。
+                        点它 → 搜索并选择项目 → 点「应用」即可。</p>
+                    <p>想跨项目一起看，就在项目列表里选 <b>全部项目</b>。</p>
+                    <figure class="shot">
+                        <div class="shot-frame">
+                            <img src="/assets/help/06-scope-switcher.png" loading="lazy"
+                                alt="作用域切换弹窗" onerror="helpImgFallback(this)">
+                        </div>
+                        <figcaption>「全部项目」会跨项目取数，数据量大、加载明显更慢，日常建议还是锁定单个项目。</figcaption>
+                    </figure>
+
+                    <div class="note note-tip">
+                        <b>第一次进某个项目时看到「索引中」是正常的。</b>
+                        系统正在为这个项目的历史工单建立语义索引，建好之后相似工单推荐才准。
+                        等进度走到 100% 就行，中途可以先去干别的。
+                    </div>
+                </section>
+
+                <!-- 6 LLM -->
+                <section class="help-section" id="llm">
+                    <h2><span class="sec-num">6</span>配置你自己的大模型 API Key</h2>
+                    <p class="lead">
+                        AI 分析、智能回复、知识库问答都要调用大模型。这里配的是<b>你的个人 Key，只对你生效</b>，
+                        不会影响其他同事。（管理员另外有一套系统级配置作为兜底。）
+                    </p>
+
+                    <div class="btn-row" style="margin-bottom:14px">
+                        <button class="ds-btn ds-btn-primary" type="button" onclick="openLLMConfig()">打开 AI 配置</button>
+                    </div>
+                    <p style="font-size:12.5px;color:var(--ds-text-muted)">也可以随时从左侧栏底部的「AI 配置」进入。</p>
+
+                    <ol class="steps">
+                        <li>
+                            <span class="step-title">选择 Provider（模型厂商）</span>
+                            <p>下拉里有 <code>zhipu</code>、<code>aliyun</code>、<code>deepseek</code>、
+                                <code>minimax</code>、<code>kimi</code>、<code>openai</code>、<code>gemini</code>、
+                                <code>local</code> 等。用哪家就选哪家。</p>
+                        </li>
+                        <li>
+                            <span class="step-title">填 API Key</span>
+                            <p><b>Base URL 一般留空</b>就行，留空表示用该厂商的官方地址。
+                                只有当你走的是自建网关或第三方中转（OpenAI 兼容接口）时，才需要填。</p>
+                        </li>
+                        <li>
+                            <span class="step-title">点「保存源凭据」</span>
+                            <p>这一步只保存 Key 和地址。模型要在下一步单独添加。</p>
+                        </li>
+                        <li>
+                            <span class="step-title">在下方「模型」区添加模型名，并选中要用的那个</span>
+                            <p>输入模型名（例如 <code>glm-4.5</code>、<code>qwen-max</code>、
+                                <code>deepseek-chat</code>）回车或点「添加模型」。
+                                一个源下可以放多个模型，<b>被选中的那个标着「生效」，你所有 AI 功能都会用它</b>。</p>
+                            <figure class="shot">
+                                <div class="shot-frame">
+                                    <img src="/assets/help/07-llm-config.png" loading="lazy"
+                                        alt="AI 配置弹窗" onerror="helpImgFallback(this)">
+                                </div>
+                            </figure>
+                        </li>
+                        <li>
+                            <span class="step-title">点「测试连接」确认可用</span>
+                            <p>看到成功提示就配好了，可以直接回看板用。</p>
+                        </li>
+                    </ol>
+
+                    <div class="note note-warn">
+                        顺序别搞反：<b>必须先「保存源凭据」，才能添加模型</b>。
+                        没保存 Key 就加模型，界面会提示你先保存凭据。
+                    </div>
+                </section>
+
+                <!-- 7 风格记忆 -->
+                <section class="help-section" id="style">
+                    <h2><span class="sec-num">7</span>AI 是怎么学会你的写法的</h2>
+                    <p class="lead">
+                        智能回复不是一成不变的模板。<b>你每改一次它的草稿，它就学一次。</b>
+                        用得越久，起草的内容越像你自己写的。
+                    </p>
+
+                    <h3>它是这样学的</h3>
+                    <ul>
+                        <li>你在回复编辑器里改完 AI 草稿、点<b>「提交处理」</b>，系统就把
+                            <b>AI 原稿 + 你的最终定稿</b>一起存成一条范例。</li>
+                        <li>系统会按你改动的幅度自动判档：几乎没改 = <b>直接采纳</b>，改了一部分 = <b>加工处理</b>，
+                            推翻重写 = <b>未采纳</b>。这个判断是自动的，你不需要手工标注。</li>
+                        <li>下次遇到类似的工单，系统会先把<b>你过去处理同类问题的定稿</b>找出来作为参考喂给模型，
+                            再叠加从你历史修改里提炼出的<b>风格规则</b>（比如你习惯的开头语、结构、措辞禁忌）。</li>
+                    </ul>
+
+                    <h3>怎么确认它真的在学</h3>
+                    <p>打开任意工单的回复编辑器，展开下面的<b>「生成详情」</b>折叠区，看这两行：</p>
+                    <ul>
+                        <li><b>回复范例</b> —— 这次生成参考了你过去多少条定稿。</li>
+                        <li><b>风格规则</b> —— 这次生成套用了哪些从你习惯里提炼出来的规则。</li>
+                    </ul>
+                    <figure class="shot shot-wide">
+                        <div class="shot-frame">
+                            <img src="/assets/help/08-reply-editor-gen-details.png" loading="lazy"
+                                alt="回复编辑器的生成详情面板" onerror="helpImgFallback(this)">
+                        </div>
+                        <figcaption>同一个面板里还能看到这次引用了哪些知识库条目、用的是哪种生成方式。</figcaption>
+                    </figure>
+
+                    <div class="note note-warn">
+                        <b>两种做法会让它学不到东西：</b>
+                        <p>① 嫌麻烦，草稿不改直接发 —— 系统会以为这就是你想要的，把问题一并学走；</p>
+                        <p>② 把草稿复制到别处改好，再贴回来发 —— 系统看不到你的修改过程。</p>
+                        正确做法是：<b>就在回复编辑器里改，改完点「提交处理」</b>。这是它变聪明的唯一入口。
+                    </div>
+                </section>
+
+                <!-- 8 badcase -->
+                <section class="help-section" id="badcase">
+                    <h2><span class="sec-num">8</span>回复或推荐不对？一键上报</h2>
+                    <p class="lead">
+                        AI 偶尔会推荐一个完全不搭边的历史工单，或者回复跑偏。
+                        遇到了别忍着 —— 上报一下，系统会立刻把这个错误案例记下来并避开，不用等管理员处理。
+                    </p>
+
+                    <h3>方式一：随手上报（推荐）</h3>
+                    <ol class="steps">
+                        <li>
+                            <span class="step-title">点右下角的 📝 浮动按钮，或直接按 <kbd>⌥N</kbd>（Windows 是 <kbd>Alt+N</kbd>）</span>
+                        </li>
+                        <li>
+                            <span class="step-title">切到 <b>🔴 Badcase</b> 标签页</span>
+                        </li>
+                        <li>
+                            <span class="step-title">填三个格子，然后 <kbd>Ctrl+Enter</kbd> 或点「提交 Badcase」</span>
+                            <ul>
+                                <li><b>工单号或标题</b> —— 出问题的那张工单；</li>
+                                <li><b>问题点</b> —— 哪里不对，说人话就行；</li>
+                                <li><b>期望效果</b> —— 你觉得应该是什么样（可以不填，但填了更有用）。</li>
+                            </ul>
+                            <figure class="shot">
+                                <div class="shot-frame">
+                                    <img src="/assets/help/09-badcase-modal.png" loading="lazy"
+                                        alt="快捷笔记弹窗的 Badcase 标签页" onerror="helpImgFallback(this)">
+                                </div>
+                                <figcaption>同一个弹窗的另一个标签页是「💡 知识笔记」，
+                                    用来把一条产品事实直接写进知识库并立即重新索引。</figcaption>
+                            </figure>
+                        </li>
+                    </ol>
+
+                    <h3>方式二：精准标掉一条错误推荐</h3>
+                    <p>打开回复编辑器 → 展开「生成详情」→ 找到 <b>G3 历史复用</b> 里的「主复用工单」，
+                        它旁边有一个<b>「不该推荐」</b>按钮。觉得这条历史工单跟当前问题八竿子打不着，点一下即可。</p>
+                    <figure class="shot shot-wide">
+                        <div class="shot-frame">
+                            <img src="/assets/help/10-badcase-not-relevant.png" loading="lazy"
+                                alt="主复用工单旁的不该推荐按钮" onerror="helpImgFallback(this)">
+                        </div>
+                    </figure>
+
+                    <div class="note note-ok">
+                        <b>多久生效？立刻。</b>
+                        上报之后，这条错误配对会马上写进屏蔽名单：<b>同一张工单</b>不会再推荐它，
+                        <b>语义上相近的工单</b>也会降低它出现的概率。不需要重启，不需要等管理员审核，
+                        下次刷新就见效。
+                    </div>
+
+                    <p style="font-size:12.5px;color:var(--ds-text-muted)">
+                        小提示：为了防误触，同一张工单 5 分钟内最多上报 10 次，超过会提示稍后再试。
+                    </p>
+                </section>
+
+                <!-- 9 FAQ -->
+                <section class="help-section faq" id="faq">
+                    <h2><span class="sec-num">9</span>常见问题</h2>
+                    <p class="lead">遇到问题先看这里，大部分能自己解决。</p>
+
+                    <details>
+                        <summary>看板是空的，或者提示 401 / 未授权</summary>
+                        <p>九成是 Jira 会话过期了。回到<a href="#jira">第 3 章</a>，把复制 cURL 那一套重做一遍，
+                            10 秒就好。</p>
+                        <p>如果提示的是「无法解析域名」，那是网络问题不是会话问题：确认 Jira 地址填对了，
+                            并且当前网络能访问到它。</p>
+                    </details>
+
+                    <details>
+                        <summary>项目一直显示「索引中」，进度不动</summary>
+                        <p>首次为一个项目建立语义索引需要几分钟，工单越多越久，期间可以先做别的事。</p>
+                        <p>如果超过半小时还停在同一个进度，说明索引任务可能中断了，联系管理员处理。</p>
+                    </details>
+
+                    <details>
+                        <summary>点 AI 分析没反应，或提示未配置模型</summary>
+                        <p>你的个人大模型配置还没填好。见<a href="#llm">第 6 章</a>，
+                            注意要先「保存源凭据」再添加模型，并把要用的模型选中为「生效」。</p>
+                        <p>配完记得点一下「测试连接」，确认 Key 本身是通的。</p>
+                    </details>
+
+                    <details>
+                        <summary>AI 起草的回复不像我们的口径</summary>
+                        <p>这是正常的冷启动阶段 —— 它还没见过你怎么写。
+                            坚持在回复编辑器里改草稿再提交，用上十几单之后会明显贴近你的风格。
+                            原理见<a href="#style">第 7 章</a>。</p>
+                        <p>如果是推荐了不相关的历史工单，直接按<a href="#badcase">第 8 章</a>上报，立刻生效。</p>
+                    </details>
+
+                    <details>
+                        <summary>我想换个默认项目 / 想同时看多个项目</summary>
+                        <p>换默认：账号设置 →「默认项目与关注模块」。临时看别的：顶栏作用域按钮。
+                            想跨项目看：作用域里选「全部项目」。详见<a href="#project">第 5 章</a>。</p>
+                    </details>
+
+                    <details>
+                        <summary>忘记密码 / 想改密码</summary>
+                        <p>改密码：左侧栏「账号与用户」→「修改登录密码」。改完会退出登录，用新密码重新登录即可。</p>
+                        <p>忘记密码：找管理员在「账号与用户」页面帮你重置，会生成一个一次性临时密码。</p>
+                    </details>
+
+                    <details>
+                        <summary>PM 看板打不开 / 没数据</summary>
+                        <p>需要单独绑定 PM 系统会话，见<a href="#pm">第 4 章</a>。
+                            PM 会话同样会过期，过期后按同样方法重新导入一次。</p>
+                    </details>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <script src="/assets/common.js"></script>
+    <script>
+        // 截图缺失时优雅降级为占位框（截图尚未补齐 / 资源加载失败都不至于破版）
+        function helpImgFallback(img) {
+            var frame = img.parentElement;
+            if (!frame) return;
+            var alt = img.getAttribute('alt') || '';
+            frame.classList.add('is-missing');
+            frame.textContent = '图示：' + alt;
+        }
+
+        function openLLMConfig() {
+            if (window.DSLLMConfig && typeof window.DSLLMConfig.open === 'function') {
+                window.DSLLMConfig.open();
+            } else if (typeof showToast === 'function') {
+                showToast('AI 配置组件尚未加载完成，请稍后再试', 'warning');
+            }
+        }
+
+        // 目录高亮：滚到哪一节就高亮哪一条
+        (function initTocSpy() {
+            var links = Array.prototype.slice.call(
+                document.querySelectorAll('#help-toc a')
+            );
+            var byId = {};
+            links.forEach(function (a) { byId[a.getAttribute('href').slice(1)] = a; });
+
+            function setActive(id) {
+                links.forEach(function (a) { a.classList.remove('active'); });
+                if (byId[id]) byId[id].classList.add('active');
+            }
+
+            var sections = Array.prototype.slice.call(
+                document.querySelectorAll('.help-section[id]')
+            );
+            if (!sections.length) return;
+
+            if (!('IntersectionObserver' in window)) {
+                setActive(sections[0].id);
+                return;
+            }
+
+            var visible = {};
+            var io = new IntersectionObserver(function (entries) {
+                entries.forEach(function (e) {
+                    visible[e.target.id] = e.isIntersecting;
+                });
+                for (var i = 0; i < sections.length; i++) {
+                    if (visible[sections[i].id]) { setActive(sections[i].id); return; }
+                }
+            }, { rootMargin: '-10% 0px -70% 0px', threshold: 0 });
+
+            sections.forEach(function (s) { io.observe(s); });
+            setActive(sections[0].id);
+        })();
+    </script>
+    <script src="/assets/nav.js"></script>
+    <script src="/assets/ds/theme.js"></script>
+    <script src="/assets/ds/sidebar.js"></script>
+    <script src="/assets/ds/command-palette.js"></script>
+    <script src="/assets/user-menu.js"></script>
+    <script>UserMenu.init();</script>
+</body>
+
+</html>

@@ -87,6 +87,8 @@ window.UserMenu = (function () {
       _esc(roleLabel) +
       "</div>" +
       "</div>" +
+      '<button id="_um-help" style="display:flex;align-items:center;gap:8px;width:100%;padding:8px 10px;border:none;background:none;cursor:pointer;border-radius:6px;color:var(--ds-text-primary,#1e293b);text-align:left;font-size:13px;transition:background 0.1s;"' +
+      " onmouseover=\"this.style.background='var(--ds-bg-muted,#f1f5f9)'\" onmouseout=\"this.style.background='none'\">&#10067; 新手帮助</button>" +
       '<button id="_um-settings" style="display:flex;align-items:center;gap:8px;width:100%;padding:8px 10px;border:none;background:none;cursor:pointer;border-radius:6px;color:var(--ds-text-primary,#1e293b);text-align:left;font-size:13px;transition:background 0.1s;"' +
       " onmouseover=\"this.style.background='var(--ds-bg-muted,#f1f5f9)'\" onmouseout=\"this.style.background='none'\">&#9881;&#65039; 账号设置</button>" +
       '<div style="border-top:1px solid var(--ds-border,#e2e8f0);margin-top:4px;padding-top:4px;">' +
@@ -116,6 +118,15 @@ window.UserMenu = (function () {
     document.addEventListener("click", function (e) {
       if (_menuOpen && !e.target.closest("#_um-wrap")) _close();
     });
+
+    var helpBtn = document.getElementById("_um-help");
+    if (helpBtn) {
+      helpBtn.addEventListener("click", function () {
+        _close();
+        window.location.href =
+          (typeof API_BASE !== "undefined" ? API_BASE : "") + "/help.html";
+      });
+    }
 
     var settingsBtn = document.getElementById("_um-settings");
     if (settingsBtn) {

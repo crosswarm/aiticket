@@ -204,6 +204,7 @@ PROTECTED_PAGE_PATHS = {
     "/kb.html",
     "/settings.html",
     "/guide.html",
+    "/help.html",
     "/pm_board.html",
 }
 
@@ -1018,6 +1019,10 @@ def read_settings_page():
 def read_guide_page():
     return frontend_html_response("guide.html")
 
+@app.get("/help.html")
+def read_help_page():
+    return frontend_html_response("help.html")
+
 @app.get("/pm_board.html")
 def read_pm_board_page():
     return frontend_html_response("pm_board.html")
@@ -1042,6 +1047,7 @@ _DEMO_HTML_MAP = {
     "pm_board.html": "pm_board.html",
     "settings.html": "settings.html",
     "guide.html": "guide.html",
+    "help.html": "help.html",
 }
 
 @app.get("/demo/")
