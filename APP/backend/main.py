@@ -2645,6 +2645,7 @@ def badcase_mark(req: BadcaseMarkRequest, request: Request):
     #      软压制永不触发。
     #    即使嵌入失败也写入（emb=None）：硬屏蔽仍据 query_issue_key 生效。
     pairs_path = _ROOT_DATA / "data" / "badcase_negative_pairs.jsonl"
+    pair_recorded = False
     try:
         from services.reply_reuse_evaluator import _embed_text
         import services.reply_reuse_evaluator as _rre_mod
@@ -2666,6 +2667,11 @@ def badcase_mark(req: BadcaseMarkRequest, request: Request):
             logging.getLogger(__name__).warning("[BadcaseMark] 构造查询正文失败（仅硬屏蔽生效）: %s", _eq)
 
         emb = _embed_text(query_text) if query_text else None
+        # 嵌入函数按 chromadb 版本可能返回 numpy float32 标量，json.dumps 无法序列化。
+        # 不强转的话整条负配对写入会抛异常被下面的 except 吞掉，连硬屏蔽都落不了库
+        # （Mini 未装 sentence-transformers → emb=None 反而正常，故只在 172 暴露）。
+        if emb is not None:
+            emb = [float(x) for x in emb]
         pair_entry = {
             "ts": entry["ts"],
             "wrong_ticket": req.candidate_key,
@@ -2677,10 +2683,17 @@ def badcase_mark(req: BadcaseMarkRequest, request: Request):
             _f.write(json.dumps(pair_entry, ensure_ascii=False) + "\n")
         # 失效缓存：重置 mtime 哨兵，下次请求立即重载两层映射
         _rre_mod._neg_pairs_mtime = -1.0
+        pair_recorded = True
     except Exception as _e:
         logging.getLogger(__name__).warning("[BadcaseMark] 负配对写入失败（非致命）: %s", _e)
 
-    return {"ok": True, "message": "已标记，下次刷新立即过滤"}
+    # negative_pair_recorded 暴露压制是否真的落库：为 False 时只记了 eval 日志，
+    # 硬屏蔽与软压制都不会生效。别让这种失败继续只活在 warning 里。
+    return {
+        "ok": True,
+        "message": "已标记，下次刷新立即过滤",
+        "negative_pair_recorded": pair_recorded,
+    }
 
 
 @app.post("/api/kb/lint")
