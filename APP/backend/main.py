@@ -2603,12 +2603,18 @@ def kb_quick_note(req: dict):
 _BADCASE_RATE: dict = {}  # {issue_key: [ts, ...]}
 _BADCASE_WINDOW = 300     # 5 分钟窗口
 _BADCASE_MAX = 10         # 每工单最多 10 次
+# 现场快照体积上限：badcases.jsonl 是逐行追加的诊断日志，单条过大会拖垮后续读取。
+# 超限时按「先扔大块正文、保住结构化门控数据」的顺序降级，而不是整条丢弃。
+from services.badcase_context import shrink_badcase_context as _shrink_badcase_context  # noqa: E402
 
 
 class BadcaseMarkRequest(BaseModel):
     issue_key: str
     candidate_key: str
     reason: str = ""
+    # 智能回复窗口一键上报时带上的现场快照：trace_id + 五道闸全量 + 生成详情 + 回复正文。
+    # 前端已做体积裁剪，这里再兜一道底（见 _BADCASE_CONTEXT_MAX_BYTES）。
+    context: Optional[Dict[str, Any]] = None
 
 
 @app.post("/api/badcase/mark")
@@ -2628,13 +2634,19 @@ def badcase_mark(req: BadcaseMarkRequest, request: Request):
     # 1. 追加到 eval/badcases.jsonl（人读 / 离线评测）
     badcases_path = _ROOT_DATA / "eval" / "badcases.jsonl"
     badcases_path.parent.mkdir(parents=True, exist_ok=True)
+    _ctx = _shrink_badcase_context(req.context)
     entry = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "issue_key": req.issue_key,
         "candidate_key": req.candidate_key,
         "reason": req.reason,
-        "source": "ui_button",
+        # 来源区分：reply_editor=智能回复窗口一键上报（带现场快照），
+        # ui_button=快捷笔记/「不该推荐」等无快照入口。
+        "source": "reply_editor" if _ctx else "ui_button",
     }
+    if _ctx:
+        entry["trace_id"] = _ctx.get("trace_id", "")
+        entry["context"] = _ctx
     with open(badcases_path, "a", encoding="utf-8") as _f:
         _f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -4236,6 +4248,22 @@ def _get_reply_llm_semaphore() -> asyncio.Semaphore:
 async def generate_reply(request: GenerateReplyRequest, raw_request: Request, _quota=Depends(require_reply_quota)):
     """基于AI分析生成智能回复内容"""
     log_api_request(raw_request, _quota, issue_key=request.issue_key)
+
+    # trace_id：每次生成调用一个，随响应下发给前端，badcase 上报时带回来。
+    # 有了它才能把「用户说这条回复不对」和服务端日志对上号（aidiag grep <trace_id>）。
+    # 在端点这一层生成，是因为这里是前端唯一入口，能 100% 覆盖 4 个返回分支；
+    # 而 generate_reply_content 内部有 8 个返回点，逐个改风险大得多。
+    _trace_id = f"rp-{int(time.time() * 1000):x}-{secrets.token_hex(3)}"
+
+    def _resp(payload: dict) -> dict:
+        payload["trace_id"] = _trace_id
+        return payload
+
+    logger.info(
+        "[GenerateReply] trace=%s issue=%s force=%s user=%s",
+        _trace_id, request.issue_key, request.force,
+        (get_current_user(raw_request) or {}).get("username", "-"),
+    )
     try:
         _cu = get_current_user(raw_request)
         async with _get_reply_llm_semaphore():
@@ -4250,7 +4278,7 @@ async def generate_reply(request: GenerateReplyRequest, raw_request: Request, _q
             )
         if result.get("gate") == "completeness":
             _insuf_type = result.get("insufficient_type", "missing_fields")
-            return {
+            return _resp({
                 "status": "gate_blocked",
                 "issue_key": request.issue_key,
                 "gate": "completeness",
@@ -4266,9 +4294,9 @@ async def generate_reply(request: GenerateReplyRequest, raw_request: Request, _q
                 "suggested_issue_type": {"id": "15321", "value": "无效问题"} if _insuf_type == "invalid_description" else None,
                 "auto_returned": result.get("auto_returned", False),
                 "operation_steps": result.get("operation_steps", []),
-            }
+            })
         if result.get("gate") == "classification":
-            return {
+            return _resp({
                 "status": "gate_blocked",
                 "issue_key": request.issue_key,
                 "gate": "classification",
@@ -4278,17 +4306,17 @@ async def generate_reply(request: GenerateReplyRequest, raw_request: Request, _q
                 "solution_content": "",
                 "ai_analysis": None,
                 "gate_decisions": result.get("gate_decisions", {}),
-            }
+            })
         if result.get("error"):
-            return {
+            return _resp({
                 "status": "warning",
                 "issue_key": request.issue_key,
                 "message": result["error"],
                 "reply_content": "",
                 "solution_content": "",
                 "ai_analysis": None
-            }
-        return {
+            })
+        return _resp({
             "status": "success",
             "issue_key": request.issue_key,
             "reply_content": result["reply_content"],
@@ -4321,14 +4349,14 @@ async def generate_reply(request: GenerateReplyRequest, raw_request: Request, _q
             "blocked_by": result.get("blocked_by", []),
             "auto_dispatch": result.get("auto_dispatch"),
             "reply_gateway": result.get("reply_gateway"),
-        }
+        })
     except RuntimeError as e:
         # 用户级 LLM 强制但当前用户未配置凭据 → 结构化阻断（非 500）
         _msg = str(e)
         if _msg.startswith("LLM_BLOCKED:"):
             _parts = _msg.split(":", 2)
             _blocked_feature = _parts[1] if len(_parts) > 1 else "smart_reply"
-            return {
+            return _resp({
                 "status": "llm_blocked",
                 "issue_key": request.issue_key,
                 "blocked_feature": _blocked_feature,
@@ -4337,7 +4365,7 @@ async def generate_reply(request: GenerateReplyRequest, raw_request: Request, _q
                 "ai_analysis": None,
                 "message": "该功能需配置你的个人 LLM 凭据后才能使用，请前往「设置 → LLM 配置」填写对应 provider 的 API Key。",
                 "reason": "feature_requires_user_llm",
-            }
+            })
         raise HTTPException(status_code=500, detail=_msg)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

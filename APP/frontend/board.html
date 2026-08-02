@@ -1354,11 +1354,20 @@
         <div class="bg-white rounded-xl shadow-2xl w-full max-w-2xl transform transition-all max-h-[90vh] flex flex-col">
             <div class="flex justify-between items-center p-6 border-b border-gray-100">
                 <h3 class="text-lg font-semibold text-gray-800">回复工单</h3>
-                <button onclick="closeReplyEditor()" class="text-gray-400 hover:text-gray-600 transition-colors">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                    </svg>
-                </button>
+                <div class="flex items-center gap-1">
+                    <button onclick="openReplyBadcase()" title="这条回复有问题？一键反馈（自动附带五道闸与生成详情）"
+                            class="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                  d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 2H21l-3 6 3 6h-8.5l-1-2H5a2 2 0 00-2 2z"></path>
+                        </svg>
+                    </button>
+                    <button onclick="closeReplyEditor()" class="text-gray-400 hover:text-gray-600 transition-colors">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
             </div>
 
             <div class="p-6 overflow-y-auto flex-1">
@@ -7871,6 +7880,10 @@ ${_colDecision(byKey)}
 
         async function updateGenDetails(data) {
             await updateReplyBasis(data);
+            // 留存本次生成的完整响应，供「反馈问题」一键上报打快照。
+            // 必须放在 updateReplyBasis 之后：它会在 reply_gateway 缺失时回填 gate-log，
+            // 提前抓会丢掉五道闸数据。
+            window.__lastReplyMeta = data;
             const panel = document.getElementById('re-gen-details');
             if (!panel) return;
             panel.classList.remove('hidden');
@@ -10788,7 +10801,9 @@ ${_colDecision(byKey)}
 </div>
 
 <!-- Quick Note / Badcase Modal (Alt+N) -->
-<div id="kb-quick-note-modal" class="fixed inset-0 z-[80] hidden flex items-center justify-center" style="background:rgba(0,0,0,0.5)">
+<!-- z-[110]：必须高于回复编辑器(z-90)与粘贴 cURL 弹窗(z-100)，
+     否则从智能回复窗口点「反馈问题」时本弹窗会被压在底下、无法操作。 -->
+<div id="kb-quick-note-modal" class="fixed inset-0 z-[110] hidden flex items-center justify-center" style="background:rgba(0,0,0,0.5)">
   <div class="bg-white rounded-xl p-6 w-[480px] shadow-2xl">
     <!-- 类型 tab -->
     <div class="flex gap-1 mb-4 bg-slate-100 p-1 rounded-lg">
@@ -10826,6 +10841,14 @@ ${_colDecision(byKey)}
         <label class="text-xs text-slate-500 mb-1 block">期望效果 <span class="text-slate-300 ml-1">Ctrl+Enter 提交</span></label>
         <textarea id="kbnote-expected" rows="2" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="期望给出什么样的回复或行为"></textarea>
       </div>
+      <!-- 现场快照（仅从智能回复窗口一键上报时出现，默认收起） -->
+      <details id="kbnote-context-box" class="hidden mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+        <summary class="text-xs text-slate-600 cursor-pointer select-none">
+          📎 已自动附带现场快照 <span id="kbnote-context-brief" class="text-slate-400"></span>
+        </summary>
+        <pre id="kbnote-context-dump"
+             class="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all text-[11px] leading-relaxed text-slate-600"></pre>
+      </details>
     </div>
     <div class="flex gap-2 mt-4 justify-end">
       <button onclick="closeKbNoteModal()" class="px-4 py-2 text-sm bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors">取消</button>
@@ -10840,6 +10863,68 @@ ${_colDecision(byKey)}
 
 <script>
 let _kbnoteType = 'note';
+let _kbnoteContext = null;   // 智能回复窗口一键上报时的现场快照
+
+// ── 智能回复「反馈问题」：采集现场快照并打开上报弹窗 ──────────────────────────
+// 采集的是【用户当下真正看到的那一版】：回复正文取 textarea 实时值（含用户已做的修改），
+// 五道闸取 updateGenDetails 留存的响应（updateReplyBasis 已回填过 gate-log）。
+function _collectReplyContext() {
+    const meta = window.__lastReplyMeta || {};
+    const gw = meta.reply_gateway || {};
+    const ai = (currentReplyData && currentReplyData.ai_analysis) || meta.ai_analysis || {};
+    const _cap = (s, n) => (s == null ? '' : String(s)).slice(0, n);
+    const _sel = id => {
+        const el = document.getElementById(id);
+        if (!el) return '';
+        if (el.tagName === 'SELECT') return (el.options[el.selectedIndex] || {}).text || el.value || '';
+        return el.value || '';
+    };
+    return {
+        trace_id: meta.trace_id || '',
+        issue_key: currentReplyIssue || meta.issue_key || '',
+        captured_at: new Date().toISOString(),
+        page: location.pathname + location.hash,
+        reply_text: _cap(document.getElementById('re-solution') && document.getElementById('re-solution').value, 4000),
+        generation: {
+            status: meta.status || '',
+            method: meta.generation_method || '',
+            cached: !!meta.cached,
+            kb_evidence_count: meta.kb_evidence_count || 0,
+            kb_sources: (meta.kb_sources || []).slice(0, 20),
+            examples_used_count: meta.examples_used_count || 0,
+            style_rules_applied: !!meta.style_rules_applied,
+            word_count: meta.word_count || 0
+        },
+        gates: gw.gates || {},                 // 五道闸全量 G1~G5
+        final_action: gw.final_action || '',
+        auto_decision: gw.auto_decision || null,
+        gate_blocked: meta.gate || '',
+        ai_analysis: {
+            recommended_team: _cap(ai.recommended_team, 120),
+            recommended_role: _cap(ai.recommended_role, 120),
+            confidence: ai.confidence != null ? ai.confidence : null,
+            problem_analysis: _cap(ai.problem_analysis, 800)
+        },
+        ui: {
+            reply_method: _sel('re-reply-method'),
+            issue_type: _sel('re-issue-type'),
+            product_module: _sel('re-product-module'),
+            domain_module: _sel('re-domain-module')
+        }
+    };
+}
+
+function openReplyBadcase() {
+    const ctx = _collectReplyContext();
+    if (!ctx.issue_key) {
+        if (typeof showToast === 'function') showToast('未识别到当前工单，请重新打开回复窗口', 'warning');
+        return;
+    }
+    if (!window.__lastReplyMeta && typeof showToast === 'function') {
+        showToast('尚未生成智能回复，快照只含工单信息', 'info', 2500);
+    }
+    openKbNoteModal(ctx.issue_key, 'badcase', ctx);
+}
 
 function switchNoteType(type) {
   _kbnoteType = type;
@@ -10856,16 +10941,19 @@ function switchNoteType(type) {
   submitBtn.textContent = isNote ? '添加到 KB' : '提交 Badcase';
   submitBtn.className = 'px-4 py-2 text-sm ' + (isNote ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-red-600 hover:bg-red-700') +
     ' text-white rounded-lg transition-colors';
+  if (typeof _renderKbNoteContext === 'function') _renderKbNoteContext();
   setTimeout(() => {
     const first = isNote ? document.getElementById('kbnote-topic') : document.getElementById('kbnote-issue');
     first.focus();
   }, 50);
 }
 
-function openKbNoteModal(prefillTopic, type) {
+function openKbNoteModal(prefillTopic, type, context) {
   _kbnoteType = type || 'note';
+  _kbnoteContext = context || null;
   document.getElementById('kb-quick-note-modal').classList.remove('hidden');
   switchNoteType(_kbnoteType);
+  _renderKbNoteContext();
   if (prefillTopic) {
     const el = _kbnoteType === 'badcase'
       ? document.getElementById('kbnote-issue')
@@ -10880,11 +10968,35 @@ function openKbNoteModal(prefillTopic, type) {
   }
 }
 
+// 渲染「现场快照」折叠区：有快照才显示，默认收起，摘要行给出最有用的三项。
+function _renderKbNoteContext() {
+  const box = document.getElementById('kbnote-context-box');
+  if (!box) return;
+  if (!_kbnoteContext || _kbnoteType !== 'badcase') {
+    box.classList.add('hidden');
+    box.open = false;
+    return;
+  }
+  const c = _kbnoteContext;
+  const gateCount = Object.keys(c.gates || {}).length;
+  document.getElementById('kbnote-context-brief').textContent =
+    '（' + (c.trace_id ? 'trace ' + c.trace_id + ' · ' : '') +
+    gateCount + ' 道闸 · ' + (c.generation && c.generation.method ? c.generation.method : '未生成') + '，点开可查看）';
+  let dump;
+  try { dump = JSON.stringify(c, null, 2); }
+  catch (e) { dump = '（快照序列化失败：' + e.message + '）'; }
+  document.getElementById('kbnote-context-dump').textContent = dump;
+  box.classList.remove('hidden');
+  box.open = false;
+}
+
 function closeKbNoteModal() {
   document.getElementById('kb-quick-note-modal').classList.add('hidden');
   ['kbnote-topic','kbnote-content','kbnote-issue','kbnote-problem','kbnote-expected'].forEach(id => {
     document.getElementById(id).value = '';
   });
+  _kbnoteContext = null;
+  _renderKbNoteContext();
   switchNoteType('note');
 }
 
@@ -10898,15 +11010,24 @@ async function submitKbNote() {
     if (!problem) { document.getElementById('kbnote-problem').focus(); return; }
     btn.disabled = true; btn.textContent = '提交中...';
     const reason = problem + (expected ? `\n期望效果：${expected}` : '');
+    // candidate_key 用哨兵值：整条回复反馈 ≠ 「这条历史复用不该被推荐」，
+    // 不能拿它去压制某个真实工单（那是「不该推荐」按钮的职责）。
+    const payload = {
+      issue_key: issue,
+      candidate_key: _kbnoteContext ? 'reply_editor' : 'manual_quick',
+      reason
+    };
+    if (_kbnoteContext) payload.context = _kbnoteContext;
     try {
       const res = await fetch(`${API_BASE}/api/badcase/mark`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({issue_key: issue, candidate_key: 'manual_quick', reason})
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
       if (res.ok) {
-        showToast(`🔴 Badcase 已记录：${issue}`, 'success');
+        const tid = _kbnoteContext && _kbnoteContext.trace_id;
+        showToast(`🔴 Badcase 已记录：${issue}` + (tid ? `（trace ${tid}）` : ''), 'success');
         closeKbNoteModal();
       } else {
         showToast(data.detail || '提交失败', 'error');
