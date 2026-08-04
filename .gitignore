@@ -53,10 +53,17 @@ APP/backend/data/sqlite/
 APP/backend/data/reply_trainer/
 APP/backend/data/training_mem0_chroma/
 APP/backend/data/data_cache/
-# badcase 上报的运行时产物（/api/badcase/mark 写入）。
-# 172 上 <repo>/APP 是 bind-mount 进容器的，不忽略会污染工作区 → git pull --ff-only 冲突。
+# ── 运行时产物：写在 APP/ 下、必须忽略 ──────────────────────────────────────
+# 172 上 <repo>/APP 是 bind-mount 进容器的，容器一写就落到宿主 git 工作区。
+# 任何没被忽略的运行时文件都会让下次 git pull --ff-only 被脏工作区挡住、发布中断。
+# 新增「服务运行中会写」的文件时，请一并加到这里。
+# 注意：.gitignore 的 # 只有在【行首】才是注释，行尾写注释会被并进 pattern 使规则失效。
+# /api/badcase/mark 写入
 APP/backend/data/badcase_negative_pairs.jsonl
+# badcases.jsonl 等评测产物
 APP/backend/eval/
+# services/nightly_precompute 队列状态
+APP/backend/data/nightly_queue.json
 
 # ChromaDB (向量库)
 chroma_db/
