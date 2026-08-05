@@ -41,7 +41,13 @@ APP/backend/llm_config.json
 APP/backend/llm_feature_routing.json
 
 # Runtime databases & state
+# 注意 SQLite WAL 模式会生成 -shm / -wal 两个伴生文件，必须一并排除：
+# 它们随任何一次打开数据库而生灭，早期只写了 .db 一行，导致 -shm/-wal
+# 被 Initial commit 带进版本库，此后每次 import main 都会在 git 里
+# 表现成一次"删除"改动（实际是 SQLite 正常清理）。
 APP/backend/data/app_auth.db
+APP/backend/data/app_auth.db-shm
+APP/backend/data/app_auth.db-wal
 APP/backend/data/app_auth.key
 APP/backend/data/feishu_sessions.db
 APP/backend/data/agent_tasks.db
@@ -110,6 +116,8 @@ APP/frontend/node_modules/
 
 # Runtime data & auth (machine-specific)
 APP/backend/data/app_auth.db
+APP/backend/data/app_auth.db-shm
+APP/backend/data/app_auth.db-wal
 APP/backend/data/app_auth.db.*.bak*
 APP/backend/data/app_auth.key
 APP/backend/data/llm_config.json
