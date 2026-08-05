@@ -164,13 +164,6 @@
       '<span class="ds-sidebar-label">切换主题</span>' +
       "</button>";
 
-    // ICP (always visible, even when collapsed)
-    html +=
-      '<div style="padding:0.5rem 0.75rem;font-size:11px;color:var(--ds-text-muted);text-align:center;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">' +
-      '<a href="https://beian.miit.gov.cn/" target="_blank" ' +
-      'style="color:inherit;text-decoration:none">京ICP备2021003033号-2</a>' +
-      "</div>";
-
     html += "</div>"; // footer end
 
     sidebar.innerHTML = html;
