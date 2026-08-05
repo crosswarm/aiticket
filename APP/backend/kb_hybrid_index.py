@@ -377,6 +377,20 @@ class KnowledgeHybridIndex:
             result.append(d)
         return result
 
+    def list_document_paths(self, source_kinds: tuple[str, ...] = ()) -> list[dict[str, Any]]:
+        """轻量枚举文档的路径信息，不带正文。
+
+        给孤儿清理用——`list_by_source_kinds` 会把每篇的全部 chunk 正文拼出来，
+        对上千篇文档来说是不必要的开销。
+        """
+        sql = "SELECT content_id, source_kind, name, source_rel_path, l1_module FROM documents"
+        params: tuple = ()
+        if source_kinds:
+            placeholders = ",".join("?" * len(source_kinds))
+            sql += f" WHERE source_kind IN ({placeholders})"
+            params = source_kinds
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
+
     def count_by_source_kind(self, source_kind: str) -> int:
         """返回指定 source_kind 的文档数量。"""
         row = self.conn.execute(

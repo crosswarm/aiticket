@@ -20,7 +20,9 @@ STOPWORDS = {
     "以及", "进行", "如果", "这个", "我们", "你们", "他们", "使用", "功能", "流程", "工作流",
     "the", "and", "for", "with", "from", "that", "this", "into", "are",
 }
-SKIP_NAMES = {"INDEX", "OUTPUT", ".git", ".claude", "__pycache__", "node_modules"}
+# ".versions" 是替换文档时的历史副本目录。必须排除，否则每替换一次
+# 旧版本就会作为一篇新知识被索引，造成同一份知识多版本互相挤占召回名额。
+SKIP_NAMES = {"INDEX", "OUTPUT", ".git", ".claude", "__pycache__", "node_modules", ".versions"}
 
 
 @dataclass

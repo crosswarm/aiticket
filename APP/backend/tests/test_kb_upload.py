@@ -17,8 +17,12 @@ from bip_taxonomy import BipTaxonomy  # noqa: E402
 from kb_upload import (  # noqa: E402
     MAX_BYTES,
     MAX_FILES,
+    VERSIONS_DIRNAME,
     UploadRejected,
     build_taxonomy_tree,
+    list_versions,
+    replace_document,
+    resolve_kb_file,
     resolve_target_dir,
     safe_filename,
     save_uploads,
@@ -228,3 +232,142 @@ def test_taxonomy_tree_applications_belong_to_label(taxonomy: BipTaxonomy):
     tree = build_taxonomy_tree(taxonomy, domain_cloud="PFC")
     pf = next(label for label in tree["labels"] if label["code"] == "PF")
     assert "工作流" in {app["name"] for app in pf["applications"]}
+
+
+# ---------------------------------------------------------------- 路径解析（下载/替换的入口）
+
+
+@pytest.fixture
+def doc(kb_root: Path) -> Path:
+    d = kb_root / "数字化建模" / "工作流"
+    d.mkdir(parents=True)
+    f = d / "指南.md"
+    f.write_bytes(b"v1")
+    return f
+
+
+def test_resolve_accepts_plain_and_prefixed_path(kb_root: Path, doc: Path):
+    """索引里的路径带 KB/ 前缀，前端可能原样传回来，两种都要认。"""
+    assert resolve_kb_file(kb_root, "数字化建模/工作流/指南.md") == doc
+    assert resolve_kb_file(kb_root, "KB/数字化建模/工作流/指南.md") == doc
+    assert resolve_kb_file(kb_root, "/数字化建模/工作流/指南.md") == doc
+
+
+@pytest.mark.parametrize(
+    "evil",
+    [
+        "../../../etc/passwd",
+        "数字化建模/../../../etc/passwd",
+        "/etc/passwd",
+        "数字化建模/工作流/../../../../tmp/x.md",
+    ],
+)
+def test_resolve_rejects_traversal(kb_root: Path, evil: str):
+    """路径来自请求参数，是越界读写的主要入口。"""
+    with pytest.raises(UploadRejected):
+        resolve_kb_file(kb_root, evil)
+
+
+def test_resolve_rejects_symlink_escape(kb_root: Path, tmp_path: Path):
+    """符号链接在 resolve 时展开，同样不能逃出 KB。"""
+    outside = tmp_path / "outside.md"
+    outside.write_bytes(b"secret")
+    (kb_root / "link.md").symlink_to(outside)
+    with pytest.raises(UploadRejected, match="越界"):
+        resolve_kb_file(kb_root, "link.md")
+
+
+def test_resolve_rejects_versions_dir(kb_root: Path):
+    v = kb_root / VERSIONS_DIRNAME / "x.md"
+    v.mkdir(parents=True)
+    (v / "20260101-000000.md").write_bytes(b"old")
+    with pytest.raises(UploadRejected, match="版本目录"):
+        resolve_kb_file(kb_root, f"{VERSIONS_DIRNAME}/x.md/20260101-000000.md")
+
+
+def test_resolve_missing_file(kb_root: Path):
+    with pytest.raises(UploadRejected, match="不存在"):
+        resolve_kb_file(kb_root, "无此文件.md")
+
+
+def test_resolve_empty_path(kb_root: Path):
+    with pytest.raises(UploadRejected):
+        resolve_kb_file(kb_root, "")
+
+
+# ---------------------------------------------------------------- 替换与版本
+
+
+def test_replace_archives_old_version(kb_root: Path, doc: Path):
+    result = replace_document(kb_root, "数字化建模/工作流/指南.md", "指南.md", b"v2", "20260805-120000")
+    assert doc.read_bytes() == b"v2"
+    archived = kb_root.parent / result["archived_version"]
+    assert archived.read_bytes() == b"v1", "旧版本必须留档，否则替换=永久丢失"
+    assert VERSIONS_DIRNAME in archived.parts
+
+
+def test_replace_keeps_same_path(kb_root: Path, doc: Path):
+    """content_id 按路径分配，替换绝不能换路径，否则旧索引变孤儿。"""
+    result = replace_document(kb_root, "数字化建模/工作流/指南.md", "完全不同的名字.md", b"v2", "s1")
+    assert result["rel_path"].endswith("数字化建模/工作流/指南.md")
+    assert doc.exists()
+
+
+def test_replace_rejects_extension_change(kb_root: Path, doc: Path):
+    with pytest.raises(UploadRejected, match="扩展名"):
+        replace_document(kb_root, "数字化建模/工作流/指南.md", "指南.docx", b"x", "s1")
+
+
+def test_replace_rejects_empty_and_oversize(kb_root: Path, doc: Path):
+    with pytest.raises(UploadRejected, match="空文件"):
+        replace_document(kb_root, "数字化建模/工作流/指南.md", "指南.md", b"", "s1")
+    with pytest.raises(UploadRejected, match="超过"):
+        replace_document(kb_root, "数字化建模/工作流/指南.md", "指南.md", b"x" * (MAX_BYTES + 1), "s1")
+
+
+def test_replace_missing_document(kb_root: Path):
+    with pytest.raises(UploadRejected, match="不存在"):
+        replace_document(kb_root, "不存在.md", "不存在.md", b"x", "s1")
+
+
+def test_versions_listed_newest_first(kb_root: Path, doc: Path):
+    replace_document(kb_root, "数字化建模/工作流/指南.md", "指南.md", b"v2", "20260805-100000")
+    replace_document(kb_root, "数字化建模/工作流/指南.md", "指南.md", b"v3", "20260805-110000")
+    versions = list_versions(kb_root, "数字化建模/工作流/指南.md")
+    assert [v["version"] for v in versions] == ["20260805-110000", "20260805-100000"]
+
+
+def test_versions_empty_for_untouched_doc(kb_root: Path, doc: Path):
+    assert list_versions(kb_root, "数字化建模/工作流/指南.md") == []
+
+
+def test_archived_versions_are_not_indexed(kb_root: Path, doc: Path):
+    """.versions 必须在扫描器的 SKIP_NAMES 里，否则历史版本会被当新知识索引。"""
+    from kb_local_builder import SKIP_NAMES
+
+    assert VERSIONS_DIRNAME in SKIP_NAMES
+
+
+def test_version_file_can_be_retrieved(kb_root: Path, doc: Path):
+    """做了版本留存却取不回来就没意义。"""
+    from kb_upload import resolve_version_file
+
+    replace_document(kb_root, "数字化建模/工作流/指南.md", "指南.md", b"v2", "20260805-120000")
+    archived = resolve_version_file(kb_root, "数字化建模/工作流/指南.md", "20260805-120000")
+    assert archived.read_bytes() == b"v1"
+
+
+@pytest.mark.parametrize("bad", ["../../etc/passwd", "a/b", "..", "", "  "])
+def test_version_id_rejects_path_like_values(kb_root: Path, doc: Path, bad: str):
+    """版本号是拼路径的一部分，不能夹带分隔符。"""
+    from kb_upload import resolve_version_file
+
+    with pytest.raises(UploadRejected):
+        resolve_version_file(kb_root, "数字化建模/工作流/指南.md", bad)
+
+
+def test_unknown_version_rejected(kb_root: Path, doc: Path):
+    from kb_upload import resolve_version_file
+
+    with pytest.raises(UploadRejected, match="版本不存在"):
+        resolve_version_file(kb_root, "数字化建模/工作流/指南.md", "20990101-000000")

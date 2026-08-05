@@ -2462,8 +2462,17 @@ def get_kb_taxonomy(domain_cloud: Optional[str] = None):
     return build_taxonomy_tree(taxonomy, domain_cloud)
 
 
+def _kb_audit(user: dict, action: str, target: str, metadata: dict) -> None:
+    """记录知识库文档操作。审计失败不能影响主流程。"""
+    try:
+        auth_service.log_audit(user.get("id"), action, "kb_document", target, metadata)
+    except Exception:
+        logger.warning("[KB] 审计写入失败: %s %s", action, target, exc_info=True)
+
+
 @app.post("/api/kb/upload")
 async def upload_kb_files(
+    request: Request,
     files: list[UploadFile] = File(...),
     label_code: str = Form(...),
     application_code: str = Form(""),
@@ -2475,9 +2484,10 @@ async def upload_kb_files(
     from bip_taxonomy import get_bip_taxonomy
     from kb_upload import UploadRejected, save_uploads
 
+    user = require_authenticated_user(request)
     payload = [(upload.filename or "", await upload.read()) for upload in files]
     try:
-        return save_uploads(
+        result = save_uploads(
             kb_runtime_service.kb_root,
             get_bip_taxonomy(),
             label_code,
@@ -2486,6 +2496,116 @@ async def upload_kb_files(
         )
     except UploadRejected as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    for saved in result.get("saved", []):
+        _kb_audit(user, "kb_upload", saved["rel_path"], {
+            "label": result["label"],
+            "application": result.get("application"),
+            "bytes": saved["bytes"],
+        })
+    return result
+
+
+@app.get("/api/kb/document")
+def download_kb_document(request: Request, path: str = Query(..., description="文档相对路径")):
+    """下载知识库原始文档。"""
+    from fastapi.responses import FileResponse
+    from kb_upload import UploadRejected, resolve_kb_file
+
+    require_authenticated_user(request)
+    try:
+        target = resolve_kb_file(kb_runtime_service.kb_root, path)
+    except UploadRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return FileResponse(target, filename=target.name, media_type="application/octet-stream")
+
+
+@app.get("/api/kb/document/versions")
+def list_kb_document_versions(request: Request, path: str = Query(..., description="文档相对路径")):
+    """列出某文档的历史版本（替换时自动归档的副本）。"""
+    from kb_upload import UploadRejected, list_versions
+
+    require_authenticated_user(request)
+    try:
+        return {"path": path, "versions": list_versions(kb_runtime_service.kb_root, path)}
+    except UploadRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/kb/document/version")
+def download_kb_document_version(
+    request: Request,
+    path: str = Query(..., description="文档相对路径"),
+    version: str = Query(..., description="版本号（versions 接口返回的 version 字段）"),
+):
+    """下载某文档的历史版本。"""
+    from fastapi.responses import FileResponse
+    from kb_upload import UploadRejected, resolve_version_file
+
+    require_authenticated_user(request)
+    try:
+        archived = resolve_version_file(kb_runtime_service.kb_root, path, version)
+    except UploadRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return FileResponse(
+        archived,
+        filename=f"{Path(path).stem}.{version}{archived.suffix}",
+        media_type="application/octet-stream",
+    )
+
+
+@app.post("/api/kb/document/replace")
+async def replace_kb_document(
+    request: Request,
+    file: UploadFile = File(...),
+    path: str = Form(..., description="被替换文档的相对路径"),
+):
+    """用新文件替换已有文档，旧版本自动归档到 KB/.versions/。
+
+    路径与扩展名必须保持不变——content_id 按路径分配，路径一变旧索引就成孤儿。
+    """
+    from datetime import datetime as _datetime
+
+    from kb_upload import UploadRejected, replace_document
+
+    user = require_authenticated_user(request)
+    content = await file.read()
+    # main.py 没有全局导入 datetime，只在需要处局部引入
+    stamp = _datetime.now().strftime("%Y%m%d-%H%M%S")
+    try:
+        result = replace_document(
+            kb_runtime_service.kb_root, path, file.filename or "", content, stamp
+        )
+    except UploadRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    _kb_audit(user, "kb_replace", result["rel_path"], {
+        "archived_version": result["archived_version"],
+        "old_bytes": result["old_bytes"],
+        "new_bytes": result["new_bytes"],
+        "uploaded_filename": file.filename,
+    })
+    return result
+
+
+@app.post("/api/kb/prune-missing")
+def prune_missing_kb_documents(request: Request, apply: bool = Query(False, description="true 才真正删除")):
+    """清理源文件已不存在的索引记录（孤儿）。
+
+    文件从磁盘消失后索引不会自动清理，这些记录会一直参与召回。
+    默认只报告；加 apply=true 才删除。仅管理员可用。
+    """
+    user = require_admin_user(request)
+    try:
+        result = kb_runtime_service.prune_missing(dry_run=not apply)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if apply and result.get("deleted"):
+        _kb_audit(user, "kb_prune_missing", "", {
+            "deleted": result["deleted"],
+            "paths": [o["source_rel_path"] for o in result["orphans"]][:50],
+        })
+    return result
 
 @app.post("/api/kb/qa")
 def ask_kb_question(request: KBQuestionRequest, raw_request: Request, _quota=Depends(require_reply_quota)):

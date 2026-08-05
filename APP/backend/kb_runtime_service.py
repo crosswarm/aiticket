@@ -181,6 +181,70 @@ class KnowledgeRuntimeService:
             project_key=project_key,
         )["items"]
 
+    # 只有这些来源的 source_rel_path 才真正指向磁盘文件。
+    # kb_compiled 是主题编译产物（compiled/<topic>）、ticket_case 来自 Jira，
+    # 它们在磁盘上没有对应文件——一旦纳入清理范围会被全部误删。
+    FILE_BACKED_SOURCE_KINDS = ("kb_local", "apcom_docs")
+
+    def prune_missing(self, dry_run: bool = True, source_kinds: tuple[str, ...] | None = None) -> dict[str, Any]:
+        """清理源文件已不存在的索引记录（孤儿）。
+
+        文件从磁盘消失后索引不会自动清理，这些记录会一直参与召回。
+        172 上就有 13 篇 ``KB/APP/**`` 是这么来的：源文件早已删除，索引仍在。
+
+        默认 ``dry_run=True`` 只报告不删除。
+        """
+        kinds = tuple(source_kinds) if source_kinds else self.FILE_BACKED_SOURCE_KINDS
+        unsupported = set(kinds) - set(self.FILE_BACKED_SOURCE_KINDS)
+        if unsupported:
+            raise ValueError(
+                f"这些来源在磁盘上没有对应文件，不能按文件存在性清理：{sorted(unsupported)}"
+            )
+
+        orphans: list[dict[str, Any]] = []
+        for doc in self.hybrid_index.list_document_paths(kinds):
+            rel = (doc.get("source_rel_path") or "").strip()
+            if not rel:
+                # 路径为空无法判断存在性，宁可留着也不误删
+                continue
+            if self._source_file_exists(rel):
+                continue
+            orphans.append({
+                "content_id": doc.get("content_id"),
+                "source_rel_path": rel,
+                "source_kind": doc.get("source_kind"),
+                "name": doc.get("name"),
+                "l1_module": doc.get("l1_module"),
+            })
+
+        deleted = 0
+        if not dry_run:
+            for orphan in orphans:
+                if self.hybrid_index.delete_item(orphan["content_id"]):
+                    deleted += 1
+
+        return {
+            "scanned_source_kinds": list(kinds),
+            "orphan_count": len(orphans),
+            "orphans": orphans,
+            "deleted": deleted,
+            "dry_run": dry_run,
+        }
+
+    def _source_file_exists(self, source_rel_path: str) -> bool:
+        """判断索引里的相对路径在磁盘上是否还有对应文件。
+
+        路径形态有两种：``KB/<...>``（相对项目根）与 ``<...>``（相对 KB 根），
+        两种都要试，否则会把正常文档误判成孤儿。
+        """
+        rel = Path(source_rel_path)
+        candidates = [self.project_root / rel]
+        if rel.parts and rel.parts[0] == "KB":
+            candidates.append(self.kb_root / Path(*rel.parts[1:]))
+        else:
+            candidates.append(self.kb_root / rel)
+        return any(path.exists() for path in candidates)
+
     @staticmethod
     def _taxonomy_modules(top_category: str, second_category: str, text: str = "") -> dict[str, str]:
         """把目录分类映射成 BIP 的 label / application，供索引项落库。
