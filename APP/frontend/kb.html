@@ -172,6 +172,22 @@
                         <p class="text-xs text-slate-500 leading-5">有 LLM 配置时优先输出智能问答；无配置时自动降级为匹配摘要模式。</p>
                     </div>
                 </section>
+                <!-- 替换文档用的隐藏 input：由卡片上的「⇄ 替换」按钮触发 -->
+                <input id="kbReplaceInput" type="file" class="hidden" onchange="kbDoReplace(this)">
+                <!-- 历史版本弹窗 -->
+                <div id="kbVersionModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+                     onclick="if (event.target === this) kbCloseVersions()">
+                    <div class="bg-white rounded-xl shadow-xl w-full max-w-lg p-5">
+                        <div class="flex items-start justify-between gap-3 mb-3">
+                            <div>
+                                <h3 class="font-semibold text-slate-700">🕘 历史版本</h3>
+                                <div id="kbVersionPath" class="text-xs text-slate-400 mt-1 break-all"></div>
+                            </div>
+                            <button onclick="kbCloseVersions()" class="text-slate-400 hover:text-slate-600 text-xl leading-none">&times;</button>
+                        </div>
+                        <div id="kbVersionBody" class="max-h-80 overflow-y-auto"></div>
+                    </div>
+                </div>
                 <section id="uploadPanel" class="glass rounded-xl p-4 shadow-lg hidden">
                     <h2 class="font-semibold text-slate-700 mb-3">📤 上传知识</h2>
                     <div class="space-y-2">
@@ -968,11 +984,101 @@
                             onclick="showDetail('${item.content_id}', 'metadata', event)"
                             class="px-3 py-1.5 rounded-lg text-xs ${kbState.selectedSourceId === item.content_id && kbState.detailViewMode === 'metadata' ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}"
                         >查看元数据</button>
+                        ${isFileBackedItem(item) ? `
+                        <button onclick="kbDownloadDoc('${encodeURIComponent(item.source_rel_path)}', event)"
+                            class="px-2.5 py-1.5 rounded-lg text-xs bg-slate-100 text-slate-600 hover:bg-slate-200" title="下载原始文档">⬇ 原文</button>
+                        <button onclick="kbPickReplacement('${encodeURIComponent(item.source_rel_path)}', event)"
+                            class="px-2.5 py-1.5 rounded-lg text-xs bg-slate-100 text-slate-600 hover:bg-slate-200" title="用新文件替换，旧版本自动留档">⇄ 替换</button>
+                        <button onclick="kbShowVersions('${encodeURIComponent(item.source_rel_path)}', event)"
+                            class="px-2.5 py-1.5 rounded-lg text-xs bg-slate-100 text-slate-600 hover:bg-slate-200" title="查看历史版本">🕘 版本</button>
+                        ` : ''}
                     </div>
                 </div>
             `; }).join('')}
             `;
             renderDrawerControls();
+        }
+
+        // ── 原始文档操作（下载 / 替换 / 版本）────────────────────────────
+        // 只有 kb_local / apcom_docs 在磁盘上真有文件；kb_compiled 是主题编译产物、
+        // ticket_case 来自 Jira，它们没有可下载的原文。
+        function isFileBackedItem(item) {
+            return Boolean(item.source_rel_path)
+                && (item.source_kind === 'kb_local' || item.source_kind === 'apcom_docs');
+        }
+
+        function kbDownloadDoc(encodedPath, event) {
+            if (event) event.stopPropagation();
+            window.open(`${API_BASE}/api/kb/document?path=${encodedPath}`, '_blank');
+        }
+
+        function kbPickReplacement(encodedPath, event) {
+            if (event) event.stopPropagation();
+            const input = document.getElementById('kbReplaceInput');
+            input.dataset.targetPath = encodedPath;
+            input.value = '';
+            input.click();
+        }
+
+        async function kbDoReplace(input) {
+            const encodedPath = input.dataset.targetPath;
+            const file = input.files && input.files[0];
+            if (!file || !encodedPath) return;
+            const path = decodeURIComponent(encodedPath);
+            if (!confirm(`用「${file.name}」替换：\n${path}\n\n旧版本会自动留档，可随时取回。`)) return;
+
+            const form = new FormData();
+            form.append('file', file);
+            form.append('path', path);
+            try {
+                const res = await fetch(`${API_BASE}/api/kb/document/replace`, { method: 'POST', body: form });
+                const payload = await res.json().catch(() => null);
+                if (!res.ok) throw new Error(payload?.detail || `HTTP ${res.status}`);
+                alert(`替换成功（${payload.old_bytes} → ${payload.new_bytes} 字节）\n`
+                    + `旧版本已留档：${payload.archived_version}\n\n`
+                    + `点「同步」让新内容进入检索。`);
+            } catch (error) {
+                alert(`替换失败：${error.message}`);
+            } finally {
+                input.value = '';
+            }
+        }
+
+        async function kbShowVersions(encodedPath, event) {
+            if (event) event.stopPropagation();
+            const path = decodeURIComponent(encodedPath);
+            const box = document.getElementById('kbVersionModal');
+            const body = document.getElementById('kbVersionBody');
+            document.getElementById('kbVersionPath').textContent = path;
+            body.innerHTML = '<div class="text-slate-400 text-sm py-6 text-center">加载中…</div>';
+            box.classList.remove('hidden');
+            try {
+                const res = await fetch(`${API_BASE}/api/kb/document/versions?path=${encodedPath}`);
+                const payload = await res.json();
+                if (!res.ok) throw new Error(payload?.detail || `HTTP ${res.status}`);
+                const versions = payload.versions || [];
+                body.innerHTML = versions.length
+                    ? versions.map(v => `
+                        <div class="flex items-center justify-between border-b border-slate-100 py-2">
+                            <div>
+                                <div class="text-sm text-slate-700">${escapeHtml(v.version)}</div>
+                                <div class="text-xs text-slate-400">${v.bytes} 字节</div>
+                            </div>
+                            <button onclick="kbDownloadVersion('${encodedPath}', '${escapeHtml(v.version)}')"
+                                class="px-3 py-1 rounded-lg text-xs bg-slate-100 text-slate-700 hover:bg-slate-200">下载</button>
+                        </div>`).join('')
+                    : '<div class="text-slate-400 text-sm py-6 text-center">还没有历史版本（替换文档时会自动留档）</div>';
+            } catch (error) {
+                body.innerHTML = `<div class="text-rose-600 text-sm py-6 text-center">加载失败：${escapeHtml(error.message)}</div>`;
+            }
+        }
+
+        function kbDownloadVersion(encodedPath, version) {
+            window.open(`${API_BASE}/api/kb/document/version?path=${encodedPath}&version=${encodeURIComponent(version)}`, '_blank');
+        }
+
+        function kbCloseVersions() {
+            document.getElementById('kbVersionModal').classList.add('hidden');
         }
 
         async function selectSource(contentId) {
