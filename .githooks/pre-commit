@@ -1,24 +1,94 @@
-#!/bin/bash
-# aiticket pre-commit hook: 检查 schedule 注册一致性
-# 安装: git config core.hooksPath .githooks && chmod +x .githooks/pre-commit
+#!/usr/bin/env bash
+# aiticket pre-commit 闸门
+#
+# 安装: bash scripts/dev/install-hooks.sh   （会设置 core.hooksPath）
+# 跳过: git commit --no-verify              （仅限确知无关的紧急情况）
+#
+# 四道检查，全部只用 git + 标准库，保证离线机器也能跑：
+#   1. 空白 / 冲突标记
+#   2. 运行时数据与凭据拦截   ← 本仓反复踩过：badcase 双写、nightly_queue.json、cookie 泄漏
+#   3. schedule 注册一致性     ← 原有检查，保留
+#   4. 测试伴随检查（告警）     ← 新代码应带 tests/test_<module>.py
+set -uo pipefail
 
-CHANGED=$(git diff --cached --name-only 2>/dev/null)
+FAIL=0
+CHANGED=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null)
+[ -z "$CHANGED" ] && exit 0
 
-if echo "$CHANGED" | grep -qE "(APP/backend/data/schedules/.*\.json|scheduler_service\.py|task_bridge\.py)"; then
-    echo "🔍 Schedule registry audit (schedule JSON 或 scheduler 代码有改动)..."
-    PYTHON="/Volumes/MacMini/opt/miniconda3/envs/antigravity/bin/python3.12"
-    if [[ ! -x "$PYTHON" ]]; then
-        PYTHON="python3"
-    fi
-    "$PYTHON" APP/backend/scripts/audit_schedule_registry.py
-    EXIT=$?
-    if [[ $EXIT -eq 2 ]]; then
-        echo ""
-        echo "❌ Schedule audit 失败。修复后重新 git add 再 commit。"
-        echo "   如需跳过（不推荐）: git commit --no-verify"
-        exit 1
-    fi
-    echo "✅ Schedule audit 通过"
+# ── 1. 空白与冲突标记 ──────────────────────────────────────────────────────
+if ! git diff --cached --check; then
+    echo "❌ 存在行尾空白或冲突标记，请先修正。"
+    FAIL=1
 fi
 
+# ── 2. 运行时数据与凭据拦截 ────────────────────────────────────────────────
+# 这些文件是服务运行时写出来的。172 上 <repo>/APP 是 bind-mount 进容器的，
+# 一旦被提交，后续 git pull --ff-only 会被脏工作区挡住、发布中断。
+FORBIDDEN=$(echo "$CHANGED" | grep -Ei \
+  '(^|/)(APP/backend/(data/.*\.(jsonl|db|db-wal|db-shm)|eval/|logs/)|\.env($|\.)|[^/]*(cookie|token|credential|secret)[^/]*\.(json|txt|ya?ml))' \
+  || true)
+if [ -n "$FORBIDDEN" ]; then
+    echo "❌ 拒绝暂存运行时数据或疑似凭据文件："
+    echo "$FORBIDDEN" | sed 's/^/     /'
+    echo "   这类文件应由 .gitignore 覆盖；如确需入库，请显式说明理由并单独提交。"
+    FAIL=1
+fi
+
+# patch 内容里的真实凭据
+PATCH=$(git diff --cached --unified=0 --no-ext-diff 2>/dev/null)
+declare -a HITS=()
+echo "$PATCH" | grep -qE -- '-----BEGIN ([A-Z0-9 ]+ )?PRIVATE KEY-----' && HITS+=("私钥")
+echo "$PATCH" | grep -qE '\bgh[pousr]_[A-Za-z0-9]{20,}\b'                && HITS+=("GitHub token")
+echo "$PATCH" | grep -qE '\bglpat-[A-Za-z0-9_-]{20,}\b'                  && HITS+=("GitLab token")
+echo "$PATCH" | grep -qiE 'authorization[[:space:]]*[:=][[:space:]]*"?bearer[[:space:]]+[A-Za-z0-9._~+/-]{20,}' && HITS+=("Bearer token")
+echo "$PATCH" | grep -qE 'JSESSIONID=[A-Za-z0-9]{16,}'                   && HITS+=("Jira JSESSIONID")
+if [ ${#HITS[@]} -gt 0 ]; then
+    echo "❌ 变更内容里出现疑似真实凭据：$(IFS=、; echo "${HITS[*]}")"
+    echo "   请移除；若已泄漏，立即轮换该凭据。"
+    FAIL=1
+fi
+
+# ── 3. schedule 注册一致性（原有检查）──────────────────────────────────────
+if echo "$CHANGED" | grep -qE "(APP/backend/data/schedules/.*\.json|scheduler_service\.py|task_bridge\.py)"; then
+    echo "🔍 Schedule registry audit..."
+    PYTHON=""
+    for c in "${AITICKET_PYTHON:-}" python3.12 python3.11 python3; do
+        [ -n "$c" ] || continue
+        command -v "$c" >/dev/null 2>&1 || continue
+        "$c" -c 'import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null && { PYTHON="$c"; break; }
+    done
+    if [ -z "$PYTHON" ]; then
+        echo "⚠️  找不到 >=3.10 的 Python，跳过 schedule 审计"
+    else
+        "$PYTHON" APP/backend/scripts/audit_schedule_registry.py
+        if [ $? -eq 2 ]; then
+            echo "❌ Schedule audit 失败。修复后重新 git add 再 commit。"
+            FAIL=1
+        else
+            echo "✅ Schedule audit 通过"
+        fi
+    fi
+fi
+
+# ── 4. 测试伴随检查（当前为告警，不阻断）──────────────────────────────────
+# 存量 122 个源文件没有测试；一上来就阻断只会让所有人习惯性 --no-verify，
+# 闸门反而作废。核心链路补齐后再对白名单目录升级为强制。
+MISSING=""
+while IFS= read -r f; do
+    case "$f" in
+        APP/backend/tests/*|APP/backend/scripts/*|APP/backend/conftest.py) continue ;;
+        APP/backend/*.py|APP/backend/services/*.py|APP/backend/agents/*.py) ;;
+        *) continue ;;
+    esac
+    base=$(basename "$f" .py)
+    [ -f "APP/backend/tests/test_${base}.py" ] || MISSING="${MISSING}     ${f}  →  期望 APP/backend/tests/test_${base}.py"$'\n'
+done <<< "$CHANGED"
+
+if [ -n "$MISSING" ]; then
+    echo "⚠️  以下改动的源文件没有配套单测（本次不阻断，但请补上）："
+    printf '%s' "$MISSING"
+fi
+
+[ $FAIL -eq 0 ] || { echo; echo "提交被拒绝。确需跳过：git commit --no-verify"; exit 1; }
+echo "✅ pre-commit 检查通过（$(echo "$CHANGED" | wc -l | tr -d ' ') 个暂存文件）"
 exit 0

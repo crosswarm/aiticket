@@ -108,37 +108,21 @@ from services.pipeline_config_manager import PipelineConfigManager
 _REPLY_GATES_YAML = Path(__file__).parent / "config" / "reply_gates.yaml"
 reply_gates_mgr = PipelineConfigManager(_REPLY_GATES_YAML)
 
-# 配置日志
-LOG_DIR = Path(__file__).parent / "logs"
-LOG_DIR.mkdir(exist_ok=True)
+# 配置日志 —— 实现在 services/logging_setup.py（可单测，不受 main.py 重依赖拖累）
+# 三流拆分：main.log(应用) / access.log(请求流水) / error.log(WARNING+，长留存)
+# 并且：uvicorn.error 不再被静音（当年 /api/agents/* 全 404 查不到栈的根因），
+#       root logger 挂 handler（否则各模块 getLogger(__name__) 的日志进黑洞）。
+from services.logging_setup import (  # noqa: E402
+    ACCESS_LOGGER_NAME,
+    configure_logging,
+    current_trace_id,
+    new_trace_id,
+    set_trace_id,
+)
 
-# 创建日志格式
-log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-date_format = '%Y-%m-%d %H:%M:%S'
-
-# 配置根日志记录器
+LOG_DIR = configure_logging()
 logger = logging.getLogger('ai_ticket')
-logger.setLevel(logging.INFO)
-logger.propagate = False
-
-if not logger.handlers:
-    file_handler = logging.handlers.RotatingFileHandler(
-        LOG_DIR / 'main.log',
-        maxBytes=10*1024*1024,
-        backupCount=5,
-        encoding='utf-8'
-    )
-    file_handler.setFormatter(logging.Formatter(log_format, date_format))
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(logging.Formatter(log_format, date_format))
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)
-
-# 关闭 uvicorn 的默认日志
-uvicorn_loggers = ["uvicorn", "uvicorn.access", "uvicorn.error"]
-for name in uvicorn_loggers:
-    logging.getLogger(name).handlers = []
-    logging.getLogger(name).propagate = False
+access_logger = logging.getLogger(ACCESS_LOGGER_NAME)
 
 app = FastAPI()
 
@@ -663,16 +647,22 @@ async def log_requests(request: Request, call_next):
         except Exception:
             pass
 
-    # 记录请求
-    logger.info(f"Request: {request.method} {path}")
+    # 请求级 trace：优先沿用调用方传入的，便于跨服务串联；否则新建。
+    # 之后这一次请求产生的【所有】日志行都会带上它，badcase 上报带回 trace 即可 grep 全链路。
+    _tid = (request.headers.get("X-Trace-Id") or "").strip() or new_trace_id()
+    set_trace_id(_tid)
+    request.state.trace_id = _tid
 
     try:
         response = await call_next(request)
 
-        # 记录响应
+        # 请求流水进 access.log，不再污染 main.log
+        # （172 实测：改造前 99.1% 的行是这类流水，2 条 ERROR 被 33k 行淹没）
         process_time = (time.time() - start_time) * 1000
-        logger.info(f"Response: status={response.status_code} time={process_time:.0f}ms")
-
+        access_logger.info(
+            f"{request.method} {path} status={response.status_code} time={process_time:.0f}ms"
+        )
+        response.headers["X-Trace-Id"] = _tid
         return response
     except Exception as e:
         import traceback
@@ -4421,7 +4411,9 @@ async def generate_reply(request: GenerateReplyRequest, raw_request: Request, _q
     # 有了它才能把「用户说这条回复不对」和服务端日志对上号（aidiag grep <trace_id>）。
     # 在端点这一层生成，是因为这里是前端唯一入口，能 100% 覆盖 4 个返回分支；
     # 而 generate_reply_content 内部有 8 个返回点，逐个改风险大得多。
-    _trace_id = f"rp-{int(time.time() * 1000):x}-{secrets.token_hex(3)}"
+    # 沿用中间件为本次请求设的 trace，使 badcase 快照里的 trace 与日志、响应头三者一致；
+    # 没有请求上下文时（理论上不会走到）再自建一个。
+    _trace_id = current_trace_id() or new_trace_id()
 
     def _resp(payload: dict) -> dict:
         payload["trace_id"] = _trace_id
