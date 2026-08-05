@@ -124,6 +124,13 @@ LOG_DIR = configure_logging()
 logger = logging.getLogger('ai_ticket')
 access_logger = logging.getLogger(ACCESS_LOGGER_NAME)
 
+# llm_feature_routing.json 是【每实例独有的运行时配置】（设置页可改），不入库。
+# 缺失时用代码里的默认值生成，保证 8 处直接读该文件的消费方零改动。
+# 必须在它们被 import 之前跑。
+from services.llm_routing_config import ensure_routing_file  # noqa: E402
+
+ensure_routing_file()
+
 app = FastAPI()
 
 _PROCESS_STARTED_AT = time.time()

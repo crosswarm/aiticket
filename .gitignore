@@ -36,6 +36,9 @@ design/**
 .env
 APP/backend/config/deployment.yaml
 APP/backend/llm_config.json
+# 每实例独有的功能路由（设置页可改）；缺失时由 services/llm_routing_config 自动生成。
+# 此前它被跟踪却又被运行时改写 → 工作区长期脏、且 pull 会用仓库版覆盖线上路由。
+APP/backend/llm_feature_routing.json
 
 # Runtime databases & state
 APP/backend/data/app_auth.db

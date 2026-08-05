@@ -1,4 +1,5 @@
 import os
+import pytest
 
 BACKEND_DIR = os.path.join(os.path.dirname(__file__), "..")
 FRONTEND_DIR = os.path.normpath(os.path.join(BACKEND_DIR, "../frontend"))
@@ -55,7 +56,18 @@ def test_settings_sidebar_footer_controls_have_clickable_dependencies_and_button
 
 
 def test_docker_compose_persists_auth_database_and_encryption_key():
+    """两个 env 必须同时存在，否则容器重建后 Jira/PM/LLM 密文无法解密。
+
+    注意：容器内跑测试时读不到这个文件 —— bind-mount 只映射 <repo>/APP，
+    仓库根的 docker-compose.yml 不在容器里。那种情况下应明确 skip 并说明原因，
+    而不是报 FileNotFoundError：一个因环境而假失败的测试，会训练人忽略真失败。
+    （容器的实际 env 是否正确，用 `docker inspect` 核，不该由这个测试负责。）
+    """
     compose_path = os.path.join(os.path.dirname(FRONTEND_DIR), "..", "docker-compose.yml")
+    if not os.path.exists(compose_path):
+        pytest.skip(f"docker-compose.yml 不在当前运行环境内（{compose_path}）；"
+                    "容器内跑测试属正常，请在宿主仓库目录验证")
+
     compose_source = open(compose_path, encoding="utf-8").read()
 
     assert "APP_AUTH_DB_PATH=/data/app_auth.db" in compose_source
