@@ -3180,9 +3180,9 @@ class BatchMoveRequest(BaseModel):
 
 
 @app.post("/api/board/move-issue")
-def move_issue_to_board(request: MoveIssueRequest):
+def move_issue_to_board(request: MoveIssueRequest, raw_request: Request):
     """
-    移动工单到指定看板
+    移动工单到指定看板（必须鉴权：sync_jira=true 时会真改客户 Jira 状态）
 
     请求: {
         "issue_key": "MYPROJECT-12345",
@@ -3201,6 +3201,7 @@ def move_issue_to_board(request: MoveIssueRequest):
         }
     }
     """
+    require_authenticated_user(raw_request)
     try:
         result = board_service.move_issue_to_board(
             issue_key=request.issue_key,
@@ -3217,9 +3218,9 @@ def move_issue_to_board(request: MoveIssueRequest):
 
 
 @app.post("/api/board/batch-move")
-def batch_move_issues(request: BatchMoveRequest):
+def batch_move_issues(request: BatchMoveRequest, raw_request: Request):
     """
-    批量移动工单
+    批量移动工单（必须鉴权：sync_jira=true 时会真改客户 Jira 状态）
 
     请求: {
         "moves": [
@@ -3237,6 +3238,7 @@ def batch_move_issues(request: BatchMoveRequest):
         }
     }
     """
+    require_authenticated_user(raw_request)
     try:
         result = board_service.batch_move_issues(
             moves=request.moves,
@@ -3642,7 +3644,8 @@ class MoveIssueJiraRequest(BaseModel):
 
 @app.post("/api/board/move-issue-jira")
 def move_issue_jira(request: MoveIssueJiraRequest, raw_request: Request):
-    """通过Jira Web界面移动工单到另一个项目"""
+    """通过Jira Web界面移动工单到另一个项目（必须鉴权：直接改客户 Jira）"""
+    require_authenticated_user(raw_request)
     if _IS_DEMO:
         return {"status": "demo_blocked", "message": "演示模式：Jira 移动操作已屏蔽"}
     try:
@@ -4072,7 +4075,10 @@ def jira_action(request: JiraActionRequest, raw_request: Request):
     - assign: 分配工单
     - reply: 回复工单
     - reply_and_close: 回复并关闭工单
+
+    必须鉴权：reply / reply_and_close 会真发客户工单。
     """
+    require_authenticated_user(raw_request)
     if _IS_DEMO:
         return {"status": "demo_blocked", "message": "演示模式：Jira 写操作已屏蔽，不会写入真实工单"}
     import traceback
@@ -4999,8 +5005,13 @@ def list_pending_approvals(
 
 
 @app.post("/api/board/batch-approve-replies")
-def batch_approve_replies(request: BatchApproveRequest):
-    """批量通过 staging 中的自动回复草稿，真正发送到 Jira。"""
+def batch_approve_replies(request: BatchApproveRequest, raw_request: Request):
+    """批量通过 staging 中的自动回复草稿，真正发送到 Jira。
+
+    必须鉴权：approve 会走 pending_approval_store.approve →
+    jira_service.reply_and_close_via_transition，真发客户工单并关单。
+    """
+    require_authenticated_user(raw_request)
     from services.pending_approval_store import approve as _approve
     completed, failed, results = 0, 0, []
     for aid in request.approval_ids:
@@ -5015,8 +5026,9 @@ def batch_approve_replies(request: BatchApproveRequest):
 
 
 @app.post("/api/board/batch-reject-replies")
-def batch_reject_replies(request: BatchRejectRequest):
+def batch_reject_replies(request: BatchRejectRequest, raw_request: Request):
     """批量驳回 staging 中的自动回复草稿，转为人工处理。"""
+    require_authenticated_user(raw_request)
     from services.pending_approval_store import reject as _reject
     completed, failed, results = 0, 0, []
     for aid in request.approval_ids:
