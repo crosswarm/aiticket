@@ -172,6 +172,21 @@
                         <p class="text-xs text-slate-500 leading-5">有 LLM 配置时优先输出智能问答；无配置时自动降级为匹配摘要模式。</p>
                     </div>
                 </section>
+                <section id="uploadPanel" class="glass rounded-xl p-4 shadow-lg hidden">
+                    <h2 class="font-semibold text-slate-700 mb-3">📤 上传知识</h2>
+                    <div class="space-y-2">
+                        <select id="uploadDomainCloud" class="w-full p-2 border rounded-lg text-sm bg-white"></select>
+                        <select id="uploadLabel" class="w-full p-2 border rounded-lg text-sm bg-white"></select>
+                        <select id="uploadApplication" class="w-full p-2 border rounded-lg text-sm bg-white"></select>
+                        <input id="uploadFiles" type="file" multiple
+                            class="w-full text-sm text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200">
+                        <button id="uploadButton" onclick="uploadKnowledge()"
+                            class="w-full bg-emerald-600 text-white py-2 rounded-lg hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed">上传</button>
+                        <div id="uploadResult" class="text-xs leading-5 text-slate-500">
+                            按所选领域归档，上传后点「同步」进索引。支持 md/txt/csv/html/xml/docx/pptx/xlsx/pdf。
+                        </div>
+                    </div>
+                </section>
                 <section class="glass rounded-xl p-4 shadow-lg hidden sm:block">
                     <h2 class="font-semibold text-slate-700 mb-3">🧭 问题总览</h2>
                     <div id="overviewPanel" class="space-y-3 text-sm text-slate-600">
@@ -1163,6 +1178,109 @@
                 showToast(`保存失败: ${e.message}`, 'error');
             }
         }
+
+        // ── 按 BIP 归属上传知识 ──────────────────────────────────────────
+        // 归属由目录结构承载（KB/<label>/<application>/），后端索引时解析回
+        // label/application，所以新知识天生带标，不会像存量那样全是 _global。
+        let uploadTaxonomy = null;
+
+        async function loadUploadTaxonomy() {
+            try {
+                const res = await fetch(`${API_BASE}/api/kb/taxonomy`);
+                if (!res.ok) return;   // 快照不可用时整块不显示，不打扰用户
+                uploadTaxonomy = await res.json();
+            } catch (error) {
+                return;
+            }
+            if (!uploadTaxonomy?.labels?.length) return;
+
+            const preferred = uploadTaxonomy.preferred_domain_clouds || [];
+            const usedClouds = [...new Set(uploadTaxonomy.labels.map(l => l.domain_cloud).filter(Boolean))];
+            // 知识库目前都在应用平台/云平台下，把它们排在最前面
+            usedClouds.sort((a, b) => {
+                const ra = preferred.indexOf(a), rb = preferred.indexOf(b);
+                if (ra !== rb) return (ra < 0 ? 99 : ra) - (rb < 0 ? 99 : rb);
+                return (uploadTaxonomy.domain_clouds[a] || a).localeCompare(uploadTaxonomy.domain_clouds[b] || b, 'zh');
+            });
+
+            const cloudSel = document.getElementById('uploadDomainCloud');
+            cloudSel.innerHTML = usedClouds
+                .map(c => `<option value="${c}">${uploadTaxonomy.domain_clouds[c] || c}</option>`)
+                .join('');
+            cloudSel.onchange = fillUploadLabels;
+            document.getElementById('uploadLabel').onchange = fillUploadApplications;
+            fillUploadLabels();
+            document.getElementById('uploadPanel').classList.remove('hidden');
+        }
+
+        function fillUploadLabels() {
+            const cloud = document.getElementById('uploadDomainCloud').value;
+            const labels = uploadTaxonomy.labels.filter(l => l.domain_cloud === cloud);
+            document.getElementById('uploadLabel').innerHTML = labels
+                .map(l => `<option value="${l.code}">${l.name}</option>`)
+                .join('');
+            fillUploadApplications();
+        }
+
+        function fillUploadApplications() {
+            const code = document.getElementById('uploadLabel').value;
+            const label = uploadTaxonomy.labels.find(l => l.code === code);
+            const apps = label?.applications || [];
+            // application 可以不选——不少知识只能定到 label（如 YPD 开发框架）
+            document.getElementById('uploadApplication').innerHTML =
+                ['<option value="">（不指定具体应用）</option>']
+                    .concat(apps.map(a => `<option value="${a.code}">${a.name}</option>`))
+                    .join('');
+        }
+
+        async function uploadKnowledge() {
+            const button = document.getElementById('uploadButton');
+            const result = document.getElementById('uploadResult');
+            const input = document.getElementById('uploadFiles');
+            const files = input?.files || [];
+            if (!files.length) {
+                result.className = 'text-xs leading-5 text-amber-600';
+                result.textContent = '请先选择文件';
+                return;
+            }
+
+            const form = new FormData();
+            for (const file of files) form.append('files', file);
+            form.append('label_code', document.getElementById('uploadLabel').value);
+            form.append('application_code', document.getElementById('uploadApplication').value);
+
+            button.disabled = true;
+            button.textContent = '上传中...';
+            try {
+                const res = await fetch(`${API_BASE}/api/kb/upload`, { method: 'POST', body: form });
+                const payload = await res.json().catch(() => null);
+                if (!res.ok) {
+                    throw new Error(payload?.detail || `HTTP ${res.status}`);
+                }
+                const saved = payload.saved || [];
+                const skipped = payload.skipped || [];
+                const lines = [`✅ 已存入 ${payload.target_dir}：${saved.length} 个文件`];
+                const unparsable = saved.filter(f => !f.parsable);
+                if (unparsable.length) {
+                    lines.push(`⚠️ ${unparsable.length} 个文件无法提取正文，只会留下元数据`);
+                }
+                if (skipped.length) {
+                    lines.push(...skipped.map(s => `⚠️ 跳过 ${s.filename}：${s.reason}`));
+                }
+                lines.push('点上方「同步」让新文件进入索引。');
+                result.className = 'text-xs leading-5 text-slate-600';
+                result.innerHTML = lines.join('<br>');
+                input.value = '';
+            } catch (error) {
+                result.className = 'text-xs leading-5 text-rose-600';
+                result.textContent = `上传失败：${error.message}`;
+            } finally {
+                button.disabled = false;
+                button.textContent = '上传';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', loadUploadTaxonomy);
 
         async function syncKnowledge() {
             const syncButton = document.getElementById('syncButton');

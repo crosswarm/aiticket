@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from bip_taxonomy import apply_taxonomy_boost, get_bip_taxonomy
 from kb_hybrid_index import KnowledgeHybridIndex
 from kb_local_builder import KBLocalBuilder, _default_data_root, _default_kb_root, _default_topic_file
 
@@ -169,8 +170,46 @@ class KnowledgeRuntimeService:
         source_kind: str | None = None,
         category: str | None = None,
         module_boost: list[str] = [],
+        project_key: str | None = None,
     ) -> list[dict[str, Any]]:
-        return self.search_bundle(query=query, top_k=top_k, source_kind=source_kind, category=category, module_boost=module_boost)["items"]
+        return self.search_bundle(
+            query=query,
+            top_k=top_k,
+            source_kind=source_kind,
+            category=category,
+            module_boost=module_boost,
+            project_key=project_key,
+        )["items"]
+
+    @staticmethod
+    def _taxonomy_modules(top_category: str, second_category: str, text: str = "") -> dict[str, str]:
+        """把目录分类映射成 BIP 的 label / application，供索引项落库。
+
+        归属不出来时原样退回目录名——行为与改造前一致，绝不把已有分类冲成空。
+        """
+        try:
+            result = get_bip_taxonomy().classify(
+                top_category=top_category, second_category=second_category, text=text
+            )
+        except Exception:
+            return {"l1_module": top_category or "", "l2_module": second_category or ""}
+        return {
+            "l1_module": result.label_name or top_category or "",
+            "l2_module": result.application_name or second_category or "",
+        }
+
+    def _apply_taxonomy_boost(
+        self,
+        items: list[dict],
+        module_boost: list[str],
+        project_key: str | None,
+    ) -> list[dict]:
+        """分层加权，实现在 bip_taxonomy（纯函数、无检索依赖，便于单测）。"""
+        try:
+            taxonomy = get_bip_taxonomy()
+        except Exception:
+            return items
+        return apply_taxonomy_boost(items, taxonomy, module_boost, project_key)
 
     @staticmethod
     def _score_evidence_quality(item: dict) -> dict:
@@ -206,6 +245,7 @@ class KnowledgeRuntimeService:
         source_kind: str | None = None,
         category: str | None = None,
         module_boost: list[str] = [],
+        project_key: str | None = None,
     ) -> dict[str, Any]:
         query = (query or "").strip()
         if not query:
@@ -238,11 +278,7 @@ class KnowledgeRuntimeService:
             _item["step_density"] = _eq["step_density"]
             _item["source_tier"] = _eq["source_tier"]
             _item["completeness"] = _eq["completeness"]
-        if module_boost:
-            for item in ranked_items:
-                if item.get("l1_module") in module_boost or item.get("l2_module") in module_boost:
-                    item["score"] = item.get("score", 0) + 0.08
-            ranked_items.sort(key=lambda x: x.get("score", 0), reverse=True)
+        ranked_items = self._apply_taxonomy_boost(ranked_items, module_boost, project_key)
         source_groups = self._build_source_groups(ranked_items)
         primary_materials = self._build_primary_materials(ranked_items, query)
         return {
@@ -1006,8 +1042,9 @@ class KnowledgeRuntimeService:
                 # 保留完整路径供 _load_item_text() 使用（不能通过 _MANIFEST_ITEM_KEYS slim 掉）
                 "source_path": _src_path,
                 "converted_path": _converted_path,
-                "l1_module": raw.get("top_category", ""),
-                "l2_module": raw.get("second_category", ""),
+                # l1/l2 是 BIP 主数据分类（label / application），不再是原始目录名。
+                # 必须在这里解析：索引重建会整表覆盖，只靠回填脚本会被下一次 sync 冲掉。
+                **self._taxonomy_modules(raw.get("top_category", ""), raw.get("second_category", "")),
                 "citation_label": f"[KB] {_src_rel or content_id}",
                 "project_key": "_global",
                 "source_mtime": _mtime,
@@ -1091,7 +1128,11 @@ class KnowledgeRuntimeService:
                 break
         if not doc_type:
             doc_type = self._strip_numeric_prefix(l2)
-        return self._strip_numeric_prefix(l1), self._strip_numeric_prefix(l2), doc_type
+        # 与 kb_local 走同一套 BIP 分类，避免两条来源的 l1_module 语义不一致
+        modules = self._taxonomy_modules(
+            self._strip_numeric_prefix(l1), self._strip_numeric_prefix(l2)
+        )
+        return modules["l1_module"], modules["l2_module"], doc_type
 
     def _extract_title(self, text: str, path: Path) -> str:
         for line in text.splitlines():

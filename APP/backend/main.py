@@ -2437,7 +2437,55 @@ def get_kb_metadata(content_id: str):
 @app.get("/api/kb/search")
 def search_kb(request: Request, q: str, top_k: int = Query(20, description="返回条数"), source_kind: str = Query("", description="知识源过滤")):
     """Search knowledge base"""
-    return kb_runtime_service.search_bundle(q, top_k=top_k, source_kind=source_kind or None, module_boost=getattr(request.state, "current_modules", []))
+    return kb_runtime_service.search_bundle(
+        q,
+        top_k=top_k,
+        source_kind=source_kind or None,
+        module_boost=getattr(request.state, "current_modules", []),
+        project_key=getattr(request.state, "project_key", None),
+    )
+
+
+# ── KB 上传（按 BIP 归属落盘，新知识天生带标）──────────────────────────────
+# 落盘逻辑在 kb_upload.py，那里是纯函数、有单测；这里只做 HTTP 层。
+
+
+@app.get("/api/kb/taxonomy")
+def get_kb_taxonomy(domain_cloud: Optional[str] = None):
+    """上传时可选的归属树：领域云 > label > application。"""
+    from bip_taxonomy import get_bip_taxonomy
+    from kb_upload import build_taxonomy_tree
+
+    taxonomy = get_bip_taxonomy()
+    if not taxonomy.available:
+        raise HTTPException(status_code=503, detail="BIP 分类快照不可用，请先导出 bip_taxonomy.json")
+    return build_taxonomy_tree(taxonomy, domain_cloud)
+
+
+@app.post("/api/kb/upload")
+async def upload_kb_files(
+    files: list[UploadFile] = File(...),
+    label_code: str = Form(...),
+    application_code: str = Form(""),
+):
+    """上传知识文件到 KB/<label>/<application>/。
+
+    落盘后需要调 /api/kb/refresh 才会进索引——转换+嵌入耗时较长，不在请求里做。
+    """
+    from bip_taxonomy import get_bip_taxonomy
+    from kb_upload import UploadRejected, save_uploads
+
+    payload = [(upload.filename or "", await upload.read()) for upload in files]
+    try:
+        return save_uploads(
+            kb_runtime_service.kb_root,
+            get_bip_taxonomy(),
+            label_code,
+            application_code,
+            payload,
+        )
+    except UploadRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.post("/api/kb/qa")
 def ask_kb_question(request: KBQuestionRequest, raw_request: Request, _quota=Depends(require_reply_quota)):
