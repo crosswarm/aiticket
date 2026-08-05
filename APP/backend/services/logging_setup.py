@@ -42,6 +42,16 @@ _ACCESS_BACKUPS = 3
 _ERROR_MAX_BYTES = 5 * 1024 * 1024
 _ERROR_BACKUPS = 20
 
+# 给 root 挂 handler 后，三方库的 INFO 也会落盘。httpx 每次出站请求打一条 INFO——
+# 生产上每次调 Jira/LLM 都刷一行，等于把刚清掉的噪音换个来源请回来
+# （172 实测：一次测试运行就产生 168 行 httpx INFO）。
+# 这些压到 WARNING：真出问题时仍留声，日常不刷屏。
+_NOISY_THIRD_PARTY = (
+    "httpx", "httpcore", "urllib3", "requests",
+    "chromadb", "sentence_transformers", "transformers",
+    "openai", "anthropic", "asyncio", "watchfiles", "PIL", "matplotlib",
+)
+
 _LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - [%(trace_id)s] %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -172,6 +182,10 @@ def configure_logging(log_dir: Optional[Path] = None, force: bool = False) -> Pa
     uv_acc = logging.getLogger("uvicorn.access")
     _reset(uv_acc)
     uv_acc.propagate = False
+
+    # 三方库降噪：只压级别，不摘 handler —— WARNING 及以上仍会落盘
+    for name in _NOISY_THIRD_PARTY:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     _configured = True
     return log_dir

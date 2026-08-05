@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -25,5 +26,12 @@ for _p in (BACKEND_DIR, BACKEND_DIR / "scripts"):
 
 
 def pytest_configure(config):
-    """把测试运行标记出来，供被测代码在需要时避开真实副作用。"""
+    """把测试运行标记出来，供被测代码在需要时避开真实副作用。
+
+    同时把日志重定向到临时目录：在 172 的容器里跑测试时，import 应用模块会
+    触发日志初始化，结果测试日志混进了生产的 /app/logs（实测见过
+    /tmp/pytest-of-root/... 的行出现在 main.log 里）。
+    """
     os.environ.setdefault("AITICKET_TESTING", "1")
+    if not os.environ.get("AITICKET_LOG_DIR"):
+        os.environ["AITICKET_LOG_DIR"] = tempfile.mkdtemp(prefix="aiticket-test-logs-")

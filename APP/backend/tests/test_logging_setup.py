@@ -116,6 +116,34 @@ def test_configure_is_idempotent(tmp_path):
     assert len(logging.getLogger(APP_LOGGER_NAME).handlers) == n1
 
 
+def test_chatty_third_party_loggers_are_quieted(tmp_path):
+    """★ 给 root 挂 handler 后，三方库的 INFO 也会落盘。
+
+    httpx 每次出站请求都打一条 INFO —— 生产上每次调 Jira/LLM 都刷一行，
+    等于把刚清掉的噪音又换个来源请回来。实测 172 上一次测试运行就产生了
+    168 行 httpx INFO。这些库必须压到 WARNING。
+    """
+    _reset()
+    configure_logging(log_dir=tmp_path, force=True)
+
+    logging.getLogger("httpx").info("HTTP Request: GET http://x 200 OK")
+    logging.getLogger("httpcore").info("connect_tcp.started")
+    logging.getLogger("urllib3.connectionpool").info("Starting new HTTPS connection")
+    for h in logging.getLogger().handlers:
+        h.flush()
+
+    txt = (tmp_path / "main.log").read_text(encoding="utf-8")
+    assert "HTTP Request" not in txt
+    assert "connect_tcp" not in txt
+    assert "Starting new HTTPS connection" not in txt
+
+    # 但它们的 WARNING/ERROR 仍要留声，否则真出网络问题就瞎了
+    logging.getLogger("httpx").warning("连接池耗尽")
+    for h in logging.getLogger().handlers:
+        h.flush()
+    assert "连接池耗尽" in (tmp_path / "main.log").read_text(encoding="utf-8")
+
+
 def test_resolve_log_dir_prefers_env(tmp_path, monkeypatch):
     monkeypatch.setenv("AITICKET_LOG_DIR", str(tmp_path / "custom"))
     assert resolve_log_dir() == Path(tmp_path / "custom")
