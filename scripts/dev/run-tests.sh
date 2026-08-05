@@ -60,6 +60,18 @@ if [ -n "$PY" ]; then
   exit $?
 fi
 
+# ── 宿主没有可用 Python 时，委派进容器跑 ──────────────────────────────────
+# 172 服务器就是这种情况：宿主连 python3 都没有，但 <repo>/APP 是 bind-mount
+# 进容器的 /app/APP，所以容器里跑到的就是当前工作区的测试文件。
+# （注意 scripts/ 不在挂载范围内，所以这里直接调 pytest，不能调容器内的本脚本。）
+CONTAINER="${AITICKET_CONTAINER:-aiticket}"
+if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER"; then
+  echo "▶ 宿主无可用 Python，委派到容器 $CONTAINER 内执行"
+  docker exec -e PYTHONPATH="$PYTOOLS" -w /app/APP/backend "$CONTAINER" \
+    python3 -m pytest "$@"
+  exit $?
+fi
+
 # ── 兜底：谁都没有 pytest 时，用标准库 unittest 至少跑起来 ──
 # 对应 ycc-approve-inbox「零依赖测试」的精神：任何环境都必须有办法验证，
 # 哪怕只能覆盖不依赖 pytest fixture 的那部分测试。
