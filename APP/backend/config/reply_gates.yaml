@@ -19,6 +19,13 @@ gates:
     enabled: true
     composite_threshold: 0.83
     min_adopted_count: 3
+    # ⚠️ 2026-06-11 起 direct tier 临时禁用（设 1.01 恒不可达）。
+    # 原因：direct 复用在 board_service_chroma.py 的 G3 分支短路 return，
+    # 绕过后续所有 guard（含 G5 supervisor），实测出现复用错工单回复的事故。
+    # 本行此前只落在内部 aiticket/main，生产 offline-deploy 一直缺失 →
+    # 吃 reply_reuse_evaluator.py 的默认值 0.82，direct 档实际处于启用状态。
+    # 待用真实采纳样本重标定 + 确认 G5 fail-closed 后再恢复（MiniLM 候选值 0.82）。
+    min_similarity_direct: 1.01
     score_weights:
       similarity: 0.475
       adoption_signal: 0.375
