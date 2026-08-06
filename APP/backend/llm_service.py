@@ -5,7 +5,10 @@ import concurrent.futures as _cf
 import os
 import re
 import time
+import time as _time
 from typing import List, Dict, Generator
+
+import llm_metrics as _metrics
 
 # Retry configuration
 MAX_RETRIES = 3
@@ -13,6 +16,33 @@ INITIAL_DELAY = 1.0  # seconds
 MAX_DELAY = 10.0  # seconds
 DELAY_MULTIPLIER = 2.0
 OPENAI_REQUEST_TIMEOUT = 30.0
+
+
+def _extract_error_body(exc: BaseException) -> str:
+    """尽力取出上游返回的原始报错体。
+
+    429 的配额信息（"已用/上限"）就藏在这里，但各家 SDK 放的位置不同：
+    openai 挂在 `.response.text` / `.body`，其它库可能只有 str(exc)。
+    取不到就退回 str(exc)——宁可少信息也不能因为取报错体而再抛一个异常。
+    """
+    parts = []
+    for attr in ("status_code", "code"):
+        val = getattr(exc, attr, None)
+        if val is not None:
+            parts.append(f"{attr}={val}")
+    body = getattr(exc, "body", None)
+    if body:
+        parts.append(f"body={body}")
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        try:
+            text = resp.text
+            if text:
+                parts.append(f"response={text}")
+        except Exception:
+            pass
+    parts.append(str(exc))
+    return " | ".join(str(p) for p in parts if p)
 
 
 def normalize_openai_base_url(base_url: str) -> str:
@@ -238,12 +268,18 @@ class LLMService:
             if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
 
-    def call_llm(self, prompt: str, api_key: str = None, provider: str = "gemini", model_name: str = "", base_url: str = "", temperature: float = None, max_tokens: int = None, timeout_s: float = 90.0) -> str:
-        """Non-streaming LLM call for batch processing (e.g., weekly reports, reply generation)"""
+    def call_llm(self, prompt: str, api_key: str = None, provider: str = "gemini", model_name: str = "", base_url: str = "", temperature: float = None, max_tokens: int = None, timeout_s: float = 90.0, feature: str = "") -> str:
+        """Non-streaming LLM call for batch processing (e.g., weekly reports, reply generation)
+
+        feature: 调用来源标识，用于用量归因。不传则回落到调用方模块名。
+        """
         if not api_key:
              api_key = os.environ.get("LLM_API_KEY", "")
 
         if not api_key:
+            _metrics.record(provider=provider, model=model_name, feature=feature,
+                            caller=_metrics.caller_module(depth=1),
+                            status="no_api_key", prompt=prompt)
             return "Error: No API Key provided. Please set LLM_API_KEY."
 
         def _collect() -> str:
@@ -260,13 +296,30 @@ class LLMService:
         # shutdown(wait=False) prevents blocking on the streaming thread after timeout
         _ex = _cf.ThreadPoolExecutor(max_workers=1)
         _fut = _ex.submit(_collect)
+        # 埋点：调用方模块名作为 feature 的兜底归因（此处深度 1 即 call_llm 的调用者）
+        _caller = _metrics.caller_module(depth=1)
+        _t0 = _time.monotonic()
         try:
             result = _fut.result(timeout=timeout_s)
         except _cf.TimeoutError:
             _ex.shutdown(wait=False)
+            _metrics.record(provider=provider, model=model_name, feature=feature, caller=_caller,
+                            status="timeout", latency_ms=int((_time.monotonic() - _t0) * 1000),
+                            prompt=prompt, error_body=f"timeout>{timeout_s:.0f}s")
             return f"模型调用超时（>{timeout_s:.0f}s），请检查网络或稍后重试。"
+        except Exception as _exc:
+            # 429 / 配额耗尽走这里（_retry_with_backoff 对 quota 类错误 fail-fast 抛出）。
+            # 完整留存上游响应体——这是拿到真实配额数字唯一可靠的途径，且不能预约。
+            _ex.shutdown(wait=False)
+            _metrics.record(provider=provider, model=model_name, feature=feature, caller=_caller,
+                            status="error", latency_ms=int((_time.monotonic() - _t0) * 1000),
+                            prompt=prompt, error=_exc, error_body=_extract_error_body(_exc))
+            raise
         finally:
             _ex.shutdown(wait=False)
+        _metrics.record(provider=provider, model=model_name, feature=feature, caller=_caller,
+                        status="ok", latency_ms=int((_time.monotonic() - _t0) * 1000),
+                        prompt=prompt, response=result)
 
         # 过滤 <think>...</think> 标签（部分推理模型会输出思考过程）
         result = re.sub(r'<think>[\s\S]*?</think>', '', result, flags=re.DOTALL).strip()
