@@ -520,12 +520,12 @@
                         </li>
                         <li>
                             <span class="step-title">按 <kbd>F12</kbd> 打开开发者工具，切到 <b>Network</b>（网络）面板</span>
-                            <figure class="shot">
+                            <figure class="shot shot-wide">
                                 <div class="shot-frame">
                                     <img src="/assets/help/01-devtools-network.png" loading="lazy"
-                                        alt="Chrome 开发者工具的 Network 网络面板" onerror="helpImgFallback(this)">
+                                        alt="Chrome 开发者工具的 Network 网络面板，已切到 Fetch/XHR" onerror="helpImgFallback(this)">
                                 </div>
-                                <figcaption>图中以本平台页面为例演示，实际请在你已登录的 Jira 页面上操作。</figcaption>
+                                <figcaption>切到 <b>网络（Network）</b>后，点一下 <code>Fetch/XHR</code> 只看接口请求，列表会清爽很多。</figcaption>
                             </figure>
                         </li>
                         <li>
@@ -533,15 +533,18 @@
                             <p>刷新后 Network 列表里会刷出一堆请求，这是正常的。</p>
                         </li>
                         <li>
-                            <span class="step-title">在任意一条请求上<b>右键 → Copy → Copy as cURL</b></span>
-                            <p>Windows 上菜单里写的是 <code>Copy as cURL (cmd)</code>，选它也可以。</p>
-                            <figure class="shot">
+                            <span class="step-title">在任意一条请求上<b>右键 →「复制」→「以 cURL 格式复制」</b></span>
+                            <p>英文界面是 <code>Copy → Copy as cURL</code>。别选成旁边的
+                                「以 PowerShell 格式复制」或「以 fetch 格式复制」，那两种格式本平台解析不了。</p>
+                            <figure class="shot shot-wide">
                                 <div class="shot-frame">
                                     <img src="/assets/help/02-copy-as-curl.png" loading="lazy"
-                                        alt="右键菜单中选择 Copy as cURL" onerror="helpImgFallback(this)">
+                                        alt="在请求上右键，选择 复制 → 以 cURL 格式复制" onerror="helpImgFallback(this)">
                                 </div>
-                                <figcaption>挑请求的小技巧：选类型是 <code>document</code> 或路径带 <code>rest/api</code>
-                                    的那种；别选 <code>.png</code> / <code>.js</code> 这类静态资源。</figcaption>
+                                <figcaption>中文版菜单是<b>「复制 → 以 cURL 格式复制」</b>；英文版是
+                                    <code>Copy → Copy as cURL</code>，Windows 上写作 <code>Copy as cURL (cmd)</code>，都可以。
+                                    挑请求的小技巧：切到 <code>Fetch/XHR</code> 后随便点一条即可，别选
+                                    <code>.png</code> / <code>.js</code> 这类静态资源。</figcaption>
                             </figure>
                         </li>
                         <li>
