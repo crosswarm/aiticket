@@ -2018,6 +2018,15 @@
             document.body.insertAdjacentHTML('beforeend', html);
         }
 
+        // Windows 的「Copy as cURL (cmd)」用 ^ 作 cmd 转义符（转义 & | < > ^ 等），
+        // 它不是 cookie 值的一部分。不剔除的话会存进带脏字符的凭据，发给 PM/Jira 必然
+        // 被判无效，而且现象很隐蔽——绑定照样“成功”（只写本地钱包、不校验），
+        // 要到真正取数据时才失败。实测坏数据：tenant_info 存成了 "0000^"。
+        // 目标 cookie 都是 base64/JWT 字符集（不含 ^），整体剔除是安全的。
+        function _stripCmdCaret(v) {
+            return (v || '').replace(/\^/g, '');
+        }
+
         function parseCurlForCookies(text) {
             var result = {};
             var patterns = {
@@ -2028,14 +2037,14 @@
             };
             for (var k in patterns) {
                 var m = text.match(patterns[k]);
-                if (m) result[k] = m[1];
+                if (m) result[k] = _stripCmdCaret(m[1]);
             }
             // 提取所有 ycap_* cookies（PM 鉴权 JWT）
             var ycap = {};
             var ycapReg = /(ycap_[\w]+)=([^;'"\s,\\]+)/g;
             var m2;
             while ((m2 = ycapReg.exec(text)) !== null) {
-                ycap[m2[1]] = m2[2];
+                ycap[m2[1]] = _stripCmdCaret(m2[2]);
             }
             result.ycap_cookies = ycap;
             return result;

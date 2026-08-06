@@ -35,6 +35,9 @@ design/**
 # Instance config (复制自 *.example，含 secrets，不入 git)
 .env
 APP/backend/config/deployment.yaml
+# PM 系统配置：含实例专属的 base_url / 产品线 ID / 分析人工号。
+# 模板见 config/pm_config.yaml.example（cp 一份再改）。
+APP/backend/config/pm_config.yaml
 APP/backend/llm_config.json
 # 每实例独有的功能路由（设置页可改）；缺失时由 services/llm_routing_config 自动生成。
 # 此前它被跟踪却又被运行时改写 → 工作区长期脏、且 pull 会用仓库版覆盖线上路由。

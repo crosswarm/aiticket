@@ -1,0 +1,240 @@
+# PM 系统配置模板
+#
+# 用法：cp pm_config.yaml.example pm_config.yaml，再按本实例情况改
+#   1) base_url —— 你的 PM 系统地址（或用环境变量 PM_BASE_URL 覆盖）
+#   2) line_id / default_analyst —— 你的产品线 ID 与默认分析人工号
+# pm_config.yaml 已被 .gitignore，含实例专属信息，不要入库。
+pm_system:
+  # 改成你自己的 PM 系统地址；也可用环境变量 PM_BASE_URL 覆盖
+  base_url: "https://pm.your-company.com"
+  api_prefix: "/rest/v1"
+  tenant_info: "0000"
+
+  # 产线配置
+  line_id: "00000000-0000-0000-0000-000000000000"
+  default_analyst: "0000000000"
+
+  # Token 文件（由 scripts/refresh_pm_token.sh 生成）
+  token_file: "data_cache/pm_token.json"
+
+  # ===== 模块配置（可扩展，不要在代码里写死 entityType）=====
+  # 每个模块独立配置，后续增加新模块只加一段 config，不改代码
+  modules:
+    original_demand:
+      label: "原始需求"
+      endpoint: "/rest/v1/originalDemand/page"
+      entity_type: "ORIGINAL_DEMAND"
+      specific: "ORIGINAL_DEMAND"
+      fetch_fields:
+        - aid
+        - code
+        - title
+        - source
+        - assignee          # 经办人 (USER 类型)
+        - analyst           # 分析人 (USER 类型)
+        - status
+        - description
+        - corProposer       # 协作提出人 (USER 类型)
+        - productId         # 产品/应用服务 (LIST 类型，有 title)
+        - categoryId        # 分类/应用 (CASCADE 类型)
+        - lineId            # 产品线 (LIST 类型)
+        - priority          # 优先级
+        - ctime             # 创建时间
+        - expectedResolveTime    # 期望解决时间
+        - commitDeliveryTime     # 承诺交付时间
+        - link              # 外部链接 (STRING 类型)
+      # 自定义字段 char*/date*/number* 的中文标签（通过 GET detail 端点发现）
+      char_field_labels:
+        char8: "客户名称"       # MULTI 类型，实录: 泰开集团有限公司
+        char11: "冲刺标签"      # STRING 类型，实录: YonBIP旗舰版本地部署-连接集成平台-主数据管理
+        char2: "客户标签"       # LABEL 类型（与 char8 值相同，类型不同）
+        char3: "需求类型"       # LIST 类型，实录: 功能需求
+        char6: "需求库"         # LIST 类型，实录: 纳入需求库
+        projectDeliveryTime: "项目交付时间"
+        completionTime: "完成时间"
+        replyComment: "回复评论"
+        desc: "需求描述"        # 描述字段，注意：fieldCode 是 desc 不是 description
+
+      # 哪些状态需要进入分诊流程
+      triage_target_statuses:
+        - WAIT_ANALYSIS
+        - ASSIGNING
+      # PM 原生状态枚举（实录于 2026-04-14）
+      statuses:
+        WAIT_ANALYSIS: "待分析"
+        ASSIGNING: "待规划"
+        PROCESSING: "实现中"
+        SOLUTION_RESOLVED: "已方案解决"
+        IMPLEMENTED: "已实现"
+        HANG: "暂缓处理"
+        REJECTED: "拒绝"
+      # 支持的操作（对应 execute_action 的 action 参数）
+      actions:
+        - comment
+        - accept
+        - hang
+        - reject
+        - solution_resolved
+        - implemented
+        - transfer
+      # 详情/历史端点（通用字段，供 pm_module_service 读取）
+      detail_endpoint: "/rest/v1/originalDemand/{aid}"
+      history_endpoints:
+        - "/rest/v1/originalDemand/trackList?demandId={aid}"
+        - "/rest/v1/originalDemand/trackList?id={aid}"
+        - "/rest/v1/originalDemand/history?demandId={aid}"
+      # 默认附加过滤条件（original_demand 无需额外条件）
+      default_extra_conditions: []
+      # PM 操作走 workflow 引擎（2026-04-16 通过 Chrome DevTools 抓包确认）
+      # 两步：getProcessRules 获取表单 → processConvert 提交操作
+      workflow:
+        process_design_id: "ec6fb75e4a9899e5dcb21949e3a10972"
+        get_rules_endpoint: "/rest/v1/workflow/getProcessRules"
+        submit_endpoint: "/rest/v1/workflow/processConvert"
+      # operation 映射（action → workflow operationCode）
+      # 来源：2026-04-16 E2E 验证 getOperations 真实返回值
+      # - WAIT_ANALYSIS 状态可用: ACCEPT, WAIT_PROCESS, REFUSE, BEEN_SOLVED, PUBLISH
+      # - ASSIGNING 状态可用: BEEN_SOLVED, zhcl (hang 异名)
+      # operation_aliases 用于兼容不同状态下的同义 operationCode
+      action_operations:
+        accept:
+          operation: "ACCEPT"
+        hang:
+          operation: "WAIT_PROCESS"
+          aliases: ["zhcl"]
+        reject:
+          operation: "REFUSE"
+          aliases: ["REFUSED"]
+        solution_resolved:
+          operation: "BEEN_SOLVED"
+        implemented:
+          operation: "PUBLISH"
+          aliases: ["PUBLISHED"]
+        transfer:
+          operation: "TRANSFER"
+      # 状态码映射（PM 系统真实 code）
+      status_codes:
+        WAIT_ANALYSIS: "待分析"
+        ASSIGNING: "待规划"
+        DEVING: "实现中"
+        BEEN_SOLVED: "已方案解决"
+        PUBLISHED: "已实现"
+        WAIT_PROCESS: "暂缓处理"
+        REFUSED: "拒绝"
+      # 旧的 RESTful 端点（已确认不存在，仅保留注释）
+      # action_endpoints 已废弃，改用 workflow.submit_endpoint
+
+    collaboration_demand:
+      label: "协作需求"
+      endpoint: "/rest/v1/demand/page"
+      entity_type: "DEMAND"
+      specific: "DEMAND"
+      detail_endpoint: "/rest/v1/demand/{aid}"
+      history_endpoints:
+        - "/rest/v1/demand/trackList?demandId={aid}"
+        - "/rest/v1/demand/history?demandId={aid}"
+      # 协作方二级组织过滤：应用与开发平台产品规划部
+      default_extra_conditions:
+        - fieldCode: "analystSecondDept"
+          operation: "eq"
+          valueType: "STRING"
+          editType: "STRING"
+          values: ["应用与开发平台产品规划部"]
+      fetch_fields:
+        - aid
+        - code
+        - title
+        - status
+        - analyst           # 协作分析人 (USER 类型)
+        - corProposer       # 协作提出人 (USER 类型)
+        - productId         # 产品/应用服务
+        - categoryId        # 分类
+        - lineId            # 产品线
+        - priority          # 优先级
+        - ctime             # 创建时间（协作提出日期）
+        - expectedResolveTime    # 期望解决时间（高亮显示）
+        - commitDeliveryTime     # 承诺交付时间
+        - description
+        - link
+      char_field_labels:
+        char8: "客户名称"
+        char11: "冲刺标签"
+        char3: "需求类型"
+        desc: "需求描述"
+      triage_target_statuses:
+        - WAIT_ANALYSIS
+        - COO_ACCEPT
+        - ANALYZING
+      statuses:
+        WAIT_ANALYSIS: "待分析"
+        COO_ACCEPT: "协作方已采纳"
+        ANALYZING: "分析中"
+        COO_HANG: "协作方挂起"
+        COMPLETED: "已完成"
+        CLOSED: "已关闭"
+      # 协作需求操作（2026-04-22 getOperations 抓包确认 operationCode）
+      actions:
+        - accept
+        - hang
+        - reject
+      workflow:
+        submit_endpoint: "/rest/v1/workflow/processConvert"
+      # operationCode 来源：/rest/v1/workflow/getOperations 真实返回
+      action_operations:
+        accept:
+          operation: "ACCEPT"
+        hang:
+          operation: "WAIT_DEAL"
+        reject:
+          operation: "REFUSE"
+      action_endpoints: {}
+
+  # 认证配置（已弃用 env var 方式，改用 token_file；env var 作 fallback）
+  auth:
+    type: "cookie"
+    token_env: "PM_YHT_ACCESS_TOKEN"
+
+  # 数据同步配置
+  sync:
+    interval_minutes: 5
+    page_size: 30
+
+  # 分诊规则（PMTriageService 使用）
+  triage_rules:
+    auto_reject_score_lt: 40
+    auto_alternative_score_lt: 70
+    manual_confirm_below_score: 50
+
+  # 自动处理配置（保留兼容旧 PMAutoProcessor）
+  auto_process:
+    enabled: false
+    interval_minutes: 10
+    match_threshold: 0.7
+    reject_template: |
+      尊敬的 {proposer_name}：
+
+      感谢您提交的原始需求《{demand_title}》。
+
+      经智能分析评估：
+      {reject_reason}
+
+      如有疑问请联系平台产品规划部（强骁）。
+
+      —— 平台产品规划部（自动处理）
+
+  # 超时监控配置
+  overdue:
+    check_interval_minutes: 60
+    threshold_days: 2
+    exclude_weekends: true
+
+  # 缓存配置
+  cache:
+    dir: "data_cache"
+    retention_days: 30
+
+  # 飞书通知配置
+  notification:
+    feishu_session_id: "oc_72ef8553bb8b552435cd91b0fb1e86ab"
+    daily_summary: true
+    daily_summary_time: "09:00"
