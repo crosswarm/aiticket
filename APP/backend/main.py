@@ -2448,8 +2448,12 @@ def search_kb(request: Request, q: str, top_k: int = Query(20, description="返�
 
 
 @app.get("/api/kb/taxonomy")
-def get_kb_taxonomy(domain_cloud: Optional[str] = None):
+def get_kb_taxonomy(request: Request, domain_cloud: Optional[str] = None):
     """上传时可选的归属树：领域云 > label > application。"""
+    # 返回的是完整 BIP 产品分类（190 label / 1695 application），
+    # 属于内部产品结构，且要与同组其它 kb 端点的鉴权口径一致。
+    # 守卫必须前置（test_write_endpoints_require_auth 要求在函数体前 3 个语句内）
+    require_authenticated_user(request)
     from bip_taxonomy import get_bip_taxonomy
     from kb_upload import build_taxonomy_tree
 
@@ -2478,10 +2482,10 @@ async def upload_kb_files(
 
     落盘后需要调 /api/kb/refresh 才会进索引——转换+嵌入耗时较长，不在请求里做。
     """
+    user = require_authenticated_user(request)
     from bip_taxonomy import get_bip_taxonomy
     from kb_upload import UploadRejected, save_uploads
 
-    user = require_authenticated_user(request)
     payload = [(upload.filename or "", await upload.read()) for upload in files]
     try:
         result = save_uploads(
@@ -2506,10 +2510,10 @@ async def upload_kb_files(
 @app.get("/api/kb/document")
 def download_kb_document(request: Request, path: str = Query(..., description="文档相对路径")):
     """下载知识库原始文档。"""
+    require_authenticated_user(request)
     from fastapi.responses import FileResponse
     from kb_upload import UploadRejected, resolve_kb_file
 
-    require_authenticated_user(request)
     try:
         target = resolve_kb_file(kb_runtime_service.kb_root, path)
     except UploadRejected as exc:
@@ -2536,10 +2540,10 @@ def download_kb_document_version(
     version: str = Query(..., description="版本号（versions 接口返回的 version 字段）"),
 ):
     """下载某文档的历史版本。"""
+    require_authenticated_user(request)
     from fastapi.responses import FileResponse
     from kb_upload import UploadRejected, resolve_version_file
 
-    require_authenticated_user(request)
     try:
         archived = resolve_version_file(kb_runtime_service.kb_root, path, version)
     except UploadRejected as exc:
@@ -2561,11 +2565,11 @@ async def replace_kb_document(
 
     路径与扩展名必须保持不变——content_id 按路径分配，路径一变旧索引就成孤儿。
     """
+    user = require_authenticated_user(request)
     from datetime import datetime as _datetime
 
     from kb_upload import UploadRejected, replace_document
 
-    user = require_authenticated_user(request)
     content = await file.read()
     # main.py 没有全局导入 datetime，只在需要处局部引入
     stamp = _datetime.now().strftime("%Y%m%d-%H%M%S")

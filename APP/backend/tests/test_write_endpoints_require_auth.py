@@ -32,6 +32,16 @@ PROTECTED_WRITE_ENDPOINTS = [
     "/api/board/batch-move",             # 同上，批量
     "/api/board/move-issue-jira",        # 直接调 Jira REST 移动项目
     "/api/jira/action",                  # assign / reply / reply_and_close
+    # KB 文档操作：会往知识库写文件、改文件、删索引记录，
+    # 且下载会读出原始文档。/api/kb/taxonomy 返回完整 BIP 产品分类（190 label /
+    # 1695 application），属内部产品结构，与本组保持同一鉴权口径。
+    "/api/kb/upload",                    # 往 KB 写文件
+    "/api/kb/document",                  # 读原始文档
+    "/api/kb/document/version",          # 读历史版本
+    "/api/kb/document/versions",         # 列历史版本
+    "/api/kb/document/replace",          # 覆盖已有文档
+    "/api/kb/prune-missing",             # 删索引记录（管理员）
+    "/api/kb/taxonomy",                  # 内部产品分类
 ]
 
 _GUARDS = {"require_authenticated_user", "require_admin_user"}
