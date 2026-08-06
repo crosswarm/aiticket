@@ -1862,19 +1862,33 @@
                     searchEl.disabled = false;
                     searchEl.placeholder = '输入项目编码、名称或拼音首字母过滤...';
                 }
+                // 【无条件】加载可选项目列表。
+                // 此前这段被写在下面的 if (defProject && ...) 里面，等于「只有已经绑定过
+                // 具体项目的人才去拉列表」—— 新用户 current_project 为空，列表永远是空的，
+                // 下拉里只剩硬编码的「全部项目」，于是永远绑不上项目（鸡生蛋死锁）。
+                // 数据源用 /api/board/meta：与右上角作用域切换器一致，require_binding=False，
+                // Jira 不可达时还有兜底列表；旧的 move-targets 要求 per-user Jira 绑定，
+                // 未绑定用户直接 401（172 上 26 个活跃用户里 22 个没绑定）。
+                if (_acctProjectList.length === 0) {
+                    try {
+                        var mr = await fetch(API_BASE+'/api/board/meta', {headers: getJiraHeaders()});
+                        var md = await mr.json();
+                        if (md && Array.isArray(md.projects)) {
+                            _acctProjectList = md.projects
+                                .map(function(p){
+                                    var nm = p.name || p.key;
+                                    return {key: p.key, name: nm, pinyin: getPinyinInitials(nm)};
+                                })
+                                .sort(function(a,b){return a.name.localeCompare(b.name);});
+                        }
+                    } catch(ex) {}
+                }
+                if (searchEl && _acctProjectList.length === 0) {
+                    searchEl.placeholder = '项目列表加载失败 — 请先绑定 Jira 会话后重试';
+                }
+
                 if (defProject && defProject !== 'ALL') {
-                    // 尝试从 moveProjectList 找名字
-                    if (moveProjectList.length === 0) {
-                        try {
-                            var mr = await fetch(API_BASE+'/api/board/move-targets/0', {headers: getJiraHeaders()});
-                            var md = await mr.json();
-                            if (md.success && md.projects) {
-                                md.projects.sort(function(a,b){return a.name.localeCompare(b.name);});
-                                moveProjectList = md.projects.map(function(p){return {id:p.id,key:p.key,name:p.name,pinyin:getPinyinInitials(p.name)};});
-                            }
-                        } catch(ex) {}
-                    }
-                    var found = moveProjectList.find(function(p){return p.key===defProject;});
+                    var found = _acctProjectList.find(function(p){return p.key===defProject;});
                     var defName = found ? found.name : defProject;
                     _acctProject = {key: defProject, name: defName};
                     if (searchEl) searchEl.value = defName + ' (' + defProject + ')';
@@ -2753,6 +2767,12 @@
         // ========== 作用域 Popup (已迁移至 scope-switcher.js) ==========
         let _acctProject = null;
         let _acctModules = [];
+        // 账号设置专用的项目列表，与「移动工单」的 moveProjectList 刻意分开：
+        // 移动工单靠 project.id 提交（selectMoveProject 把 id 写进表单），只能用
+        // /api/board/move-targets；而本列表用 /api/board/meta（不要求 per-user
+        // Jira 绑定、且 Jira 不可达时有兜底），meta 不返回 id，混用会让移动工单拿到
+        // undefined。
+        let _acctProjectList = [];   // [{key, name, pinyin}]
         let _acctAllModules = [];
 
         function getScopeFromStore() {
@@ -2815,7 +2835,7 @@
             if (!dd) return;
             const lower = (q || '').toLowerCase().trim();
             const upper = (q || '').toUpperCase().trim();
-            const base = [{key:'ALL', name:'全部项目', pinyin:''}, ...moveProjectList];
+            const base = [{key:'ALL', name:'全部项目', pinyin:''}, ..._acctProjectList];
             const filtered = base.filter(o => {
                 if (!lower) return true;
                 return (o.name||'').toLowerCase().includes(lower) ||
